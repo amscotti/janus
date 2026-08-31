@@ -1,0 +1,29 @@
+[micronaut.application]
+name = "janus"
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+# binding fixture: two entries in TOML order; the second omits base-url to pin
+# the "absent base-url is tolerated (null) → adapter default" rule.
+# Micronaut 5.1 binds record components (modelList/apiKeyEnv/baseUrl) from kebab-case
+# TOML keys (model-list/api-key-env/base-url) — underscores do NOT normalize.
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "deepseek-v4-pro"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+
+# declarative provider hints — wire-format names the adapter family
+# (openai-compatible | anthropic); base-url/api-key-env are per-provider defaults merged
+# under model-list entries that omit them.
+[janus.providers.deepseek]
+wire-format = "openai-compatible"
+base-url = "https://api.deepseek.com"
+api-key-env = "DEEPSEEK_API_KEY"

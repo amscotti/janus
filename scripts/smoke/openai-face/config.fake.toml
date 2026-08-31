@@ -1,0 +1,39 @@
+# W08 OpenAI-face gate — deterministic fake-upstream config (lives under
+# scripts/smoke/openai-face/, NOT the repo root; root config.toml stays the dev-facing
+# example — zero production diff).
+#
+# Boot forms (the runner branches on leg):
+#   JVM leg:./gradlew :janus-cli:run --args='--config <ABS>/scripts/smoke/openai-face/config.fake.toml'
+#              (JanusCli parses --config → micronaut.config.files; absolute path
+#              required — Gradle `run` executes from the module dir, W06 pinned this)
+#   Native leg: MICRONAUT_CONFIG_FILES=<ABS>/scripts/smoke/openai-face/config.fake.toml
+#              <native>/janus   (the GraalVM image's mainClass is JanusApplication,
+#              which does NOT parse --config — a --config flag silently boots with
+#              the packaged application.toml → empty router → confusing false negative)
+#
+# The runner substitutes the actual fake port (FAKE_PORT, default 9876) into a
+# generated copy when the default is taken; this file is the canonical reference.
+# base-url omits /v1 — the adapter strips a trailing /v1 and appends
+# /v1/chat/completions itself (the reference base-URL normalization, W03).
+# No api-key-env: the fake ignores auth, so the adapter sends no Authorization.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+base-url = "http://127.0.0.1:9876"
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

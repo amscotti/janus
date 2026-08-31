@@ -1,0 +1,6 @@
+# W42 gate runtime artifacts — never commit (RESULTS.md IS committed: the gate's
+# results record; everything else here is reproducible noise the runner recreates).
+.run/
+.venv/
+__pycache__/
+*.pyc

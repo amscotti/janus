@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "Rate limit reached, please resend later",
+    "type": "rate_limit_reached",
+    "param": null,
+    "code": "rate_limit_reached"
+  }
+}

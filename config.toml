@@ -1,0 +1,387 @@
+# Minimal Janus config for local development.
+# Pass to the CLI with `--config <path>` (or `-c`, or `--config=<path>`); a
+# relative, scheme-less path is resolved against the process working directory,
+# so `janus-cli --config config.toml` from the repo root works. Caveat: the Gradle
+# run task launches from the module dir, so under
+# ./gradlew :janus-cli:run --args='--config config.toml'
+# use an ABSOLUTE path (or the JANUS_CONFIG env the walkthrough uses):
+# ./gradlew :janus-cli:run --args='--config /abs/path/config.toml'
+# the OpenAI face: [[janus.model-list]] maps each model alias to a provider entry;
+# credentials come from the environment (api-key-env), never from this file.
+# Micronaut binds record components from kebab-case TOML keys (model-list,
+# api-key-env, base-url). base-url is a TRUST BOUNDARY: operator config only
+# — no request path writes it — and only http/https schemes are accepted; a
+# scheme-less or non-http(s) base-url fails fast at boot (SSRF guard).
+# the Anthropic face adds [janus.providers.<name>] declarative
+# hints; routing adds [janus.router] — strategy, retries, health and breaker
+# knobs — see docs/routing.md for the full reference and tuning guidance.
+
+# The blocks below ([micronaut.application], [micronaut.server] port,
+# [endpoints.all], [endpoints.health], [endpoints.stop], [endpoints.refresh])
+# MIRROR the packaged defaults in janus-gateway/src/main/resources/application.toml
+# and must stay in sync with them (enforced by EndpointMirrorDriftGuardTest — a
+# half-fix in one file would silently re-expose the other boot path). Precedence:
+# an external config file (this one) OVERRIDES the packaged one, so when a boot
+# uses this file the [micronaut.server] port here wins and the packaged default is
+# dead — edit both or document the divergence. [endpoints.all] enables every
+# Micronaut management endpoint on the classpath, so stop/refresh are disabled
+# outright and everything else is sensitive = true (framework 401 without a
+# security module); health + metrics stay public via their own sensitive = false.
+# Two endpoint pins live ONLY in application.toml and are deliberately not
+# duplicated here: [endpoints.prometheus] path = "/metrics" (the pinned path,
+# /prometheus 404s) and [endpoints.metrics] enabled = false (the JSON metrics
+# endpoint is disabled so Prometheus owns /metrics).
+#
+# The [janus] version string below is triplicated — gradle.properties,
+# application.toml and this file — and the release gate must bump all three.
+# Enforced by VersionTriplicationTest: the three sources must agree, so a
+# bump that touches only one fails the build instead of shipping a diverged string.
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.health]
+enabled = true
+details-visible = "ANONYMOUS"
+sensitive = false
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[janus]
+name = "janus"
+version = "0.1.0"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+# Providers — declarative provider hints — [janus.providers.<name>] blocks.
+# wire-format names the adapter family the provider speaks ("openai-compatible" or
+# "anthropic"); field translation itself stays CODE (the OpenAI / Anthropic
+# codecs) — the block only documents the declarative-vs-code split and supplies
+# per-provider defaults. base-url / api-key-env below are merged under model-list
+# entries for this provider that omit them (the entry's own values win). The block
+# key must equal the model-list entry's `provider` name. base-url is the FULL
+# prefix: a trailing /v1 is stripped (each adapter appends its own versioned
+# path — /v1/chat/completions resp. /v1/messages), EXCEPT the full-endpoint
+# opt-out: an openai-compatible base-url that already ends with
+# /chat/completions is dispatched verbatim (versionless hosts — e.g. Perplexity
+# serves https://api.perplexity.ai/chat/completions; a /v1-suffixed path 404s
+# there). Uncomment to declare:
+# [janus.providers.deepseek]
+# wire-format = "openai-compatible"
+# base-url = "https://api.deepseek.com"
+# api-key-env = "DEEPSEEK_API_KEY"
+#
+# Per-provider timeout overrides — the four [janus.timeouts] keys, per-key: a
+# null component falls through to the global section. Precedence: model-list
+# entry > provider block > [janus.timeouts]. A provider block's
+# stream-idle-timeout-seconds also overrides the SSE idle watchdog for every
+# request dispatched to this provider's backends, on all three faces (resolved
+# per dispatch by the serving backend's name). That name is the entry's
+# `provider` name — except a fixed-name wire-format family: every
+# wire-format = "anthropic" fallback backend dispatches under the family's
+# fixed name "anthropic", so such a block's stream-idle override keys "anthropic"
+# and applies to every "anthropic" backend (a boot warning names the shared key,
+# and the first block wins when two collide).
+# connect-timeout-seconds = 10
+# header-timeout-seconds = 120
+# body-read-timeout-seconds = 900
+# stream-idle-timeout-seconds = 45
+#
+# DeepSeek also serves Anthropic Messages at /anthropic (same API key,
+# x-api-key). Use a distinct alias (or replace the OpenAI-format row) —
+# two rows with the same name become one LB/failover pool.
+# [janus.providers.deepseek-anthropic]
+# wire-format = "anthropic"
+# base-url = "https://api.deepseek.com/anthropic"
+# api-key-env = "DEEPSEEK_API_KEY"
+# [[janus.model-list]]
+# name = "deepseek-v4-flash"
+# provider = "deepseek-anthropic"
+# api-key-env = "DEEPSEEK_API_KEY"
+# base-url = "https://api.deepseek.com/anthropic"
+#
+# Vision (experimental): deepseek-v4-flash-vision-exp — OpenAI image_url or
+# Anthropic image blocks; same peak rates as Flash. Images billed as input.
+# [[janus.model-list]]
+# name = "deepseek-v4-flash-vision-exp"
+# provider = "deepseek"
+# api-key-env = "DEEPSEEK_API_KEY"
+# base-url = "https://api.deepseek.com"
+#
+# Upstream timeouts — [janus.timeouts] — the four upstream deadlines that were fixed
+# fixed code constants, now operator-tunable. All keys are OPTIONAL seconds (an
+# absent key or section ⇒ the code default shown, behavior byte-identical; null
+# components resolve per-key in the RouterFactory — never all-or-nothing). Units:
+# seconds with the -seconds suffix, the documented convention that avoids the
+# millis/seconds footgun (the [janus.router] backoff-base-ms / backoff-max-ms keys
+# are the documented millis exception). Non-positive values are REJECTED at boot —
+# the error names the key (the [janus.store] retention precedent). The 64 MiB
+# non-stream response-body cap (HttpSupport.MAX_RESPONSE_BODY_BYTES) is NOT a key
+# here: it stays a code constant (an OOM defense, not an operator deadline) — see
+# docs/architecture.md § Timeouts. Override levels (per-key fall-through):
+# [[janus.model-list]] entry > [janus.providers.<name>] block > this section —
+# the same four keys, same spelling, shown on the provider-block and model-list
+# examples above/below; the stream-idle watchdog resolves per dispatch by the
+# serving provider's block override (else this section's value).
+# [janus.timeouts]
+# connect-timeout-seconds = 10 # TCP connect to an upstream (adapters' HttpClient)
+# header-timeout-seconds = 60 # time to first response header (per-request timeout)
+# body-read-timeout-seconds = 300 # non-stream body read after headers arrive
+# stream-idle-timeout-seconds = 60 # SSE idle watchdog (all three faces)
+
+# Routing — routing knobs — see docs/routing.md for strategy semantics,
+# the retry/health/breaker interplay and tuning guidance. All values below are the
+# documented defaults (an absent section behaves identically). Units: backoff-*-ms are
+# millis; cooldown-time and breaker-*-seconds are SECONDS — the #1 operator footgun.
+# [janus.router]
+# strategy = "round-robin" # round-robin | least-inflight | latency-based | cost-based | weighted | session-affinity
+# → session-affinity: same x-janus-session-id request header → same backend (rendezvous
+#   hash; absent header → round-robin). Serves provider prompt caches — see docs/routing.md.
+# latency-alpha = 0.3 # EMA factor for latency-based; ∈ (0, 1]
+# → latency-based also re-explores a backend idle ≥ cooldown-time (stale EMA refresh)
+# so a cooldown-recovered upstream is re-sampled before competing on stale data
+# weights = { deepseek = 3, anthropic = 1 } # weighted-strategy weights, keyed by backend (provider) name
+# max-retries = 2 # retries AFTER the first attempt (≤ max-retries + 1 tries total)
+# backoff-base-ms = 200 # exponential base; attempt n → min(base * 2^n, max)
+# backoff-max-ms = 2000 # backoff cap
+# jitter = 0.2 # fractional jitter of the capped delay, ∈ [0, 1]
+# allowed-fails = 3 # consecutive failures before an upstream flips unhealthy
+# cooldown-time = 10 # SECONDS of probation before one trial attempt (passive)
+# breaker-failure-threshold = 5 # failures in the rolling window before OPEN (default 5)
+# breaker-window-seconds = 60 # rolling failure window, SECONDS (default 60)
+# breaker-cooldown-seconds = 30 # OPEN → half-open cooldown, SECONDS (default 30)
+# → set breaker-failure-threshold = 0 to DISABLE the breaker (the health layer stays
+# on); the window/cooldown keys are then ignored. There is no other way to disable
+# it, and a threshold < 0 is a boot error.
+
+# multi-provider shape: two [[janus.model-list]] entries with the
+# SAME name are two backends in one ordered candidate list for that alias — the router
+# load-balances/retries/falls back across them (two entries with the same name form one candidate list).
+# Resolved backend names within one alias must be unique (two deepseek entries → config
+# error); different providers per alias is the supported shape. Uncomment to try:
+# [[janus.model-list]]
+# name = "deepseek-v4-flash"
+# provider = "anthropic"
+# api-key-env = "ANTHROPIC_API_KEY"
+#
+# Per-entry timeout overrides — the HIGHEST precedence level: the entry's keys win
+# over the serving provider's [janus.providers.<name>] block, which wins over
+# [janus.timeouts] (per-key fall-through; a null component inherits the next level
+# down). The entry keys apply to this entry's backend only (the adapter trio:
+# connect / header / body-read; the stream-idle watchdog itself keys on the
+# serving provider's block — see the [janus.providers] note above).
+# connect-timeout-seconds = 5
+# header-timeout-seconds = 180
+# body-read-timeout-seconds = 600
+# stream-idle-timeout-seconds = 30 # (provider-block only — ignored here, logs a boot warning; see note above)
+
+# Governance — virtual keys, master key, model scopes.
+# [janus.keys]
+# auth = "on" is the default: a boot with no resolvable master key FAILS FAST (a
+# forgotten env var must not silently run an unauthenticated admin API). Development /
+# benchmark postures declare auth = "off" explicitly — a loud, operator-controlled
+# line that wins even when a key resolves. The shipped compose memory profile is
+# auth-on (set JANUS_MASTER_KEY in the repo-root .env).
+# master-key-env = "JANUS_MASTER_KEY" # env var name, NEVER the key value (env-var-name pattern)
+#
+# The master key authenticates the admin API only (/key/generate|delete|list,
+# Bearer or x-api-key); model routes (/v1/chat/completions, /v1/messages,
+# /v1/responses) require Janus-issued virtual keys (sk-janus-...), created via
+# POST /key/generate with the master key. Per-key model scopes (the "models" list on
+# generate) are enforced against the model alias the client sends; revoked keys get
+# 403, missing/invalid/expired keys 401. Every UNLISTED path — /health, /metrics,
+# /v1/models and any future route — is EXEMPT — /v1/models is treated as public
+# metadata; a stricter default for unlisted paths may come later.
+
+# Pricing + limits — per-model pricing + per-key limits. Enforcement is
+# KEY-SCOPED: a key's rpm/tpm/budget_usd (set on POST /key/generate) is "no cap" when
+# absent (null means no cap, NOT zero), and with auth off (no master key) NO request
+# is governed — early development configs behave byte-identically. A budget can
+# carry a KEY-SCOPED reset window too: budget_duration (seconds, on POST
+# /key/generate — e.g. 2592000 = 30 days; absent = lifetime budget) makes the cap
+# refill each aligned window. It is per-key admin-API surface, NOT a [janus.limits]
+# key. The sections below are the
+# defaults; an absent section behaves identically.
+#
+# [janus.pricing]
+# # USD per 1K tokens, keyed by model ALIAS (the name the client sends). Kebab-case
+# # element keys ONLY (underscores inside [[...]] silently bind
+# # null — input_per_1k would silently zero the rate). Unknown models meter at $0
+# # and log once. default-max-tokens is the budget/TPM estimate fallback when a
+# # request omits max_tokens (gateway fallback 4096 — the gateway fallback
+# # default; it only gates admission, settle corrects to actual). The BUDGET
+# # admission estimate also prices a prompt estimate from the request's message
+# # content (sum of chars / 4 × max(input-per-1k, cache-read-per-1k,
+# # cache-creation-per-1k) — the worst-case per-token input rate, since a prompt
+# # token bills at exactly one of the three; a cache-creation prompt is the
+# # priciest Anthropic shape) so a prompt-heavy request cannot overshoot the hard
+# # cap unguarded — still an estimate, settle corrects.
+# # require-priced = true  # fail boot / 400 when a model-list alias has no row
+# # A DUPLICATE name across [[janus.pricing.models]] rows is REJECTED at boot
+# # (the table is keyed by name — a repeat would silently replace the earlier
+# # row's rates).
+# [[janus.pricing.models]]
+# name = "deepseek-v4-flash"
+# # Official DeepSeek peak (Aug 2026): $0.44 / $1.32 per 1M → USD-per-1K.
+# # Off-peak is half ($0.22 / $0.66 per 1M). Pick the band you actually run.
+# input-per-1k = 0.00044
+# output-per-1k = 0.00132
+# cache-read-per-1k = 0.000014
+# # default-max-tokens = 4096
+#
+# # xAI Grok 4.6 (official Aug 2026: $2.00 / $0.50 cached / $6.00 per 1M tokens
+# # below 200k prompt → USD-per-1K). When prompt tokens reach
+# # long-context-threshold the WHOLE request bills at the long-* rates
+# # (vendor typical: not blended). Threshold 0 / omitted = off.
+# # [[janus.pricing.models]]
+# # name = "grok-4.6"
+# # input-per-1k = 0.002
+# # output-per-1k = 0.006
+# # cache-read-per-1k = 0.0005
+# # default-max-tokens = 4096
+# # long-context-threshold = 200000
+# # long-input-per-1k = 0.004
+# # long-output-per-1k = 0.012
+# # long-cache-read-per-1k = 0.001
+# #
+# # hosted web-search billing (Anthropic bills searches per 1k besides result
+# # tokens, which arrive as ordinary input tokens). Optional; 0 when omitted.
+# # web-search-per-1k = 10.0
+#
+# # A row keyed by a BACKEND (provider) name — the model-list `provider` — is a
+# # per-backend rate override for the cost-based load balancer: the LB prices a response
+# # served by that backend at THIS row, preferred over the alias row. Use it when two
+# # providers serve one alias at two prices (e.g. OpenRouter "claude-3-5-sonnet" vs
+# # direct Anthropic) so cost-based routing compares per-backend spend instead of the
+# # shared alias rate. Governance metering still prices the alias row.
+# # [[janus.pricing.models]]
+# # name = "openrouter" # backend/provider name
+# # input-per-1k = 0.08
+# # output-per-1k = 0.16
+# #
+# # Note: with strategy = "cost-based" and an EMPTY pricing table, every response prices
+# # at $0 and selection pins to the first candidate — the gateway logs a boot warning
+# # for that combination (cost-based, zero rows); add rows or use round-robin.
+#
+# [janus.limits]
+# window = "fixed" # "fixed" (default) | "sliding" (token bucket)
+# # An invalid value (not "fixed"/"sliding") is
+# # REJECTED at boot — binding-time fail-fast, so a
+# # typo like "slidng" never silently degrades to
+# # the fixed-window limiter.
+# # known divergence: "sliding" + [janus.store] type =
+# # "postgres" is REJECTED at boot — the Postgres
+# # store enforces fixed-window limits only
+# # (PgRateLimiter); the combination would silently
+# # enforce different semantics than configured.
+# # Postgres mode is fixed-window only — see
+# # docs/clustering.md.
+# soft-cap-fraction = 0.8 # budget soft tier as a fraction of the hard cap
+# notifier-webhook-url = "http://host:port/hook" # absent ⇒ logger-only notifier
+# # A syntactically-INVALID url does not abort
+# # boot — it falls back to the logger notifier
+# # (WARN, url never echoed) and webhooks are off.
+# ledger-retention = 1000 # per-key spend-ledger ring entries ,
+# # both backends (memory + Postgres) —
+# # independent of [janus.store]
+# # retention, which sizes the CALL
+# # ring; absent ⇒ 1000. Must be
+# # POSITIVE — 0/negative is REJECTED
+# # at boot (binding-time fail-fast,
+# # like [janus.store] retention — a
+# # typo'd value is never silently
+# # swapped for the 1000 default).
+#
+# -----------------------------------------------------------------------------
+# Privacy — conversation content in logs. DEFAULT OFF: prompts, completions,
+# tool arguments/results and image payloads NEVER appear in log output; the
+# string form of requests/responses prints structure only (models, counts,
+# stop reasons). Metrics, call records, token counts and costs are always
+# logged and are unaffected by this switch. Set true ONLY for local debugging
+# (the boot logs a warning while it is on).
+[janus.privacy]
+log-content = false
+
+# Metrics — Prometheus metrics — always on, Tier-1 only. The exposition
+# is served at GET /metrics (text/plain; version=0.0.4) — the endpoint path is pinned
+# in application.toml ([endpoints.prometheus] path = "/metrics"; /prometheus 404s).
+# Series (janus_ prefix; see MetricsRecorder for the full table and the privacy
+# contract):
+# janus_requests_total Counter labels: face (openai|anthropic|responses|admin —
+# admin = the /key/* operations (success
+# and failure) and master-key rejections
+# on those routes),
+# status (coarse 2xx|4xx|5xx; a stream
+# that ends with a mid-stream error frame
+# or stall is counted 5xx, never 2xx)
+# janus_request_duration_seconds Timer labels: face (count/sum/max form)
+# janus_tokens_in_total / _out_total / janus_cost_micro_usd_total Counter (unlabeled;
+# cost is exact integer micro-USD)
+# janus_key_requests_total / janus_key_tokens_in_total / _out_total /
+# janus_key_cost_micro_usd_total Counter label: key_id (per-key usage)
+# janus_upstream_healthy Gauge labels: provider x base_url (1 = dispatch-eligible;
+# base_url is the coarse per-instance identity — two
+# entries for one provider under different aliases
+# stay distinguishable by name and base URL)
+# janus_upstream_breaker_state Gauge labels: provider x base_url (0=CLOSED 1=HALF_OPEN 2=OPEN)
+# TIER-1 GUARANTEE: labels are face / coarse status /
+# key_id / provider ONLY (plus the per-instance base_url on the upstream gauges) —
+# never prompt text, response text, model alias or request id, in any series or HELP/
+# TYPE line. Labeling by key_id is a deliberate divergence from team/user-labeled
+# gateways: the key model has no team concept, and KeyRecord.id is an opaque,
+# non-secret, operator-created id drawn from a finite set (bounded cardinality). Streams that exhaust without a terminal usage chunk
+# record a ZERO tokens/cost entry (Janus never forces stream_options.include_usage —
+# the byte-golden wire discipline);
+# aborted streams record nothing. Streams that end with a mid-stream error frame or
+# stall record their request as 5xx (not 200), so a provider dying mid-stream never
+# inflates the 2xx error-free rate. No [janus.metrics] section / kill-switch: Tier-1 is
+# always on by design; docs/governance.md is the operator-facing reference.
+
+# Store — the store backend — the [janus.store] section is OPTIONAL
+# (absent ⇒ in-memory, the default ungoverned shape behavior byte-identical, zero extra config).
+#
+# [janus.store]
+# type = "memory" # "memory" (default) | "postgres"
+# jdbc-url-env = "JANUS_DB_URL" # env var NAME holding the full JDBC URL — NEVER the
+# # URL in this file (env-var-name pattern); credentials may be
+# # embedded in the URL or split into the two refs below
+# user-env = "JANUS_DB_USER" # optional: env var name holding the pool username
+# password-env = "JANUS_DB_PASS" # optional: env var name holding the pool password
+# max-pool-size = 10 # HikariCP pool size (default 10)
+# retention = 1000 # per-key call-ring retention for BOTH impls (default 1000)
+#
+# FAIL FAST: type = "postgres" with an unresolvable env var, or a database that cannot
+# be reached at boot, refuses the node to start (a node silently falling back to
+# memory in a multi-node deployment would violate read-your-writes — documents
+# this choice). Unknown type values and postgres-without-jdbc-url-env are rejected at
+# config binding; so is [janus.limits] window = "sliding" combined with this section
+# (Postgres mode is fixed-window only — the fix-2 decision, documented in
+# docs/clustering.md).
+#
+# Multi-node — with Postgres, two nodes share keys, rate-limit counters,
+# budgets and spend through the ONE shared database (atomic upserts — exact
+# cross-node limits and budgets, no gossip/leases); a client-aborted stream (no
+# terminal usage chunk) records no CallRecord (the m2 decision — record-nothing,
+# matching the metrics side). Multi-node deployment,
+# CAP tradeoffs and failure semantics: docs/clustering.md.
+#
+# call records (the calls table): one Tier-1 record per request on the settled
+# (finalize / stream terminal chunk) and failure (upstream / client / limit /
+# internal) paths, status mapped from the error kinds; auth-off requests record with
+# a null key. Aborted streams (client disconnect before exhaustion, no terminal
+# usage chunk) record NOTHING, like the metrics side — there is no canceled
+# CallStatus yet; whether one joins the closed set is a deliberate product decision.

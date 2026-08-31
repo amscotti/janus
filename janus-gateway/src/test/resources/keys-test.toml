@@ -1,0 +1,9 @@
+# [janus.keys] block binding test (ModelListBindingTest):
+# master-key-env names the environment variable holding the admin master key —
+# NEVER the key value itself (env-reference pattern, ).
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[janus.keys]
+master-key-env = "MY_MASTER_KEY_ENV"

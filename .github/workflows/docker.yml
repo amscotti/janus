@@ -1,0 +1,242 @@
+# =============================================================================
+# Docker image workflow.
+#
+# Two jobs:
+#   build  — on push to main + v* tags: build the multi-stage image (builder:
+#            GraalVM CE 25.0.2 → runtime: distroless base:nonroot) on the amd64
+#            runner with BuildKit cache and boot-smoke it (/health). Never pushes.
+#   publish — on v* tags ONLY: build linux/amd64 (ubuntu-latest) and
+#            linux/arm64 (ubuntu-24.04-arm — a NATIVE arm64 runner, no QEMU)
+#            and push both to GHCR, then merge them into one multi-arch
+#            manifest (:<version>, :<major>.<minor>, :latest). Each arch
+#            compiles natively on its own runner, so the QEMU 5-15x penalty
+#            never applies. NOTE: ubuntu-24.04-arm hosted runners are available
+#            to public repositories; on private repos the arm64 job stays
+#            queued until the plan provides them.
+#
+# scaffold precedent: like the native CI job, this workflow cannot actually run
+# until pushed to GitHub — the native startup target bullet "CI pipeline green end-to-end"
+# records the same "needs push" caveat.
+# =============================================================================
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+# build: read-only. publish needs packages:write to push to GHCR.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build image (linux/amd64, no publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Gradle distribution digest (wrapper integrity build-arg)
+        # the image build runs ./gradlew INSIDE the builder stage, which
+        # downloads the distribution there — fetch Gradle's official
+        # gradle-<v>-bin.zip.sha256 and hand it to deploy/Dockerfile as a
+        # build-arg so the in-build wrapper download is verified too.
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          # NOT `echo "...=$(script)"`: a failing command substitution inside echo's
+          # argument list does not trip bash -e — the step would stay green with an
+          # empty SHA and the Dockerfile's -n guard would silently skip pinning (the
+          # exact degradation pin-gradle-digest.sh's exit-1 contract forbids). An
+          # assignment failure does fail the step.
+          sha="$(scripts/pin-gradle-digest.sh --print)"
+          echo "GRADLE_DIST_SHA256=$sha" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0 (digest-pinned)
+
+      - name: Build image (BuildKit cache)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2 (digest-pinned)
+        with:
+          context: .
+          file: deploy/Dockerfile
+          # No registry push: the tag is local to the job (and the smoke step).
+          tags: janus:ci-${{ github.sha }}
+          build-args: |
+            GRADLE_DIST_SHA256=${{ env.GRADLE_DIST_SHA256 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          push: false
+          load: true # with push:false the image is NOT loaded into the local
+                     # daemon unless load:true — the smoke step's `docker run`
+                     # needs it present.
+
+      # Container smoke: boot the image against the production runtime shape
+      # (MICRONAUT_CONFIG_FILES mounted config + tmpfs /tmp + read-only) so the
+      # /health gate exercises the same contract compose/k8s rely on. The
+      # harness (scripts/smoke/docker/) owns the full admin/chat/postgres
+      # smoke on arm64 hosts; this step is the amd64 boot gate.
+      - name: Container smoke (/health)
+        run: |
+          docker run -d --name janus-smoke -p 8080:8080 \
+            --read-only --tmpfs /tmp \
+            -e MICRONAUT_CONFIG_FILES=/etc/janus/config.toml \
+            -e JANUS_MASTER_KEY=ci-health-smoke \
+            -v "$(pwd)/deploy/config/config.memory.toml:/etc/janus/config.toml:ro" \
+            janus:ci-${{ github.sha }}
+          trap 'docker rm -f janus-smoke >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "container /health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container /health check failed"
+          docker logs janus-smoke 2>&1 | tail -40
+          exit 1
+
+  publish-amd64:
+    name: Publish linux/amd64 to GHCR (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Gradle distribution digest (wrapper integrity build-arg)
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          sha="$(scripts/pin-gradle-digest.sh --print)"
+          echo "GRADLE_DIST_SHA256=$sha" >> "$GITHUB_ENV"
+
+      # GHCR requires lowercase repository names; janus already is, but this
+      # stays correct if the repo is ever renamed with capitals.
+      - name: Image name (lowercased repo)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0 (digest-pinned)
+
+      - name: Log in to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0 (digest-pinned)
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta (tags + labels, amd64-suffixed)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 (digest-pinned)
+        with:
+          images: ${{ env.IMAGE }}
+          # v0.1.0 → :0.1.0-amd64, :0.1-amd64, :latest-amd64 — the arch-suffixed
+          # tags are merged into the plain tags by publish-manifest below.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=latest
+          flavor: suffix=-amd64,onlatest=true
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2 (digest-pinned)
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GRADLE_DIST_SHA256=${{ env.GRADLE_DIST_SHA256 }}
+          cache-from: type=gha
+          push: true
+
+  publish-arm64:
+    name: Publish linux/arm64 to GHCR (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04-arm # native arm64 — no QEMU emulation penalty
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Gradle distribution digest (wrapper integrity build-arg)
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          sha="$(scripts/pin-gradle-digest.sh --print)"
+          echo "GRADLE_DIST_SHA256=$sha" >> "$GITHUB_ENV"
+
+      - name: Image name (lowercased repo)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0 (digest-pinned)
+
+      - name: Log in to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0 (digest-pinned)
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta (tags + labels, arm64-suffixed)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 (digest-pinned)
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=latest
+          flavor: suffix=-arm64,onlatest=true
+
+      - name: Build and push (linux/arm64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2 (digest-pinned)
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GRADLE_DIST_SHA256=${{ env.GRADLE_DIST_SHA256 }}
+          cache-from: type=gha
+          push: true
+
+  publish-manifest:
+    name: Merge multi-arch manifest (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [publish-amd64, publish-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0 (digest-pinned)
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge arch manifests into multi-arch tags
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          VERSION="${GITHUB_REF_NAME#v}"
+          MAJORMINOR="${VERSION%.*}"
+          for tag in "$VERSION" "$MAJORMINOR" latest; do
+            docker buildx imagetools create               -t "$IMAGE:$tag"               "$IMAGE:$tag-amd64"               "$IMAGE:$tag-arm64"
+          done
+          docker buildx imagetools inspect "$IMAGE:$VERSION"

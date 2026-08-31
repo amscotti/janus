@@ -1,0 +1,33 @@
+# packaging benchmark config (scripts/bench/ only; root config.toml untouched).
+#
+# The the default ungoverned shape UNGOVERNED shape, so the throughput numbers are proxy-pure:
+# - NO [janus.keys] section => auth OFF (no master key resolved)
+# - NO [janus.store] section => in-memory store default, zero store I/O
+# - NO [janus.pricing] / [janus.limits]=> zero-rate metering (noop-level governance)
+# One alias `deepseek-v4-flash` -> the golden fake upstream (free-port substituted by the
+# runner). The postgres path is deliberately EXCLUDED from throughput benches — it is
+# DB-bound, not proxy-bound, and already characterized by the gate (its native
+# postgres leg is re-run per tuning batch by run_native_regression.sh).
+#
+# Boot forms (the runner branches on leg — the asymmetry):
+# JVM leg: MICRONAUT_SERVER_PORT=…./gradlew :janus-cli:run --no-daemon \
+# --args='--config <ABS>/scripts/bench/config.bench.toml'
+# (JanusCli parses --config -> micronaut.config.files; ABSOLUTE path
+# required — Gradle `run` executes from the module dir, lesson)
+# Native leg: MICRONAUT_CONFIG_FILES=<ABS>/…/config.bench.toml
+# <native>/janus (the image's mainClass is JanusApplication, NOT the CLI)
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18095 # free-port substituted by the runner when busy
+
+[endpoints.all]
+enabled = true
+sensitive = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:19999" # the golden fake (copy), free-port substituted

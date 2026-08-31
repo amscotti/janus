@@ -1,0 +1,13 @@
+# W24 routing gate — real-upstream legs placeholder (parity with W08/W15).
+#
+# stage 3's DoD is about MECHANISM (candidate lists, failover, breakers) — it does not
+# require real providers the way stage 1/2 did; the fake legs byte-shaped from the
+# committed W07/W14 corpus carry the gate. No real keys are expected at gate time; a
+# real-upstream sanity pass is a separate work item.
+# This file is the parity placeholder only — the runner never boots it.
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

@@ -1,0 +1,43 @@
+# the store layer gate — gate 1 regression config (scripts/smoke/store/ only): the
+# the default ungoverned shape byte-identical boot. NO [janus.store] section (⇒ the in-memory default —
+# zero extra config) and NO [janus.keys] (⇒ auth off — no JANUS_MASTER_KEY resolved
+# by the runner). Same alias/pricing/limits shape as config.nodeA.toml so the
+# keyless DoD-1 slice (health, both faces, /v1/models once, unlabeled /metrics) runs
+# against the same build; the full trimmed governance gate slice re-runs separately
+# (run.sh --skip-native — its RESULTS.md is backed up and restored).
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18080 # env-overridable by the runner
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9877" # the golden fake, pattern
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.14
+output-per-1k = 0.28
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed" # the default ungoverned shape default
+
+# DoD-1 zero-config leg: this boot deliberately runs auth-off (the hardened posture —
+# an explicit declaration, never a silent keyless default).
+[janus.keys]
+auth = "off"

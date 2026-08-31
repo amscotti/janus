@@ -1,0 +1,125 @@
+# =============================================================================
+# Janus — optional Postgres. StatefulSet + headless Service (StatefulSet
+# identity) + ClusterIP (client traffic) + PVC for the shared store. OPTIONAL
+# and dev/demo-oriented: **a managed Postgres (RDS/Cloud SQL/
+# Crunchy/CloudNativePG) is the production recommendation** (backup, HA,
+# failover are the operator's — docs/ops.md). Janus does NOT manage the DB
+# lifecycle: SchemaMigration auto-applies db/migration/V*.sql (idempotent
+# CREATE TABLE IF NOT EXISTS, transaction-wrapped) at PostgresCallStore
+# construction — no init-container/migration Job needed; just Postgres reachable
+# before Janus boots (the deployment's envFrom JANUS_DB_URL must point here).
+#
+# TWO services, two jobs:
+#   - janus-postgres-headless (clusterIP: None) is the StatefulSet's
+#     `serviceName`: K8s publishes the stable per-pod DNS records
+#     (janus-postgres-0.janus-postgres-headless.<ns>.svc.cluster.local) against
+#     the headless service ONLY — a ClusterIP serviceName never gets pod
+#     records, so pointing `serviceName` at it silently breaks per-pod DNS
+#     (latent the moment replicas > 1).
+#   - janus-postgres (ClusterIP) is the client address — JANUS_DB_URL points
+#     here (stable virtual IP, no per-pod naming needed).
+#
+# Apply this file ONLY when the Deployment's config.toml has
+# [janus.store] type = "postgres" (configmap.yaml ships that section commented).
+# =============================================================================
+# StatefulSet identity: per-pod DNS janus-postgres-0.janus-postgres-headless.
+# <ns>.svc.cluster.local (stable across pod rescheduling) — NOT for clients.
+apiVersion: v1
+kind: Service
+metadata:
+  name: janus-postgres-headless
+  labels:
+    app: janus-postgres
+spec:
+  clusterIP: None
+  selector:
+    app: janus-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+# Client traffic: the address JANUS_DB_URL points at (stable ClusterIP VIP).
+apiVersion: v1
+kind: Service
+metadata:
+  name: janus-postgres
+  labels:
+    app: janus-postgres
+spec:
+  type: ClusterIP
+  selector:
+    app: janus-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: janus-postgres
+  labels:
+    app: janus-postgres
+spec:
+  # MUST be the headless service (clusterIP: None above): that is where K8s
+  # anchors the StatefulSet's per-pod DNS records. The janus-postgres
+  # ClusterIP stays the client-facing address.
+  serviceName: janus-postgres-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: janus-postgres
+  template:
+    metadata:
+      labels:
+        app: janus-postgres
+    spec:
+      containers:
+        - name: postgres
+          # Digest-pinned: postgres:16-alpine at its index digest (same pin as
+          # deploy/docker-compose*.yml — no floating-tag drift).
+          image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            # Dev/demo credentials matching the Testcontainers convention and
+            # the janus-secrets placeholders. Production: managed Postgres + a
+            # Secret-managed password, never these literals.
+            - name: POSTGRES_USER
+              value: janus
+            - name: POSTGRES_PASSWORD
+              value: janus
+            - name: POSTGRES_DB
+              value: janus
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "janus", "-d", "janus"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "janus", "-d", "janus"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

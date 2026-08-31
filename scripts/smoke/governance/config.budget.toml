@@ -1,0 +1,48 @@
+# governance gate — budget-drill config (scripts/smoke/governance/ only). Same shape as
+# config.fake.toml (one alias, auth ON via JANUS_MASTER_KEY, DeepSeek pricing) with
+# the budget legs' knobs: [janus.limits] soft-cap-fraction = 0.8 (the default; the
+# drill keys carry deterministic per-key budget_usd caps — see drill_budget.py's
+# header for the exact-cap / soft-tier math against the golden 14/12 usage).
+# ledger-retention is the default (1000 ring entries per key).
+#
+# The runner substitutes the fake's base-url port: the hard-cap / exact-cap /
+# concurrency / revocation legs run against the GOLDEN fake (usage 14/12 → 5320
+# micro-USD per request); the soft-cap + notifier-dedup leg runs against a SECOND
+# fake instance pinned with --usage-override '{"prompt_tokens":1,"completion_tokens":1}'
+# so the key stays in the soft zone for multiple requests within one 60s window.
+# See config.fake.toml for the boot forms.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9877"
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.14
+output-per-1k = 0.28
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed"
+soft-cap-fraction = 0.8

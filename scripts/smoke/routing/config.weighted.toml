@@ -1,0 +1,54 @@
+# W24 routing gate — weighted-strategy drill config (scripts/smoke/routing/ only).
+#
+# Live-exercises the W13 provider-BLOCK form + a second non-default strategy :
+# backend 2 is declared via `[janus.providers.fake2]` (wire-format = "openai-compatible"
+# + block base-url), and the model-list entry for it OMITS base-url so the block-default
+# merge is exercised (ModelListFactory merges the block's base-url under the entry).
+# The entry's provider name is "fake2" (unknown to the ServiceLoader) → the W13
+# wire-format fallback selects the OpenAiCompatibleAdapter family; the resulting
+# backend's name is the adapter's, "openai-compatible" (ProviderAdapterChatBackend.name
+# = adapter.name), so the weights are keyed by THAT name, not "fake2" (harness
+# deviation from the plan's draft key — recorded in RESULTS.md). weights 1:3 → 20
+# requests: fake-2 (openai-compatible, p=0.75) must serve ≥ 8.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+base-url = "http://127.0.0.1:9877"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "fake2"            # W13 block-form backend: base-url comes from the block
+
+[janus.providers.fake2]
+wire-format = "openai-compatible"
+base-url = "http://127.0.0.1:9878"
+
+[janus.router]
+strategy = "weighted"
+weights = { deepseek = 1, fake2 = 3 }  # C13 naming: block-form backends are keyed by the provider key
+max-retries = 0
+backoff-base-ms = 100
+backoff-max-ms = 500
+jitter = 0
+allowed-fails = 3
+cooldown-time = 5
+breaker-failure-threshold = 5
+breaker-window-seconds = 60
+breaker-cooldown-seconds = 5
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

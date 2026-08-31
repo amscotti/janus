@@ -1,0 +1,22 @@
+# =============================================================================
+# Janus — Service. ClusterIP, SINGLE port 80 → 8080.
+#
+# Janus serves data + admin API on ONE listener (8080) — no data/admin port
+# split, no clustering port (multi-node = shared Postgres). The admin routes
+# (/key/*) are master-key-authed; the NetworkPolicy (networkpolicy.yaml)
+# restricts ingress to the namespace.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: janus
+  labels:
+    app: janus
+spec:
+  type: ClusterIP
+  selector:
+    app: janus
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

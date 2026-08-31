@@ -1,0 +1,235 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: checkout, the Gradle/BuildKit caches and artifact upload all
+# work with read-only contents; nothing here writes the repo.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test (GraalVM 25)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Pin Gradle distribution digest (wrapper integrity)
+        # gradle-wrapper.properties ships no hardcoded distributionSha256Sum
+        # (its value must come from Gradle's official gradle-<v>-bin.zip.sha256,
+        # never guessed — a wrong digest fails every fresh download). Fetch it and
+        # pin it into the local wrapper properties BEFORE the first ./gradlew run,
+        # so a tampered/corrupted distribution fails fast here instead of building
+        # with it. Failure to pin = failure of the step (never silently skip).
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          scripts/pin-gradle-digest.sh
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.4 (digest-pinned)
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'gradle'
+          native-image-job-reports: 'true'
+
+      - name: Grant wrapper permissions
+        run: chmod +x gradlew
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon --stacktrace
+
+      - name: Verify deploy/docs/smoke artifacts parse
+        # the build gate parses no YAML/bash/Python, so a corruption of the
+        # deploy/docs/smoke layer (e.g. flattened indentation) can pass `build`
+        # while every compose file, workflow and harness is broken. Parse every
+        # YAML, bash -n every shell script, py_compile every harness Python, and
+        # validate the compose file — a regression here fails the PR.
+        # `test -x` is the belt-and-suspenders fresh-clone gate — a future
+        # untracked/missing guard fails this step loudly instead of with a
+        # cryptic "No such file or directory".
+        # VERIFY_ARTIFACTS_REQUIRE_DOCKER=1: docker IS available on the runner, so
+        # the compose-config leg is mandatory — it must not silently degrade to a
+        # WARN and let a broken deploy/docker-compose.yml pass the gate.
+        # VERIFY_ARTIFACTS_REQUIRE_YAML=1: same contract for the PyYAML leg — the
+        # runner must fail (not skip) YAML validation if PyYAML goes missing.
+        env:
+          VERIFY_ARTIFACTS_REQUIRE_DOCKER: '1'
+          VERIFY_ARTIFACTS_REQUIRE_YAML: '1'
+        run: |
+          test -x scripts/verify-artifacts.sh
+          scripts/verify-artifacts.sh
+
+      - name: Install kubeconform (k8s schema validation)
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Two-node Postgres integration (shared keys/limits/budgets)
+        # The default test task runs offline and skips Testcontainers classes on
+        # cold runners; this leg pre-pulls the image and runs the dedicated
+        # twoNodeTest task so the cross-node contract is exercised in CI.
+        run: |
+          docker pull postgres:16-alpine
+          ./gradlew :janus-gateway:twoNodeTest --no-daemon --stacktrace
+
+      - name: Test verify-artifacts guard (fixture-based)
+        # the guard is a shell script the Java gate cannot parse; this runs
+        # its own fixture suite (tracked-guard gate + one broken .sh/.py/.yml/
+        # corruption fixture per leg → guard exits 1; §(d) compose-required
+        # contract and missing-PyYAML/python3 degradation; clean tree → 0) so a
+        # subshell or no-op-leg regression fails CI instead of shipping.
+        run: scripts/test_verify_artifacts.sh
+
+      - name: Coverage report (aggregate JaCoCo)
+        # Report-only: no % gate. HTML + XML under build/reports/jacoco/aggregate/.
+        run: ./gradlew codeCoverageReport --no-daemon --stacktrace
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (digest-pinned)
+        with:
+          name: jacoco-coverage
+          path: |
+            build/reports/jacoco/aggregate/
+            */build/reports/jacoco/test/
+          if-no-files-found: warn
+
+      # JVM fat jar (Shadow) — produced by assemble/shadowJar during `build` when
+      # the gateway module runs; re-run explicitly so the path is guaranteed.
+      - name: JVM fat jar (shadowJar)
+        run: ./gradlew :janus-gateway:shadowJar --no-daemon --stacktrace
+
+      - name: Smoke JVM fat jar (/health)
+        env:
+          # Packaged application.toml has no [janus.keys]; default auth=on fails
+          # fast without a key. /health is unauthenticated — this value is only
+          # so the process boots.
+          JANUS_MASTER_KEY: ci-health-smoke
+        run: |
+          # janus-[0-9]*.jar is exactly the Shadow fat jar (janus-<v>.jar); the glob
+          # must not also catch janus-gateway-<v>.jar or the -runner jar.
+          JAR=$(ls janus-gateway/build/libs/janus-[0-9]*.jar | head -1)
+          test -f "$JAR"
+          echo "using $JAR"
+          java -jar "$JAR" &
+          PID=$!
+          # wait after kill: a slow shutdown can otherwise leave 8080 occupied when
+          # the next smoke step binds it.
+          trap 'kill $PID 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "JVM fat jar health check failed"
+          exit 1
+
+      - name: Upload JVM fat jar
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (digest-pinned)
+        with:
+          name: janus-jvm-jar
+          # Only the fat jar the smoke step exercised (janus-<v>.jar) — not the
+          # plain janus-gateway-<v>.jar or the -runner jar that also live in libs/.
+          path: janus-gateway/build/libs/janus-[0-9]*.jar
+          if-no-files-found: error
+
+      - name: Native compile
+        # Native-image compilation is memory-hungry; pin the Gradle JVM the same
+        # way deploy/Dockerfile does (NATIVE_IMAGE_MEM build-arg, default 6 GB)
+        # so a memory-starved runner cannot fail the build for environmental
+        # reasons.
+        env:
+          NATIVE_IMAGE_MEM: '6'
+        run: ./gradlew :janus-gateway:nativeCompile --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx${NATIVE_IMAGE_MEM}g -Dfile.encoding=UTF-8"
+
+      - name: Smoke native binary (/health)
+        env:
+          JANUS_MASTER_KEY: ci-health-smoke
+        run: |
+          BIN=janus-gateway/build/native/nativeCompile/janus
+          test -x "$BIN"
+          "$BIN" &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "health check failed"
+          exit 1
+
+      - name: Smoke native binary (codec path — decode + encode against fake upstream)
+        # C17: the /health-only gate never exercised the JSON codec path, so a regression
+        # in request-decode / response-encode shipped with green CI. This step boots the
+        # native binary against the committed golden fake upstream and drives a non-stream
+        # + a stream chat completion — fully offline, no provider keys.
+        run: scripts/bench/native_codec_smoke.sh
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (digest-pinned)
+        with:
+          name: janus-native-${{ runner.os }}
+          path: janus-gateway/build/native/nativeCompile/janus
+          if-no-files-found: error
+
+  # Live provider ITs: same Java/JUnit stack as build, no Deno.
+  # - Always scheduled on main/PR so the task stays green.
+  # - JANUS_LIVE=1 is always set below, so the class is always enabled; without
+  #   provider secrets every method is SKIPPED (per-key Assumptions, still green).
+  # - With repo secrets: set the provider keys to exercise real upstreams.
+  live-provider:
+    name: Live provider (env-gated)
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Pin Gradle distribution digest (wrapper integrity)
+        # Same contract as the build job: verify the wrapper download or fail.
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          scripts/pin-gradle-digest.sh
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.4 (digest-pinned)
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'gradle'
+
+      - name: Grant wrapper permissions
+        run: chmod +x gradlew
+
+      - name: Live provider tests
+        env:
+          # Class opt-in. Without provider secrets every method SKIPPED (still green).
+          # Configure repo secrets DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY /
+          # XAI_API_KEY / OPENROUTER_API_KEY (and optional JANUS_MASTER_KEY) to exercise live.
+          JANUS_LIVE: '1'
+          JANUS_MASTER_KEY: ${{ secrets.JANUS_MASTER_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: ./gradlew :janus-gateway:liveTest --no-daemon --stacktrace

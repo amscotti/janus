@@ -1,0 +1,234 @@
+// janus-gateway: Micronaut HTTP layer — dual ingress (OpenAI + Anthropic faces), SSE, health.
+import io.micronaut.gradle.MicronautRuntime
+import io.micronaut.gradle.MicronautTestRuntime
+
+plugins {
+ id 'io.micronaut.application'
+ id 'com.gradleup.shadow'
+}
+
+micronaut {
+ version = providers.gradleProperty('micronaut.version').get()
+ runtime = MicronautRuntime.NETTY
+ testRuntime = MicronautTestRuntime.JUNIT_5
+ processing {
+ incremental(false)
+ annotations('io.amscotti.janus.*')
+ }
+}
+
+application {
+ mainClass = 'io.amscotti.janus.JanusApplication'
+}
+
+// -----------------------------------------------------------------------------
+// JVM fat JAR (Shadow) — single-file alternative to the native binary.
+//
+//   ./gradlew :janus-gateway:shadowJar
+//   java -jar janus-gateway/build/libs/janus-<version>.jar
+//   MICRONAUT_CONFIG_FILES=/path/to/config.toml java -jar …/janus-<version>.jar
+//
+// Same main class as native/Docker (JanusApplication). Prefer the CLI module
+// (`janus-cli --config`) for local JVM runs that need the --config flag parser;
+// production JVM deploys use MICRONAUT_CONFIG_FILES like the native image.
+// -----------------------------------------------------------------------------
+tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+ archiveBaseName.set('janus')
+ archiveClassifier.set('') // janus-1.0.0.jar (not janus-1.0.0-all.jar)
+ mergeServiceFiles()
+ // Micronaut bean definitions live under META-INF/micronaut/ — merge across
+ // dependency jars so DI still sees gateway + platform definitions.
+ mergeServiceFiles {
+  path = 'META-INF/micronaut'
+ }
+ manifest {
+  attributes('Main-Class': application.mainClass.get())
+ }
+}
+
+// Publish the fat jar with assemble so CI/build always has a JVM artifact.
+tasks.named('assemble') {
+ dependsOn tasks.named('shadowJar')
+}
+
+// Produce a standalone executable named `janus` (not a shared library).
+// Without an explicit mainClass the GraalVM plugin can fall back to -shared.
+//
+// (historical plan item) — native production tuning, measure-first:
+// -O2 explicit optimization-level pin (the packaging TODO names it;
+// recorded: it was ALREADY the GraalVM effective default, so
+// the flag is an explicit pin, not a behavior change)
+// -R:MaxHeapSize=256m bounded runtime heap (batch 2) — sized from the step-2
+// measured RSS (~75 MiB memory shape / postgres shape): the
+// native-image default is a large fraction of physical RAM,
+// and an LLM proxy with an in-memory key/spend store is happy
+// with a small bounded heap (the dominant RSS knob). 256m =
+// ~3.4x headroom over measured RSS; the postgres leg
+// (drill_native.py) re-runs green under it (no store-class
+// pruning, no HikariCP JDK-proxy breakage — C1 lesson).
+// GC stays the default; no stack/locale flags (no measurement justified them).
+// Optional compile-JVM heap cap for the native-image process itself
+// (-PnativeImageMem=6 => -J-Xmx6g). The plugin forks native-image as a
+// separate process, so -Dorg.gradle.jvmargs caps only the Gradle daemon
+// JVM, never the compiler heap — constrained builders pass this property
+// (deploy/Dockerfile's NATIVE_IMAGE_MEM build-arg does exactly that).
+// Unset (local/CI default) leaves native-image at its own default heap.
+def nativeImageMemGb = findProperty('nativeImageMem')
+
+graalvmNative {
+ binaries {
+ main {
+ imageName.set('janus')
+ mainClass.set('io.amscotti.janus.JanusApplication')
+ sharedLibrary.set(false)
+ buildArgs.add('-O2')
+ buildArgs.add('-R:MaxHeapSize=256m')
+ if (nativeImageMemGb != null) {
+ buildArgs.add("-J-Xmx${nativeImageMemGb}g")
+ }
+ }
+ }
+}
+
+dependencies {
+ annotationProcessor 'io.micronaut:micronaut-inject-java'
+ testAnnotationProcessor 'io.micronaut:micronaut-inject-java'
+
+ implementation project(':janus-core')
+ implementation project(':janus-provider')
+ implementation project(':janus-router')
+ implementation project(':janus-store')
+
+ implementation 'io.micronaut:micronaut-http-server-netty'
+ implementation 'io.micronaut:micronaut-management'
+ // (historical plan item): Prometheus metrics — the ONLY module allowed Micrometer
+ // deps (PLAN §4 boundary: core/store/router stay Micrometer-free). Versions come
+ // from the micronaut-platform BOM via micronaut.version (same mechanism as the
+ // micronaut-management dep); the Prometheus registry in the BOM's Micrometer
+ // 1.13+ lives in io.micrometer.prometheusmetrics (not the pre-1.13 package).
+ implementation 'io.micronaut.micrometer:micronaut-micrometer-core'
+ implementation 'io.micronaut.micrometer:micronaut-micrometer-registry-prometheus'
+ // TOML config files (application.toml, --config path)
+ implementation 'io.micronaut.toml:micronaut-toml'
+ // JSON (Micronaut 5 / Jackson 3); also satisfies legacy com.fasterxml annotations on HTTP types
+ implementation 'io.micronaut:micronaut-jackson-databind'
+
+ runtimeOnly 'ch.qos.logback:logback-classic'
+
+ testImplementation 'io.micronaut.test:micronaut-test-junit5'
+ testImplementation 'io.micronaut:micronaut-http-client'
+ // log-assertion tests (NotifierTest/MetricsFactoryTest attach a recording logback
+ // appender to assert failure logs never echo secrets/URLs and that boot warnings fire) —
+ // same artifact as the runtimeOnly binder above, exposed at test compile time only.
+ testImplementation 'ch.qos.logback:logback-classic'
+ // factory/boot tests: the postgres branch of CallStoreFactory against a real
+ // Postgres (Testcontainers, Docker-gated — same versions as the janus-store parity
+ // suite; the factory's memory branch needs no Docker).
+ testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
+ testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+}
+
+// TwoNodeIntegrationTest: two PRODUCTION-wired contexts resolve the
+// [janus.store]/[janus.keys] env refs from the REAL environment (the env-var-name pattern —
+// never values in properties/TOML), so the test task pins them; the shared
+// Testcontainers Postgres binds host port 15432 to match (TwoNodeIntegrationTest).
+// The env vars are inert for every other gateway suite (their contexts use the
+// @Replaces test factories, which read janus.test.* properties, not the env).
+//
+// The class runs inside the default test task whenever Docker is available. Its
+// skip path is deliberately wider than "daemon absent" (busy host port 15432, a
+// stale leaked container — cleared by the fixed-name rm -f pre-step, or a missing
+// postgres:16-alpine image) so ./gradlew build NEVER fails on a Docker-present-but-
+// unusable environment; under this (default) gate the image-presence abort is armed
+// via janus.test.offline=true — the default build never pulls images ("CI never
+// touches the network"). The dedicated twoNodeTest task sets janus.test.offline=false
+// so an explicit run may still pull a missing image.
+test {
+ // Live provider ITs never run under the default test/build gate (network + cost).
+ // Mirror janus-core's captureFixtures pattern: @Tag("live") + excludeTags here;
+ // the only runner is the dedicated liveTest task below.
+ useJUnitPlatform {
+  excludeTags 'live'
+ }
+ systemProperty 'janus.test.offline', 'true' // default gate: skip, never pull, a missing postgres:16-alpine
+ // TwoNodeIntegrationTest: two PRODUCTION-wired contexts resolve the
+ // [janus.store]/[janus.keys] env refs from the REAL environment (the env-var-name pattern —
+ // never values in properties/TOML), so the test task pins them; the shared
+ // Testcontainers Postgres binds host port 15432 to match (TwoNodeIntegrationTest).
+ // The env vars are inert for every other gateway suite (their contexts use the
+ // @Replaces test factories, which read janus.test.* properties, not the env).
+ environment 'JANUS_MASTER_KEY', 'w42-twonode-test-master-key'
+ environment 'JANUS_DB_URL', 'jdbc:postgresql://127.0.0.1:15432/janus'
+ environment 'JANUS_DB_USER', 'janus'
+ environment 'JANUS_DB_PASS', 'janus'
+ // (close): Ryuk cannot start inside the lima Docker VM (see
+ // janus-store/build.gradle) — testcontainers 1.21.x reads TESTCONTAINERS_RYUK_DISABLED.
+ environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+}
+
+// Env-gated live provider suite: real Janus (production DI) → real upstreams.
+// - Not part of ./gradlew build / test (tag excluded above).
+// - Requires JANUS_LIVE=1 (second opt-in so local keys in the shell do not spend
+// money by accident).
+// - Each case also skips when its provider key env is unset (JUnit SKIPPED).
+// - Provider keys (DEEPSEEK_API_KEY, …) inherit from the process environment /
+// CI secrets; never hard-code values here.
+//
+// JANUS_LIVE=1 DEEPSEEK_API_KEY=… ./gradlew :janus-gateway:liveTest
+// Ad-hoc focus on multi-node Postgres (also part of the default test task when Docker
+// is available). Fake golden upstream only — no real provider spend.
+tasks.register('twoNodeTest', Test) {
+ description = 'Two-node Postgres integration (Docker-gated; fake upstream).'
+ group = 'verification'
+ testClassesDirs = sourceSets.test.output.classesDirs
+ classpath = sourceSets.test.runtimeClasspath
+ filter {
+  includeTestsMatching 'io.amscotti.janus.gateway.TwoNodeIntegrationTest'
+ }
+ // Explicit run: may pull a missing postgres:16-alpine image (the offline image abort
+ // is disarmed — the default gate's "CI never touches the network" rule does not bind here).
+ systemProperty 'janus.test.offline', 'false'
+ environment 'JANUS_MASTER_KEY', 'w42-twonode-test-master-key'
+ environment 'JANUS_DB_URL', 'jdbc:postgresql://127.0.0.1:15432/janus'
+ environment 'JANUS_DB_USER', 'janus'
+ environment 'JANUS_DB_PASS', 'janus'
+ environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+ useJUnitPlatform()
+ testLogging {
+  events 'passed', 'skipped', 'failed'
+  exceptionFormat = 'full'
+ }
+}
+
+tasks.register('liveTest', Test) {
+ description = 'Env-gated live provider ITs (network; skip when keys / JANUS_LIVE absent).'
+ group = 'verification'
+ testClassesDirs = sourceSets.test.output.classesDirs
+ classpath = sourceSets.test.runtimeClasspath
+ // Always re-run: results depend on external APIs + env keys, not only inputs.
+ outputs.upToDateWhen { false }
+ useJUnitPlatform {
+ includeTags 'live'
+ }
+ // Inherit provider keys from the shell; supply a non-secret master key default
+ // so auth is ON without forcing operators to invent one for local runs.
+ def master = System.getenv('JANUS_MASTER_KEY')
+ environment 'JANUS_MASTER_KEY', (master != null && !master.isBlank()) ? master : 'live-test-master-key-not-for-prod'
+ // Opt-in flag: empty unless the operator/CI sets JANUS_LIVE=1 (class-level gate).
+ // One level only — flagship models share this gate; missing keys still SKIP per case.
+ def live = System.getenv('JANUS_LIVE')
+ environment 'JANUS_LIVE', live != null ? live : ''
+ // Pass through known provider keys when present (explicit so Gradle doesn't
+ // scrub the child env on some runners).
+ ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'XAI_API_KEY', 'OPENROUTER_API_KEY', 'META_API_KEY', 'TOGETHER_API_KEY'].each { name ->
+ def v = System.getenv(name)
+ if (v != null && !v.isBlank()) {
+ environment name, v
+ }
+ }
+ testLogging {
+  events 'passed', 'skipped', 'failed'
+  exceptionFormat = 'full'
+  showStandardStreams = true
+ }
+}

@@ -1,0 +1,4 @@
+// janus-provider: ProviderAdapter SPI + declarative provider transforms.
+dependencies {
+ api project(':janus-core')
+}

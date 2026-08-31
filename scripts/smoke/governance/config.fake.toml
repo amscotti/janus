@@ -1,0 +1,53 @@
+# governance gate — primary drill config (lives under scripts/smoke/governance/, NOT the
+# repo root; root config.toml stays the dev-facing example — zero production diff).
+#
+# Boot forms (the runner branches on leg):
+# JVM leg:./gradlew :janus-cli:run --args='--config <ABS>/scripts/smoke/governance/config.fake.toml'
+# (JanusCli parses --config → micronaut.config.files; absolute path
+# required — Gradle `run` executes from the module dir, config pinned this)
+# Native leg: JANUS_MASTER_KEY=<value> MICRONAUT_CONFIG_FILES=<ABS>/.../config.fake.toml
+# <native>/janus (the GraalVM image's mainClass is JanusApplication,
+# which does NOT parse --config)
+#
+# The governance DoD shape: ONE alias `deepseek-v4-flash` → the OpenAI-format fake upstream
+# (:9877 — free-port substituted by the runner), auth ON ([janus.keys]
+# master-key-env = "JANUS_MASTER_KEY" — the runner exports a distinctive value),
+# DeepSeek pricing (0.14 input / 0.28 output per 1K — the design 2 exact-cost table),
+# and [janus.limits] window = "fixed" (the design 1/2/3 + Review 1/2 legs' default;
+# config.sliding.toml flips the window for the sliding-variant leg). Both faces hit
+# the SAME fake: the Anthropic face is translated to the OpenAI wire format by the
+# adapter (/ cross-format), so one fake serves golden bodies to both.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9877"
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.14
+output-per-1k = 0.28
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed" # config.sliding.toml: "sliding" (token bucket)

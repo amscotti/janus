@@ -1,0 +1,17 @@
+[micronaut.application]
+name = "janus"
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+# binding fixture: the full [janus.limits] block with kebab-case scalar keys
+# (plain-section scalars normalize _ and -; pinned by
+# ModelListBindingTest.underscoreSpellingsBindForLimitsSection). Values deliberately
+# differ from the documented defaults so the test distinguishes bound values from the
+# factory's DEFAULTS.
+[janus.limits]
+window = "sliding"
+soft-cap-fraction = 0.6
+notifier-webhook-url = "http://localhost:9999/hook"
+ledger-retention = 50

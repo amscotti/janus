@@ -1,0 +1,25 @@
+{
+  "id": "msg_9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a",
+  "type": "message",
+  "role": "assistant",
+  "model": "deepseek-v4-flash",
+  "content": [
+    {
+      "type": "text",
+      "text": "checking"
+    },
+    {
+      "type": "tool_use",
+      "id": "call_1",
+      "name": "get_weather",
+      "input": {
+        "city": "Paris"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5
+  }
+}

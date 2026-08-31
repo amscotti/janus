@@ -1,0 +1,3 @@
+# Test profile: random free port so parallel suites and local servers don't clash.
+[micronaut.server]
+port = -1

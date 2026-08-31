@@ -1,0 +1,68 @@
+# =============================================================================
+# Janus — ConfigMap. Runtime config.toml + the MICRONAUT_CONFIG_FILES env
+# the native image (mainClass JanusApplication) boots with — NEVER --config
+# (lesson). NO secrets here: the config carries env-var NAMES only
+# (api-key-env / master-key-env / jdbc-url-env — the env-var-name pattern); values live
+# in the Secret. No [janus.store] section ⇒ in-memory, zero external deps; add
+# [janus.store] type = "postgres" with the env refs to switch to the shared-DB
+# shape (fail-fast: an unreachable DB REFUSES boot — the pod exits nonzero and
+# K8s restarts it until Postgres is reachable. NOTE: the Deployment wires NO
+# ordering toward the StatefulSet (no initContainer/cross-workload dependency
+# exists in k8s) — the fail-fast exit + restart loop IS the gate; see
+# postgres.yaml + deployment.yaml).
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: janus-config
+  labels:
+    app: janus
+data:
+  # Injected as an env var via envFrom configMapRef. The `config.toml` key below
+  # is skipped by envFrom (invalid env-var name — documented K8s behavior); it is
+  # mounted as a FILE by the deployment (volumeMount → /etc/janus/config.toml).
+  MICRONAUT_CONFIG_FILES: /etc/janus/config.toml
+  config.toml: |
+    [micronaut.application]
+    name = "janus"
+
+    [micronaut.server]
+    port = 8080
+
+    [endpoints.all]
+    enabled = true
+    sensitive = true
+
+    [endpoints.stop]
+    enabled = false
+
+    [endpoints.refresh]
+    enabled = false
+
+    [[janus.model-list]]
+    name = "deepseek-v4-flash"
+    provider = "openai-compatible"
+    api-key-env = "DEEPSEEK_API_KEY"
+    base-url = "https://api.deepseek.com"
+
+    [janus.keys]
+    master-key-env = "JANUS_MASTER_KEY"
+
+    [janus.pricing]
+    [[janus.pricing.models]]
+    name = "deepseek-v4-flash"
+    input-per-1k = 0.00014
+    output-per-1k = 0.00028
+    default-max-tokens = 4096
+
+    [janus.limits]
+    window = "fixed"
+
+    # Postgres-backed (managed DB recommended — see postgres.yaml):
+    # [janus.store]
+    # type = "postgres"
+    # jdbc-url-env = "JANUS_DB_URL"
+    # user-env = "JANUS_DB_USER"
+    # password-env = "JANUS_DB_PASS"
+    # max-pool-size = 10
+    # retention = 1000

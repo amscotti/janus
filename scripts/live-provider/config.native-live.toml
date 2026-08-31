@@ -1,0 +1,73 @@
+# Opt-in native-image live smoke (scripts/live-provider/run_native_live.sh).
+# Memory store, auth ON via JANUS_MASTER_KEY env. Provider secrets via env names only.
+# MICRONAUT_CONFIG_FILES=… (native image — never --config).
+
+[micronaut.application]
+name = "janus-native-live"
+
+[micronaut.server]
+port = 18090
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash-vision-exp"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[janus.providers.deepseek-anthropic]
+wire-format = "anthropic"
+base-url = "https://api.deepseek.com/anthropic"
+api-key-env = "DEEPSEEK_API_KEY"
+
+[[janus.model-list]]
+name = "claude-sonnet-5"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.00014
+output-per-1k = 0.00028
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "deepseek-v4-flash-vision-exp"
+input-per-1k = 0.00044
+output-per-1k = 0.00132
+cache-read-per-1k = 0.000014
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "claude-sonnet-5"
+input-per-1k = 0.002
+output-per-1k = 0.01
+cache-read-per-1k = 0.0002
+cache-creation-per-1k = 0.0025
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed"
+
+[janus.router]
+max-retries = 1

@@ -1,0 +1,12 @@
+// janus-cli: composition root — parses --config, boots the gateway.
+plugins {
+ id 'application'
+}
+
+application {
+ mainClass = 'io.amscotti.janus.cli.JanusCli'
+}
+
+dependencies {
+ implementation project(':janus-gateway')
+}

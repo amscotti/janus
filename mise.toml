@@ -1,0 +1,4 @@
+# Janus toolchain pin (mise). GraalVM CE 25.0.2 is both the compile JDK
+# and the native-image provider — keep in sync with gradle.properties.
+[tools]
+java = "graalvm-community-25.0.2"

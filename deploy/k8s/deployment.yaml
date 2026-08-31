@@ -1,0 +1,107 @@
+# =============================================================================
+# Janus — Deployment. A stateless Deployment, NOT a StatefulSet: Janus keeps
+# no local state (in-memory store = per-pod ephemeral by design; Postgres-backed
+# = state lives in the shared DB). Replicas 1 default (the memory-store shape is
+# single-node by nature — a second pod would NOT share keys/spend); scale to 3
+# for Postgres-backed HA (docs/ops.md, docs/clustering.md — all nodes share ONE
+# DB; no gossip, no headless service).
+#
+# Probes: Micronaut management readiness/liveness (/health/readiness +
+# /health/liveness; the aggregated /health is for humans/LB checks). Resources
+# modeled from the measured RSS (memory shape ~75 MiB max, postgres shape
+# ~86 MiB) + the embedded -R:MaxHeapSize=256m heap bound: requests 128Mi, limit
+# 512Mi (≈ 256m heap + ~86 MiB RSS + pool overhead; 1Gi is comfortable headroom
+# for busy postgres-backed nodes). Non-root (distroless nonroot = 65532) +
+# read-only rootfs: the image writes nothing locally; emptyDir /tmp covers
+# HikariCP/native temp files. Rolling update maxUnavailable: 0 (probe-gated
+# rollout; the fail-fast means a bad config fails the NEW pod, not the old);
+# terminationGracePeriodSeconds 30 + the graceful-shutdown quiet period drain in-flight SSE streams.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: janus
+  labels:
+    app: janus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: janus
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: janus
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: janus
+          # Released images: ghcr.io/amscotti/janus:<version> (multi-arch
+          # linux/amd64 + linux/arm64, published by the Docker workflow on
+          # v* tags); janus:dev is the local-build/compose/harness tag.
+          # IfNotPresent + pre-pull/mirror keeps air-gapped clusters honest.
+          image: ghcr.io/amscotti/janus:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: janus-config
+            - secretRef:
+                name: janus-secrets
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/liveness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/janus
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          terminationMessagePath: /dev/termination-log
+      volumes:
+        - name: config
+          configMap:
+            name: janus-config
+            items:
+              - key: config.toml
+                path: config.toml
+        - name: tmp
+          emptyDir: {}
+      terminationGracePeriodSeconds: 30

@@ -1,0 +1,15 @@
+[micronaut.application]
+name = "janus"
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+# binding fixture: the [janus.timeouts] block with kebab-case scalar keys
+# (plain-section scalars normalize _ and -). Values deliberately differ from the
+# documented defaults so the test distinguishes bound values from DEFAULTS.
+[janus.timeouts]
+connect-timeout-seconds = 3
+header-timeout-seconds = 7
+body-read-timeout-seconds = 120
+stream-idle-timeout-seconds = 9

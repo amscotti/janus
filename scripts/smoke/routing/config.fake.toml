@@ -1,0 +1,60 @@
+# W24 routing gate — primary drill config (lives under scripts/smoke/routing/, NOT the
+# repo root; root config.toml stays the dev-facing example — zero production diff).
+#
+# Boot forms (the runner branches on leg):
+#   JVM leg:./gradlew :janus-cli:run --args='--config <ABS>/scripts/smoke/routing/config.fake.toml'
+#              (JanusCli parses --config → micronaut.config.files; absolute path
+#              required — Gradle `run` executes from the module dir, W06 pinned this)
+#   Native leg: MICRONAUT_CONFIG_FILES=<ABS>/scripts/smoke/routing/config.fake.toml
+#              <native>/janus   (the GraalVM image's mainClass is JanusApplication,
+#              which does NOT parse --config)
+#
+# The routing / resilience shape: ONE alias `deepseek-v4-flash` with TWO backends — provider
+# `deepseek` → fake :9877, provider `openai-compatible` → fake :9878. Both are
+# OpenAI-format adapters serving the SAME golden bodies, so either backend
+# winning a failover is byte-identical to the client. Backend names are unique per
+# alias (the W23 in-group uniqueness rule holds).
+#
+# [janus.router] knobs for the failover/chaos/classifier/streaming legs: retries=2 with
+# short deterministic backoff (jitter=0), health allowed-fails=3 / cooldown 5s, and a
+# breaker 5/60s/5s kept OUT of the way of the failover legs (the breaker legs boot
+# config.breaker.toml instead). No api-key-env: the fakes ignore auth (W08/W15
+# precedent) and the adapters omit Authorization on blank keys.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+base-url = "http://127.0.0.1:9877"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9878"
+
+[janus.router]
+strategy = "round-robin"
+max-retries = 2
+backoff-base-ms = 100
+backoff-max-ms = 500
+jitter = 0
+allowed-fails = 3
+cooldown-time = 5               # SECONDS (the #1 units footgun — config.toml comment)
+breaker-failure-threshold = 5
+breaker-window-seconds = 60
+breaker-cooldown-seconds = 5
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

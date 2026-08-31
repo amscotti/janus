@@ -1,0 +1,447 @@
+# Janus admin API — OpenAPI 3.0.3
+#
+# Scope: the admin plane only (`/key/*`). The data plane
+# (`POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`,
+# `GET /v1/models`) and the ops plane (`/health*`, `/metrics`) are
+# intentionally NOT specified here — see docs/compatibility.md for the full
+# surface.
+#
+# This is a static documentation artifact: no codegen, no Micronaut OpenAPI
+# plugin. The source of truth is AdminKeysController.java (janus-gateway) plus
+# docs/governance.md §"Admin API"; if this file and the controller disagree,
+# the controller wins and this file must be fixed.
+#
+# Auth: all routes require the master key, accepted via `Authorization: Bearer`
+# OR `x-api-key` (both are checked; a virtual key on an admin route, a wrong
+# master key, or a missing credential → 401). Default auth = "on": a boot with
+# no resolvable master key fails fast. Explicit `[janus.keys] auth = "off"` is
+# the development/benchmark opt-out (loudly logged; routes then run
+# unauthenticated — docs/governance.md). Repeated wrong-master-key attempts
+# are throttled: 10 failures in 60s lock the admin plane for the rest of the
+# window (429 rate_limit_error + Retry-After).
+#
+# Error envelopes are OpenAI-styled JSON (the admin API's invalid-request path):
+#   {"error": {"message": "...", "type": "invalid_request_error", "param": null, "code": null}}
+# for 400, the equivalent `authentication_error` envelope for 401, and
+# `rate_limit_error` for the master-key lockout 429.
+openapi: 3.0.3
+info:
+  title: Janus Admin API
+  description: >-
+    Master-key-authenticated virtual-key administration for the Janus LLM proxy
+    gateway. Keys are created via POST /key/generate (the full sk-janus-… value
+    is returned exactly once and is never retrievable again), revoked via POST
+    /key/delete (idempotent), and listed redacted via GET /key/list (no full
+    key, no hash, no salt).
+  version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: http://localhost:8080
+    description: Local Janus gateway (default port; see config.toml [micronaut.server])
+security:
+  - masterKeyHeader: []
+  - masterKeyBearer: []
+tags:
+  - name: Keys
+    description: Virtual key lifecycle (admin plane)
+paths:
+  /key/generate:
+    post:
+      tags: [Keys]
+      summary: Create a virtual key
+      description: >-
+        Issues a new sk-janus-<prefix>-<secret> virtual key. The full key
+        string appears in the response exactly once — the store keeps only a
+        salted hash, and list/delete never echo it. All request fields are
+        optional: absent models = allow-all scope; absent caps = no cap (null
+        means "no cap", never zero); budget_duration (seconds, up to 10 years)
+        turns the budget into a reset window that refills each aligned window
+        (absent = lifetime budget); duration (seconds) sets expires_at from
+        the store clock (absent = never expires). Non-positive caps and
+        out-of-bounds budget_duration are rejected with 400. Default auth =
+        "on" requires the master key; explicit auth = "off" leaves the route
+        unauthenticated.
+      operationId: generateKey
+      security:
+        - masterKeyHeader: []
+        - masterKeyBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyGenerateRequest'
+            example:
+              name: ci
+              models: [deepseek-v4-flash]
+              budget_usd: 5.0
+              budget_duration: 2592000
+              rpm: 100
+              tpm: 100000
+      responses:
+        '200':
+          description: Key created; the full key is shown exactly once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyGenerateResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /key/delete:
+    post:
+      tags: [Keys]
+      summary: Revoke a virtual key
+      description: >-
+        Revokes a key by its opaque key_id or by the full sk-janus-… key string
+        (resolved via its non-secret prefix). Exactly one identifier is
+        required. Idempotent: deleted=true when the id exists, false for an
+        unknown id. A revoked key stops authenticating on the next request
+        (403 permission_error on model routes).
+      operationId: deleteKey
+      security:
+        - masterKeyHeader: []
+        - masterKeyBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyDeleteRequest'
+      responses:
+        '200':
+          description: Revocation result (idempotent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyDeleteResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /key/list:
+    get:
+      tags: [Keys]
+      summary: List virtual keys (redacted)
+      description: >-
+        Lists all keys with metadata (id, non-secret prefix, name, model scope,
+        status, timestamps, caps) — redacted by construction: no full key, no
+        hash, no salt (KeyRecordView carries no secret material).
+      operationId: listKeys
+      security:
+        - masterKeyHeader: []
+        - masterKeyBearer: []
+      responses:
+        '200':
+          description: Redacted key list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+components:
+  securitySchemes:
+    masterKeyHeader:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: >-
+        The master key (env var named by [janus.keys] master-key-env in
+        config.toml, e.g. JANUS_MASTER_KEY). Accepted on admin routes alongside
+        Authorization: Bearer.
+    masterKeyBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        The same master key as a Bearer token. A virtual key on an admin route
+        is rejected with 401.
+  responses:
+    InvalidRequest:
+      description: >-
+        Malformed JSON body, missing delete identifier, invalid key string, or
+        non-positive cap (rpm/tpm/budget_usd must be positive when present).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              message: '"rpm" must be positive (got 0)'
+              type: invalid_request_error
+              param: null
+              code: null
+    Unauthorized:
+      description: >-
+        Missing/invalid master key, or a virtual key used on an admin route.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              message: missing or invalid master key
+              type: authentication_error
+              param: null
+              code: null
+    RateLimited:
+      description: >-
+        Master-key brute-force lockout: 10 presented-but-wrong keys inside a
+        60 s window lock the admin plane for the remainder of the window.
+        Missing-credential requests are not counted. A successful master-key
+        auth resets the counter. Retry-After is the seconds until the window
+        reopens.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until the lockout window reopens.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            error:
+              message: rate limit exceeded for this key
+              type: rate_limit_error
+              param: null
+              code: null
+  schemas:
+    KeyGenerateRequest:
+      type: object
+      description: >-
+        Virtual-key creation parameters. All fields optional. models scopes the
+        key by model alias (absent/empty = allow all); caps are unenforced when
+        absent (null means "no cap", not zero).
+      properties:
+        models:
+          type: array
+          description: >-
+            Per-key model-alias scope (absent/empty = allow all).
+          items:
+            type: string
+            example: deepseek-v4-flash
+        name:
+          type: string
+          nullable: true
+          description: Human-readable owner/label for the key.
+          example: ci
+        budget_usd:
+          type: number
+          format: double
+          nullable: true
+          description: >-
+            Per-key budget cap in USD (hard cap → 429 pre-dispatch; soft cap at
+            [janus.limits] soft-cap-fraction → warning headers + notifier).
+            Must be positive when present.
+          example: 5.0
+        budget_duration:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Per-key budget reset window in SECONDS (e.g. 2592000 = 30 days;
+            plain integer seconds, no "30d" strings). Absent = the budget is
+            lifetime (all-time). When present the cap refills each aligned
+            window and windowed hard-cap 429s carry Retry-After until the
+            reset. Must be in (0, 315360000] — 10 years — when present.
+          example: 2592000
+        rpm:
+          type: integer
+          format: int32
+          nullable: true
+          description: >-
+            Per-key requests-per-minute cap. Must be positive when present.
+          example: 100
+        tpm:
+          type: integer
+          format: int32
+          nullable: true
+          description: >-
+            Per-key tokens-per-minute cap (conservative pre-check). Must be
+            positive when present.
+          example: 100000
+        duration:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Key lifetime in seconds from creation. Absent = never expires.
+            The controller computes
+            expires_at against the store clock.
+          example: 3600
+    KeyGenerateResponse:
+      type: object
+      description: >-
+        Creation result. key is the full sk-janus-… value — shown exactly once;
+        the store retains only a salted hash and no later call can retrieve it.
+      required: [key, key_id, models, created_at]
+      properties:
+        key:
+          type: string
+          description: >-
+            The full virtual key string (sk-janus-<prefix>-<secret>). Never
+            shown again.
+          example: sk-janus-aB3dEf9x-K2mNpQ7rT4vWxYz1
+        key_id:
+          type: string
+          description: >-
+            Opaque, non-secret key identifier (used for delete/list; the
+            metrics key_id label).
+          example: k_01J2abc...
+        name:
+          type: string
+          nullable: true
+          description: The request's name (owner/label), echoed.
+        models:
+          type: array
+          description: The key's model-alias scope (empty = allow all).
+          items:
+            type: string
+        budget_duration:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Echo of the accepted budget reset window (seconds); null = the
+            budget is lifetime.
+        created_at:
+          type: integer
+          format: int64
+          description: Epoch milliseconds of creation.
+        expires_at:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Epoch milliseconds after which the key no longer authenticates;
+            null = never expires.
+    KeyDeleteRequest:
+      type: object
+      description: >-
+        Exactly one of key_id or key is required (400 otherwise). key is the
+        full sk-janus-… string, resolved via its non-secret prefix.
+      properties:
+        key_id:
+          type: string
+          description: >-
+            The opaque key identifier from the generate response or the list.
+        key:
+          type: string
+          description: >-
+            The full sk-janus-… key string (resolved via its prefix).
+    KeyDeleteResponse:
+      type: object
+      description: >-
+        Revocation result — idempotent (deleted=false for an unknown id).
+      required: [deleted]
+      properties:
+        key_id:
+          type: string
+          nullable: true
+          description: >-
+            The revoked key's id — omitted entirely (not null) when the key
+            form resolved to no key (unknown prefix or wrong secret); a
+            key_id-form delete echoes the requested id, even an unknown one.
+        deleted:
+          type: boolean
+          description: >-
+            true when the id existed and was revoked; false for an unknown id.
+    KeyListItem:
+      type: object
+      description: >-
+        One redacted key record. Structurally carries no secret material: no
+        full key, no hash, no salt.
+      required: [id, prefix, models, status, created_at]
+      properties:
+        id:
+          type: string
+          description: Opaque key identifier.
+        prefix:
+          type: string
+          description: >-
+            Non-secret base62 index (the sk-janus-<prefix> part of the key
+            string).
+        name:
+          type: string
+          nullable: true
+          description: Owner/label (the generate request's name).
+        models:
+          type: array
+          description: Model-alias scope (empty = allow all).
+          items:
+            type: string
+        status:
+          type: string
+          description: Key lifecycle status.
+          enum: [ACTIVE, REVOKED]
+        created_at:
+          type: integer
+          format: int64
+          description: Epoch milliseconds of creation.
+        expires_at:
+          type: integer
+          format: int64
+          nullable: true
+        last_used_at:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Epoch milliseconds of the last successful auth; null = never used.
+        budget_usd:
+          type: number
+          format: double
+          nullable: true
+        budget_duration:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Budget reset window in seconds; null = lifetime budget.
+        rpm:
+          type: integer
+          format: int32
+          nullable: true
+        tpm:
+          type: integer
+          format: int32
+          nullable: true
+    KeyListResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyListItem'
+    ErrorEnvelope:
+      type: object
+      description: OpenAI-styled error envelope (the admin API's error path).
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              description: >-
+                invalid_request_error (400) | authentication_error (401) | ...
+            param:
+              type: string
+              nullable: true
+            code:
+              type: string
+              nullable: true

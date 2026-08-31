@@ -1,0 +1,66 @@
+# =============================================================================
+# Janus — systemd example unit.
+#
+# EXAMPLE unit for a single-node bare-metal/VM install (the binary is the
+# Memory-bounded native image built by :janus-gateway:nativeCompile — install path
+# /opt/janus/bin/janus). The runtime reads config from /etc/janus/config.toml
+# via MICRONAUT_CONFIG_FILES (the image's mainClass is JanusApplication — NEVER
+# --config is rejected at boot) and secrets from the EnvironmentFile (/etc/janus/
+# janus.env — 0600, root-owned): JANUS_MASTER_KEY, provider keys, JANUS_DB_*.
+#
+# Install steps (docs/ops.md §systemd):
+#   sudo install -d -o janus -g janus /opt/janus /etc/janus /var/log/janus
+#   sudo install -m 0755 janus-gateway/build/native/nativeCompile/janus /opt/janus/bin/janus
+#   sudo install -m 0644 /path/to/config.toml /etc/janus/config.toml
+#   sudo install -m 0600 -o root -g root /path/to/janus.env /etc/janus/janus.env
+#   sudo install -m 0644 deploy/systemd/janus.service /etc/systemd/system/janus.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now janus
+#
+# Verification: `systemd-analyze verify /etc/systemd/system/janus.service` (a
+# Linux host/container; this repo's dev machine is macOS — the unit is written
+# and lint-checked here, runtime verification is a documented Linux-host step).
+# =============================================================================
+[Unit]
+Description=Janus LLM Gateway (native image)
+# No Documentation= line: nothing installs a README under /opt/janus (the
+# install steps above ship only the binary); the docs live in the repo
+# (docs/ops.md §systemd) — a file:// link to an absent file helps no one.
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=janus
+Group=janus
+WorkingDirectory=/opt/janus
+
+# Secrets + optional JANUS_DB_URL/_USER/_PASS (postgres store) — 0600 root-owned.
+EnvironmentFile=/etc/janus/janus.env
+# The config file mount: [janus] model-list/router/keys/store. Env-var NAMES only.
+Environment=MICRONAUT_CONFIG_FILES=/etc/janus/config.toml
+
+ExecStart=/opt/janus/bin/janus
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=35
+
+# --- hardening -----------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# The gateway serves SSE streams and sustains thousands of concurrent virtual
+# threads — an ample fd limit is the single most important knob.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

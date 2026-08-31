@@ -1,0 +1,4 @@
+cold boot -> /health: 1088 ms (pid 77682)
+cold_ms=1088.0
+max_rss_kb=75328
+rss_source=os-darwin /usr/bin/time max-RSS (whole lifetime incl. boot)

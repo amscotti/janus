@@ -1,0 +1,46 @@
+# W50-archival benchmark config (scripts/bench/ only; root config.toml untouched).
+#
+# The ungoverned shape, so the throughput numbers are proxy-pure:
+#   - [janus.keys] auth = "off"          => auth OFF (explicit benchmark posture)
+#   - NO [janus.store] section           => in-memory store default, zero store I/O
+#   - NO [janus.pricing] / [janus.limits]=> zero-rate metering (noop()-level governance)
+#
+# Why postgres is NOT here: a DB-backed leg would measure the JDBC pool + disk, i.e.
+# DB-bound, not proxy-bound, and already characterized by the gate (its native
+# postgres leg) separately.
+#
+# Boot forms (the runner branches on leg — the asymmetry):
+#   JVM leg:   MICRONAUT_SERVER_PORT=… ./gradlew :janus-cli:run --no-daemon \
+#                --args='--config <ABS>/scripts/bench/config.bench.toml'
+#              (JanusCli parses --config -> micronaut.config.files; ABSOLUTE path
+#              required — Gradle `run` executes from the module dir, lesson)
+#   Native leg: MICRONAUT_CONFIG_FILES=<ABS>/…/config.bench.toml
+#              <native>/janus   (the image's mainClass is JanusApplication, NOT the CLI)
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18090                # free-port substituted by the runner when busy
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "http://127.0.0.1:9879"    # the golden fake, free-port substituted
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

@@ -1,0 +1,138 @@
+# =============================================================================
+# Janus — three-node cluster + shared Postgres + HAProxy.
+#
+# Dedicated file so `deploy/docker-compose.yml` (single-node / optional node2)
+# stays unchanged. Docs (clustering.md) recommend a round-robin operator LB
+# that health-checks GET /health and never migrates in-flight requests —
+# HAProxy is that LB.
+#
+#   docker compose -f deploy/docker-compose.cluster.yml --profile fake up -d
+#
+# Public listener is HAProxy :8080. Per-node /health and /metrics are on
+# 18081–18083 (needed to sum per-node scrapes). Secrets come from the
+# repo-root .env via env_file — this file interpolates no JANUS_MASTER_KEY
+# (that would override env_file when empty). The smoke harness injects a
+# per-run master key through a generated override.
+# =============================================================================
+name: janus-cluster
+
+x-janus-node: &janus-node
+  image: ${IMAGE_TAG:-janus:dev}
+  env_file:
+    # Ordered: later env_file entries win. config/compose-db.env carries the
+    # compose-internal Postgres defaults (janus/janus @ postgres:5432); the
+    # repo-root .env (optional) overrides them (and supplies the master key /
+    # provider keys). No `environment: JANUS_DB_*` entry — the interpolation
+    # default would silently override a root-.env DB URL (deploy/
+    # docker-compose.yml documents the footgun class).
+    - path: ./config/compose-db.env
+    - path: ../.env
+      required: false
+  environment:
+    MICRONAUT_CONFIG_FILES: /etc/janus/config.toml
+  volumes:
+    - ${JANUS_CLUSTER_CONFIG:-./config/config.cluster.toml}:/etc/janus/config.toml:ro
+  tmpfs:
+    - /tmp
+  read_only: true
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    container_name: janus-cluster-postgres
+    environment:
+      POSTGRES_USER: janus
+      POSTGRES_PASSWORD: janus
+      POSTGRES_DB: janus
+    volumes:
+      - janus-cluster-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U janus -d janus"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  fake-upstream:
+    profiles: ["fake"]
+    image: python@sha256:a7fb1e634c4a578f9e0bd6327f11a3cde11b7a9395f48e24360c0988bcc5c2bc
+    container_name: janus-cluster-fake
+    working_dir: /app
+    volumes:
+      - ../scripts/smoke/store/fake_upstream.py:/app/fake_upstream.py:ro
+      - ../scripts/smoke/docker/fake_upstream_container.py:/app/fake_upstream_container.py:ro
+      - ../janus-core/src/test/resources/fixtures:/app/fixtures:ro
+      # Counter persistence mounts a DIRECTORY, never a file path: a bind/volume
+      # whose host side is missing makes Docker create a DIRECTORY at the target
+      # — mounting that over a file path (/app/counters.json) shadows the file,
+      # the fake's write_text then raises IsADirectoryError (swallowed), and
+      # counters silently stop persisting (the fresh-clone trap). Default: the
+      # named volume below (nothing lands in the repo tree); set
+      # JANUS_CLUSTER_COUNTER_DIR to a host directory to read the JSON from the
+      # host — scripts/smoke/cluster/run.sh does exactly that (.run/).
+      - ${JANUS_CLUSTER_COUNTER_DIR:-janus-cluster-counters}:/app/counters
+    command:
+      - python3
+      - /app/fake_upstream_container.py
+      - --port
+      - "9877"
+      - --name
+      - cluster-fake
+      - --fixtures
+      - /app/fixtures/openai
+      - --counter-file
+      - /app/counters/fake.counters.json
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:9877/', timeout=2)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  janus-1:
+    <<: *janus-node
+    container_name: janus-cluster-1
+    ports:
+      - "18081:8080"
+
+  janus-2:
+    <<: *janus-node
+    container_name: janus-cluster-2
+    ports:
+      - "18082:8080"
+
+  janus-3:
+    <<: *janus-node
+    container_name: janus-cluster-3
+    ports:
+      - "18083:8080"
+
+  haproxy:
+    # Digest-pinned: haproxy:2.9-alpine at its index digest for attestable,
+    # reproducible builds (no silent floating-tag drift under 2.9-alpine).
+    image: haproxy@sha256:3e29449a6beed63262e36104adf531b4e41b359f61937303f5ea8607987b3748
+    container_name: janus-cluster-lb
+    ports:
+      # Host port is overridable: local :8080 is often another app. The cluster
+      # smoke sets JANUS_CLUSTER_LB_PORT when 8080 is taken (default stays 8080).
+      - "${JANUS_CLUSTER_LB_PORT:-8080}:8080"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      janus-1:
+        condition: service_started
+      janus-2:
+        condition: service_started
+      janus-3:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  janus-cluster-pgdata: {}
+  # Default counter store for the fake upstream (see the fake-upstream volumes
+  # comment). `docker compose down -v` removes it with the pgdata.
+  janus-cluster-counters: {}

@@ -1,0 +1,44 @@
+# W24 routing gate — health drill config (scripts/smoke/routing/ only).
+#
+# Health drill: max-retries = 0 (single attempt → deterministic per-backend state
+# transitions), allowed-fails = 2 (flips unhealthy fast), cooldown-time = 3 SECONDS,
+# and breaker-failure-threshold = 100 → the breaker stays OUT of the way; only the
+# W21 passive health (soft exclusion + trial attempt) must act. Same alias/backends.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+base-url = "http://127.0.0.1:9877"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9878"
+
+[janus.router]
+strategy = "round-robin"
+max-retries = 0
+backoff-base-ms = 100
+backoff-max-ms = 500
+jitter = 0
+allowed-fails = 2
+cooldown-time = 3              # SECONDS — short cooldown for the live drill
+breaker-failure-threshold = 100  # breaker OUT of the way
+breaker-window-seconds = 60
+breaker-cooldown-seconds = 5
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

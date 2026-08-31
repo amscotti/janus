@@ -1,0 +1,5 @@
+# W15 gate runtime artifacts — never commit (the harness regenerates them per run)
+.run/
+.venv/
+__pycache__/
+*.pyc

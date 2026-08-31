@@ -1,0 +1,41 @@
+# W15 cross-format gate — real-upstream config (env-gated leg, ANTHROPIC_API_KEY /
+# DEEPSEEK_API_KEY). Used ONLY when the keys are exported; never in CI.
+# The Claude alias for the real leg is a current model id — picked and recorded in
+# RESULTS.md at gate time. The runner boots Janus with this config and runs the
+# real-upstream smoke legs; a bad-key sub-leg uses a generated config referencing
+# JANUS_SMOKE_BAD_KEY.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "claude-3-5-sonnet"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.00014
+output-per-1k = 0.00028
+default-max-tokens = 4096
+
+[janus.keys]
+auth = "off"

@@ -1,0 +1,46 @@
+# the store layer gate — node B drill config (scripts/smoke/store/ only). IDENTICAL to
+# config.nodeA.toml except the server port (18081 — the shared-[janus.store] shape:
+# both nodes read/write the SAME Postgres, so keys/rate-limit counters/budgets/spend
+# are exact cross-node). See config.nodeA.toml for the boot forms + annotations.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18081 # node A: 18080 (both env-overridable by the runner)
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9877" # the golden fake, pattern
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.14
+output-per-1k = 0.28
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed" # postgres mode is fixed-window only (fix 2)
+
+[janus.store]
+type = "postgres"
+jdbc-url-env = "JANUS_DB_URL" # set by run.sh from the drill container
+user-env = "JANUS_DB_USER"
+password-env = "JANUS_DB_PASS"
+max-pool-size = 5
+retention = 1000

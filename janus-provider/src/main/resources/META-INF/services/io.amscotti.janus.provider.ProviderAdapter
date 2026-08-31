@@ -1,0 +1,6 @@
+# ProviderAdapter implementations — explicit registration (no dynamic classloading).
+# Guarded by ProviderAdapterSpiTest (services-file drift guard): exactly these three adapters
+# (deepseek / openai-compatible / anthropic) must be discoverable.
+io.amscotti.janus.provider.DeepSeekAdapter
+io.amscotti.janus.provider.OpenAiCompatibleAdapter
+io.amscotti.janus.provider.AnthropicAdapter

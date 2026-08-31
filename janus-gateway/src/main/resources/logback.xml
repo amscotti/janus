@@ -1,0 +1,13 @@
+<configuration>
+    <!-- HikariCP pinned at INFO: DEBUG output embeds the pool config, including the
+         JDBC URL (which may carry credentials). -->
+    <logger name="com.zaxxer.hikari" level="INFO"/>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

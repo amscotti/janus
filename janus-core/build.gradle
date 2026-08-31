@@ -1,0 +1,82 @@
+// janus-core: canonical message model + wire-format codecs (records, sealed interfaces).
+// Pure Java library — no Micronaut runtime dependencies (module boundary).
+// Jackson artifacts are pinned to the same versions the gateway resolves via the
+// Micronaut platform BOM (BOM-only import; adds no Micronaut classes to the classpath).
+plugins {
+ // Opt-in microbenchmarks: ./gradlew :janus-core:jmh (not part of `test` / `build`)
+ id 'me.champeau.jmh'
+}
+
+def micronautVersion = providers.gradleProperty('micronaut.version').get()
+
+dependencies {
+ implementation platform("io.micronaut.platform:micronaut-platform:${micronautVersion}")
+ // Jackson 3 (tools.jackson) databind — matches micronaut-jackson-databind in the gateway.
+ implementation 'tools.jackson.core:jackson-databind'
+ // com.fasterxml.jackson annotations ride the public core API (Message's @JsonTypeInfo
+ // role discriminator), so downstream modules compiling against core.model (e.g.
+ // janus-provider) must see them; otherwise javac warns "unknown enum constant"
+ // while reading Message.class and -Werror fails the build. Pinned to the same version
+ // tools.jackson:jackson-bom 3.1.5 (via the Micronaut platform) requires.
+ api 'com.fasterxml.jackson.core:jackson-annotations:2.21'
+}
+
+// JMH: component-level timing (codec / SSE grammar). Complements load tests
+// (docs/benchmarks.md) — answers "is this hot path slower?" not "how many req/s".
+// Uses committed test fixtures on the jmh resource path; machine-local scores only.
+sourceSets.named('jmh').configure {
+ resources.srcDir('src/test/resources')
+}
+
+jmh {
+ // Local-friendly defaults: ~1–2 min for the whole suite (9 ops × 8 iters × 1s).
+ // For publishable numbers, raise fork / timeOnIteration (e.g. fork=2, time=3s).
+ warmupIterations = 3
+ iterations = 5
+ fork = 1
+ warmup = '1s'
+ timeOnIteration = '1s'
+ // Average time keeps units comparable across benches (µs/op in the classes).
+ benchmarkMode = ['avgt']
+ timeUnit = 'us'
+ // Human-readable + JSON under build/results/jmh/ for later comparison.
+ resultFormat = 'JSON'
+ resultsFile = layout.buildDirectory.file('results/jmh/results.json')
+ // Fail the task on bench errors (bad setup, missing fixture), not on "slowness".
+ failOnError = true
+ // Do not duplicate unit tests onto the jmh classpath.
+ includeTests = false
+ // Pin a modern JMH that supports current JDKs (plugin default can lag).
+ jmhVersion = '1.37'
+}
+
+// C23 MEDIUM: the jmh sources are opt-in, so `./gradlew build` used to compile none of
+// them — a signature change in OpenAiMessageCodec / SseFrameSplitter broke the benches
+// with no CI signal. Wire the compile-only javac task into the gate: API drift now fails
+// `check`/`build` fast, while the ~90 s benchmark run itself stays opt-in (`:janus-core:jmh`).
+// compileJmhJava inherits the root -Xlint:all -Werror flags via tasks.withType(JavaCompile).
+tasks.named('check') {
+ dependsOn tasks.named('compileJmhJava')
+}
+
+// fixture capture is a one-time, manual, env-gated run (JANUS_FIXTURE_CAPTURE=1 +
+// DEEPSEEK_API_KEY, see FixtureCaptureTest). Excluded from the normal test task so CI
+// never touches the network — fixtures are captured once and committed.
+test {
+ useJUnitPlatform {
+ excludeTags 'capture'
+ }
+}
+
+// The ONLY way the capture-tagged test runs: a dedicated task. A `--tests '*FixtureCaptureTest'`
+// filter on the default `test` task composes conjunctively with `excludeTags 'capture'`
+// and matches nothing (review M1).
+tasks.register('captureFixtures', Test) {
+ description = 'Run the env-gated FixtureCaptureTest against the real upstream (manual, network).'
+ group = 'verification'
+ testClassesDirs = sourceSets.test.output.classesDirs
+ classpath = sourceSets.test.runtimeClasspath
+ useJUnitPlatform {
+ includeTags 'capture'
+ }
+}

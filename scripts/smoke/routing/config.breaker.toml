@@ -1,0 +1,48 @@
+# W24 routing gate — breaker/health drill config (scripts/smoke/routing/ only).
+#
+# Breaker drill: max-retries = 0 → each request is EXACTLY ONE attempt, so every
+# failure lands on its backend's health counter + breaker window deterministically.
+# allowed-fails = 100 → passive health stays out of the way (only the breaker acts).
+# breaker-failure-threshold = 2 → two failures open the breaker; cooldown 5s →
+# HALF_OPEN → exactly one probe → failure re-opens / success recovers. The drill
+# drives fake-1's failure via its mode-file (500), NOT by killing it — fake-1's
+# request counter stays readable, so the "refused while OPEN" assertion is a flat
+# counter, not an absent process. Same alias/backends as config.fake.toml.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+base-url = "http://127.0.0.1:9877"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9878"
+
+[janus.router]
+strategy = "round-robin"
+max-retries = 0
+backoff-base-ms = 100
+backoff-max-ms = 500
+jitter = 0
+allowed-fails = 100            # health OUT of the way — the breaker alone must act
+cooldown-time = 5
+breaker-failure-threshold = 2
+breaker-window-seconds = 60
+breaker-cooldown-seconds = 5
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"

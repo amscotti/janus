@@ -1,0 +1,4 @@
+// janus-router: load-balancing strategies, retries, fallback chains, circuit breakers.
+dependencies {
+ api project(':janus-core')
+}

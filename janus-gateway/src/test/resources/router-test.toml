@@ -1,0 +1,29 @@
+[micronaut.application]
+name = "janus"
+
+[janus]
+name = "janus"
+version = "0.1.0-SNAPSHOT"
+
+# binding fixture: the full [janus.router] block with kebab-case spellings. Micronaut
+# 5.1 normalizes _ and - in plain-section scalar keys (pinned by
+# ModelListBindingTest.underscoreSpellingsBindForSectionKeys); the M1 "underscores
+# silently null" rule applies to [[janus.model-list]] array-of-tables element keys only
+# (pinned by ModelListBindingTest.underscoreKeysSilentlyNullCredentialFields). Values
+# deliberately differ from the documented defaults so the test distinguishes bound values
+# from defaults.
+# Units: backoff-*-ms are millis; cooldown-time and breaker-*-seconds are SECONDS
+# (documented in JanusConfig.RouterConfig javadoc + docs/routing.md).
+[janus.router]
+strategy = "weighted"
+latency-alpha = 0.7
+weights = { deepseek = 3, anthropic = 1 }
+max-retries = 5
+backoff-base-ms = 100
+backoff-max-ms = 4000
+jitter = 0.4
+allowed-fails = 7
+cooldown-time = 42
+breaker-failure-threshold = 9
+breaker-window-seconds = 90
+breaker-cooldown-seconds = 45

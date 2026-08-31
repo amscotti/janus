@@ -1,0 +1,25 @@
+# governance gate — real-upstream placeholder (scripts/smoke/governance/ only; the
+# config.real.toml precedent). The gate 2 "assert against DeepSeek pricing" wording is
+# carried by the FAKE leg byte-shaped from the committed corpus with pinned usage
+# (14/12 → 5320 micro-USD, asserted with zero tolerance) — no real keys expected.
+# Point this at a real OpenAI-compatible endpoint (or DeepSeek directly) with
+# [janus.keys] master-key-env set and re-run drill_cost.py for a sanity pass.
+#
+# [micronaut.application]
+# name = "janus"
+# [micronaut.server]
+# port = 18081
+# [endpoints.all]
+# enabled = true
+# sensitive = true
+# [[janus.model-list]]
+# name = "deepseek-v4-flash"
+# provider = "deepseek"
+# api-key-env = "DEEPSEEK_API_KEY"
+# base-url = "https://api.deepseek.com"
+# [janus.pricing]
+# [[janus.pricing.models]]
+# name = "deepseek-v4-flash"
+# input-per-1k = 0.00014   # official $0.14/1M — the fake-leg 5320 µUSD pin uses 0.14/0.28
+# output-per-1k = 0.00028
+# default-max-tokens = 4096

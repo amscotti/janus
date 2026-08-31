@@ -1,0 +1,212 @@
+# =============================================================================
+# Janus — production-oriented example config (copy & edit; never commit secrets)
+# =============================================================================
+# Secrets: env var NAMES only. Export real values in the process environment:
+# JANUS_MASTER_KEY, DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY,
+# OPENROUTER_API_KEY, META_API_KEY, XAI_API_KEY, JANUS_DB_URL, …
+#
+# Native image: MICRONAUT_CONFIG_FILES=/etc/janus/config.toml
+# JVM CLI: janus-cli --config /etc/janus/config.toml
+# Full annotated reference: config.toml in this repo.
+# Day-1 checklist: docs/production-checklist.md
+# Provider knobs: docs/providers.md
+# =============================================================================
+
+[micronaut.server]
+port = 8080
+
+# Management: health + metrics public; everything else sensitive / stop disabled.
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.health]
+enabled = true
+sensitive = false
+details-visible = "ANONYMOUS"
+
+[endpoints.prometheus]
+enabled = true
+sensitive = false
+path = "/metrics"
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+# -----------------------------------------------------------------------------
+# Auth — master key required for /key/* ; virtual keys for model routes
+# -----------------------------------------------------------------------------
+[janus.keys]
+# auth = "on" is the default: a boot with no resolvable master key FAILS FAST (a
+# forgotten env var must not silently run an unauthenticated admin API). Development /
+# benchmark postures declare auth = "off" explicitly — a loud, operator-controlled
+# line that wins even when a key resolves.
+master-key-env = "JANUS_MASTER_KEY"
+
+# Optional durable store (omit for in-memory):
+# [janus.store]
+# type = "postgres"
+# jdbc-url-env = "JANUS_DB_URL"
+# user-env = "JANUS_DB_USER"
+# password-env = "JANUS_DB_PASS"
+
+[janus.router]
+strategy = "round-robin"
+max-retries = 2
+allowed-fails = 3
+cooldown-time = 30
+breaker-failure-threshold = 5
+breaker-window-seconds = 60
+breaker-cooldown-seconds = 30
+
+# -----------------------------------------------------------------------------
+# Models (aliases the client sends). Same `name` twice = ordered failover pool.
+# -----------------------------------------------------------------------------
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "claude-sonnet-5"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+[[janus.model-list]]
+name = "gpt-5.6-luna"
+provider = "openai"
+api-key-env = "OPENAI_API_KEY"
+base-url = "https://api.openai.com"
+
+[[janus.model-list]]
+name = "moonshotai/kimi-k3"
+provider = "openrouter"
+api-key-env = "OPENROUTER_API_KEY"
+base-url = "https://openrouter.ai/api"
+
+[[janus.model-list]]
+name = "minimax/minimax-m3"
+provider = "openrouter"
+api-key-env = "OPENROUTER_API_KEY"
+base-url = "https://openrouter.ai/api"
+
+[[janus.model-list]]
+name = "muse-spark-1.2"
+provider = "meta"
+api-key-env = "META_API_KEY"
+base-url = "https://api.meta.ai"
+
+[[janus.model-list]]
+name = "grok-4.6"
+provider = "xai"
+api-key-env = "XAI_API_KEY"
+base-url = "https://api.x.ai"
+
+[janus.providers.openai]
+wire-format = "openai-compatible"
+base-url = "https://api.openai.com"
+api-key-env = "OPENAI_API_KEY"
+
+[janus.providers.openrouter]
+wire-format = "openai-compatible"
+base-url = "https://openrouter.ai/api"
+api-key-env = "OPENROUTER_API_KEY"
+
+[janus.providers.meta]
+wire-format = "openai-compatible"
+base-url = "https://api.meta.ai"
+api-key-env = "META_API_KEY"
+
+[janus.providers.xai]
+wire-format = "openai-compatible"
+base-url = "https://api.x.ai"
+api-key-env = "XAI_API_KEY"
+
+[janus.providers.together]
+wire-format = "openai-compatible"
+base-url = "https://api.together.xyz"
+api-key-env = "TOGETHER_API_KEY"
+
+# -----------------------------------------------------------------------------
+# Pricing — required for non-zero spend metrics / budget admission estimates.
+# Rates are illustrative; replace with your contracted USD per 1K tokens.
+# -----------------------------------------------------------------------------
+# Official published rates, USD-per-1M ÷ 1000 → Janus USD-per-1K (Aug 2026).
+# Replace with your contracted figures. DeepSeek rows below are PEAK
+# ($0.44 / $1.32 per 1M); off-peak is half. Set require-priced = true to
+# fail boot (and 400 at request time) when a model-list alias has no row.
+# require-priced = false
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.00044
+output-per-1k = 0.00132
+cache-read-per-1k = 0.000014
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "claude-sonnet-5"
+input-per-1k = 0.002
+output-per-1k = 0.01
+cache-read-per-1k = 0.0002
+cache-creation-per-1k = 0.0025
+web-search-per-1k = 10.0
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gpt-5.6-luna"
+input-per-1k = 0.0002
+output-per-1k = 0.0012
+cache-read-per-1k = 0.00002
+cache-creation-per-1k = 0.00025
+web-search-per-1k = 10.0
+long-context-threshold = 272000
+long-input-per-1k = 0.0004
+long-output-per-1k = 0.0018
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "moonshotai/kimi-k3"
+input-per-1k = 0.003
+output-per-1k = 0.015
+cache-read-per-1k = 0.0003
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "minimax/minimax-m3"
+input-per-1k = 0.0003
+output-per-1k = 0.0012
+cache-read-per-1k = 0.00006
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "muse-spark-1.2"
+input-per-1k = 0.00125
+output-per-1k = 0.00425
+cache-read-per-1k = 0.00015
+web-search-per-1k = 10.0
+default-max-tokens = 4096
+
+# Official xAI: $2.00 / $0.50 cached / $6.00 per 1M below 200k prompt.
+# At ≥200k the whole request bills at $4 / $1 / $12 per 1M.
+[[janus.pricing.models]]
+name = "grok-4.6"
+input-per-1k = 0.002
+output-per-1k = 0.006
+cache-read-per-1k = 0.0005
+default-max-tokens = 4096
+long-context-threshold = 200000
+long-input-per-1k = 0.004
+long-output-per-1k = 0.012
+long-cache-read-per-1k = 0.001
+
+# -----------------------------------------------------------------------------
+# Privacy — conversation content in logs. Keep OFF in production: prompts and
+# completions never appear in log output; metrics/call records/token counts
+# are always logged regardless. true is for local debugging only.
+[janus.privacy]
+log-content = false

@@ -1,0 +1,300 @@
+# =============================================================================
+# Release workflow — tag-driven GitHub Release with JVM fat jar + native binaries.
+#
+# Trigger: push a tag matching v* (e.g. v0.1.0).
+# Version contract: the tag (minus the leading v) must equal gradle.properties
+# `version` and the packaged [janus] version — release assets are named from the
+# tag, so a mismatch fails the workflow before anything is built/staged.
+#
+# Jobs:
+#   build-linux  (ubuntu-latest):  full build+test gate, fat jar + native binary
+#                                  smokes, stages janus-<version>.jar and
+#                                  janus-<version>-linux-amd64.
+#   build-macos  (macos-15, arm64): native compile + boot smoke, stages
+#                                  janus-<version>-macos-arm64. Native compile
+#                                  only (the full test gate ran on Linux; macOS
+#                                  minutes are the expensive leg).
+#   release      (needs both):     downloads both artifact sets, writes one
+#                                  unified SHA256SUMS, creates the GitHub
+#                                  Release with all four assets.
+#
+# Config contract (same as Docker/native): MICRONAUT_CONFIG_FILES=/path/to.toml
+# Main class: io.amscotti.janus.JanusApplication
+#
+# Least privilege beyond CI: contents: write is required to create the Release.
+# Digest-pinned actions match ci.yml / docker.yml.
+# =============================================================================
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build & test (linux/amd64) — jar + native
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Pin Gradle distribution digest (wrapper integrity)
+        # like ci.yml — pin distributionSha256Sum from Gradle's official
+        # gradle-<v>-bin.zip.sha256 before the first ./gradlew run so a
+        # tampered/corrupted distribution fails fast instead of shipping in
+        # release assets built from it.
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          scripts/pin-gradle-digest.sh
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.4 (digest-pinned)
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'gradle'
+          native-image-job-reports: 'true'
+
+      - name: Grant wrapper permissions
+        run: chmod +x gradlew
+
+      - name: Version from tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # v1.0.0 → 1.0.0 (keep full tag for release name)
+          VERSION="${TAG#v}"
+          # The assets staged below are named from the tag, but the build bakes
+          # gradle.properties' version into the artifacts (janus-<version>.jar,
+          # native binary manifest) and the packaged [janus] version rides along
+          # in application.toml. Re-tagging without bumping them would ship
+          # janus-<tag>.* assets that still report the old version — so fail
+          # HERE, before the build/native-compile spend, unless the tag matches
+          # the build's version.
+          BUILD_VERSION="$(sed -n 's/^[[:space:]]*version[[:space:]]*=//p' gradle.properties | tr -d '[:space:]')"
+          PACKAGED_VERSION="$(awk '/^\[janus\]/{f=1} f && $1=="version"{gsub(/[ "]/, "", $3); print $3; exit}' \
+            janus-gateway/src/main/resources/application.toml)"
+          echo "tag=${TAG} version=${VERSION} gradle.properties=${BUILD_VERSION} packaged=[${PACKAGED_VERSION}]"
+          if [ -z "$BUILD_VERSION" ] || [ "$VERSION" != "$BUILD_VERSION" ]; then
+            echo "::error::tag ${TAG} (${VERSION}) does not match gradle.properties version (${BUILD_VERSION:-unset}) — bump gradle.properties and re-tag"
+            exit 1
+          fi
+          if [ "$VERSION" != "$PACKAGED_VERSION" ]; then
+            echo "::error::tag ${TAG} (${VERSION}) does not match the packaged [janus] version in janus-gateway/src/main/resources/application.toml (${PACKAGED_VERSION:-unset}) — bump both and re-tag"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon --stacktrace
+
+      - name: Verify deploy/docs/smoke artifacts parse
+        # docker IS available on the runner → compose-config leg is mandatory;
+        # PyYAML leg likewise (see ci.yml).
+        env:
+          VERIFY_ARTIFACTS_REQUIRE_DOCKER: '1'
+          VERIFY_ARTIFACTS_REQUIRE_YAML: '1'
+        run: |
+          test -x scripts/verify-artifacts.sh
+          scripts/verify-artifacts.sh
+
+      - name: JVM fat jar (shadowJar)
+        run: ./gradlew :janus-gateway:shadowJar --no-daemon --stacktrace
+
+      - name: Smoke JVM fat jar (/health)
+        env:
+          JANUS_MASTER_KEY: ci-health-smoke
+        run: |
+          JAR=$(ls janus-gateway/build/libs/janus-[0-9]*.jar | head -1)
+          test -f "$JAR"
+          echo "using $JAR"
+          java -jar "$JAR" &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 0.25
+          done
+          echo "JVM fat jar health check failed"
+          exit 1
+
+      - name: Native compile
+        env:
+          NATIVE_IMAGE_MEM: '6'
+        run: ./gradlew :janus-gateway:nativeCompile --no-daemon --stacktrace -Dorg.gradle.jvmargs="-Xmx${NATIVE_IMAGE_MEM}g -Dfile.encoding=UTF-8"
+
+      - name: Smoke native binary (/health)
+        env:
+          JANUS_MASTER_KEY: ci-health-smoke
+        run: |
+          BIN=janus-gateway/build/native/nativeCompile/janus
+          test -x "$BIN"
+          "$BIN" &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "native health check failed"
+          exit 1
+
+      - name: Smoke native binary (codec path)
+        run: scripts/bench/native_codec_smoke.sh
+
+      - name: Stage release assets
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          JAR=$(ls janus-gateway/build/libs/janus-[0-9]*.jar | head -1)
+          BIN=janus-gateway/build/native/nativeCompile/janus
+          test -f "$JAR"
+          test -x "$BIN"
+
+          cp "$JAR" "dist/janus-${VERSION}.jar"
+          cp "$BIN" "dist/janus-${VERSION}-linux-amd64"
+          chmod +x "dist/janus-${VERSION}-linux-amd64"
+          ls -la dist
+
+      - name: Upload linux assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (digest-pinned)
+        with:
+          name: release-linux
+          path: dist/* # glob: archive root = the files themselves (no dist/ nesting)
+          if-no-files-found: error
+
+  build-macos:
+    name: Build native (macos/arm64)
+    runs-on: macos-15 # Apple Silicon — the native darwin/aarch64 leg
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+
+      - name: Pin Gradle distribution digest (wrapper integrity)
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          scripts/pin-gradle-digest.sh
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.4 (digest-pinned)
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'gradle'
+          native-image-job-reports: 'true'
+
+      - name: Grant wrapper permissions
+        run: chmod +x gradlew
+
+      - name: Native compile
+        run: ./gradlew :janus-gateway:nativeCompile --no-daemon --stacktrace
+
+      - name: Smoke native binary (/health)
+        env:
+          JANUS_MASTER_KEY: ci-health-smoke
+        run: |
+          BIN=janus-gateway/build/native/nativeCompile/janus
+          test -x "$BIN"
+          "$BIN" &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true; wait "$PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 0.2
+          done
+          echo "native health check failed"
+          exit 1
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          BIN=janus-gateway/build/native/nativeCompile/janus
+          test -x "$BIN"
+          cp "$BIN" "dist/janus-${VERSION}-macos-arm64"
+          chmod +x "dist/janus-${VERSION}-macos-arm64"
+          ls -la dist
+
+      - name: Upload macos assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (digest-pinned)
+        with:
+          name: release-macos
+          path: dist/* # glob: archive root = the files themselves (no dist/ nesting)
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download linux assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0 (digest-pinned)
+        with:
+          name: release-linux
+          path: dist
+
+      - name: Download macos assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.6.0 (digest-pinned)
+        with:
+          name: release-macos
+          path: dist
+
+      - name: Checksums + create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          cd dist
+          # upload-artifact does NOT preserve the executable bit — test -f and
+          # restore +x before checksumming/publishing.
+          test -f "janus-${VERSION}.jar"
+          test -f "janus-${VERSION}-linux-amd64"
+          test -f "janus-${VERSION}-macos-arm64"
+          chmod +x "janus-${VERSION}-linux-amd64" "janus-${VERSION}-macos-arm64"
+          shasum -a 256 \
+            "janus-${VERSION}.jar" \
+            "janus-${VERSION}-linux-amd64" \
+            "janus-${VERSION}-macos-arm64" > SHA256SUMS
+          cat SHA256SUMS
+          # --repo: this step runs from dist/ (no git context) — resolve explicitly.
+          # Fail if the tag already has a release (re-push would be a mistake).
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — delete it or bump the tag before re-running."
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Janus ${VERSION}" \
+            --generate-notes \
+            "janus-${VERSION}.jar" \
+            "janus-${VERSION}-linux-amd64" \
+            "janus-${VERSION}-macos-arm64" \
+            SHA256SUMS

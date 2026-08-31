@@ -1,0 +1,70 @@
+# Postgres-store bench leg config (scripts/bench/
+# only; mirrors config.bench.toml with ONE delta: [janus.store] type = "postgres").
+#
+# Why this leg exists: the default bench config's comment explains why it is
+# in-memory (a DB-backed leg measures the JDBC pool + disk). This leg measures
+# EXACTLY that delta — one synchronous Postgres call-ledger transaction per
+# request (advisory lock → INSERT → prune DELETE → store_meta upsert) — against
+# the same 1000 req / 10 concurrent profile (see docs/benchmarks.md).
+#
+# Everything else mirrors config.bench.toml (same ports/placeholders — the runner
+# seds them identically — same auth-off posture, same zero-rate metering):
+#   - [janus.keys] auth = "off"          => auth OFF (the SAME benchmark posture;
+#     auth-off call records carry the "" key sentinel in the calls ring — the
+#     per-request store write fires on every request exactly like keyed mode)
+#   - NO [janus.pricing]                 => zero-rate metering (noop()-level governance)
+#   - NO [janus.limits]                  => absent section defaults window = "fixed",
+#     which is the ONLY window the Postgres store allows ("sliding" + postgres is
+#     rejected at boot — the fix-2 decision; see docs/clustering.md)
+#
+# Secrets rule: the store block references env-var NAMES, never values — the
+# runner exports JANUS_DB_URL/JANUS_DB_USER/JANUS_DB_PASS from its dockerized
+# postgres:16-alpine (the drill_native/run_native_regression.sh pattern), exactly
+# like scripts/smoke/store/config.nodeA.toml.
+#
+# Boot forms (the runner branches on leg — the asymmetry):
+#   JVM leg: JANUS_DB_URL=… JANUS_DB_USER=… JANUS_DB_PASS=… \
+#./gradlew :janus-cli:run --no-daemon \
+#                --args='--config <ABS>/scripts/bench/config.bench.pg.toml'
+#            (JanusCli parses --config -> micronaut.config.files; ABSOLUTE path
+#            required — Gradle `run` executes from the module dir, lesson)
+#   Native leg: JANUS_DB_URL=… … MICRONAUT_CONFIG_FILES=<ABS>/…/config.bench.pg.toml
+#              <native>/janus   (the image's mainClass is JanusApplication, NOT the CLI)
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18090                # free-port substituted by the runner when busy
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "http://127.0.0.1:9879"    # the golden fake, free-port substituted
+
+# Harness posture: this smoke/bench leg deliberately runs WITHOUT auth (the fake
+# upstream needs no keys). Production posture: remove this block or set
+# auth = "on" plus a master-key-env that resolves — a keyless ON boot now fails fast.
+[janus.keys]
+auth = "off"
+
+# The ONE delta vs config.bench.toml: the Postgres store (production defaults —
+# pool 10, call-ring retention 1000 — so the leg measures the production shape).
+[janus.store]
+type = "postgres"
+jdbc-url-env = "JANUS_DB_URL" # set by run_bench.sh from the leg's dockerized PG
+user-env = "JANUS_DB_USER"
+password-env = "JANUS_DB_PASS"
+max-pool-size = 10
+retention = 1000

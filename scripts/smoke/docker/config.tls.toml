@@ -1,0 +1,33 @@
+# =============================================================================
+# Janus TLS-probe config. Used by the
+# run.sh Leg 1 CA-trust probe: an https model-list entry with NO
+# key and NO master key (auth off ⇒ the request dispatches). A healthy trust
+# path yields the upstream's auth error envelope; a broken CA store yields a
+# certificate-path failure (PKIX/SSL) instead. Auth-off must be explicit —
+# default-on with no master key fails fast before any TLS handshake.
+# =============================================================================
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[janus.keys]
+auth = "off"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "https://api.deepseek.com"
+# NO api-key-env: the probe needs the dispatch to reach the TLS handshake.

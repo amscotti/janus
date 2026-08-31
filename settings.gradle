@@ -1,0 +1,21 @@
+pluginManagement {
+ repositories {
+ gradlePluginPortal()
+ mavenCentral()
+ }
+}
+
+dependencyResolutionManagement {
+ repositories {
+ mavenCentral()
+ }
+}
+
+rootProject.name = 'janus'
+
+include 'janus-core'
+include 'janus-provider'
+include 'janus-router'
+include 'janus-store'
+include 'janus-gateway'
+include 'janus-cli'

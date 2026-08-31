@@ -1,0 +1,299 @@
+# Cluster compose config — live upstreams. Secrets are env-var NAMES only.
+# Official USD-per-1K (vendor per-1M ÷ 1000). Used by the live + agent legs.
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.privacy]
+log-content = false
+
+[janus.providers.deepseek]
+wire-format = "openai-compatible"
+base-url = "https://api.deepseek.com"
+api-key-env = "DEEPSEEK_API_KEY"
+
+[janus.providers.anthropic]
+wire-format = "anthropic"
+base-url = "https://api.anthropic.com"
+api-key-env = "ANTHROPIC_API_KEY"
+
+[janus.providers.openai]
+wire-format = "openai-compatible"
+base-url = "https://api.openai.com"
+api-key-env = "OPENAI_API_KEY"
+
+[janus.providers.deepseek-anthropic]
+wire-format = "anthropic"
+base-url = "https://api.deepseek.com/anthropic"
+api-key-env = "DEEPSEEK_API_KEY"
+
+[janus.providers.xai]
+wire-format = "openai-compatible"
+base-url = "https://api.x.ai"
+api-key-env = "XAI_API_KEY"
+
+[janus.providers.openrouter]
+wire-format = "openai-compatible"
+base-url = "https://openrouter.ai/api"
+api-key-env = "OPENROUTER_API_KEY"
+
+[janus.providers.meta]
+wire-format = "openai-compatible"
+base-url = "https://api.meta.ai"
+api-key-env = "META_API_KEY"
+
+[janus.providers.fireworks]
+wire-format = "openai-compatible"
+base-url = "https://api.fireworks.ai/inference"
+api-key-env = "FIREWORKS_API_KEY"
+
+[janus.providers.groq]
+wire-format = "openai-compatible"
+base-url = "https://api.groq.com/openai"
+api-key-env = "GROQ_API_KEY"
+
+# Perplexity serves a VERSIONLESS endpoint (/chat/completions, no /v1): the base
+# ending with /chat/completions is the adapter's full-endpoint opt-out.
+[janus.providers.perplexity]
+wire-format = "openai-compatible"
+base-url = "https://api.perplexity.ai/chat/completions"
+api-key-env = "PERPLEXITY_API_KEY"
+
+[janus.providers.gemini]
+wire-format = "openai-compatible"
+base-url = "https://generativelanguage.googleapis.com/v1beta/openai"
+api-key-env = "GEMINI_API_KEY"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "claude-sonnet-5"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+[[janus.model-list]]
+name = "gpt-5.6-luna"
+provider = "openai"
+api-key-env = "OPENAI_API_KEY"
+base-url = "https://api.openai.com"
+
+[[janus.model-list]]
+name = "gpt-5.6"
+provider = "openai"
+api-key-env = "OPENAI_API_KEY"
+base-url = "https://api.openai.com"
+
+[[janus.model-list]]
+name = "deepseek-v4-pro"
+provider = "deepseek-anthropic"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com/anthropic"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash-vision-exp"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "grok-4.6"
+provider = "xai"
+api-key-env = "XAI_API_KEY"
+base-url = "https://api.x.ai"
+
+[[janus.model-list]]
+name = "moonshotai/kimi-k3"
+provider = "openrouter"
+api-key-env = "OPENROUTER_API_KEY"
+base-url = "https://openrouter.ai/api"
+
+[[janus.model-list]]
+name = "minimax/minimax-m3"
+provider = "openrouter"
+api-key-env = "OPENROUTER_API_KEY"
+base-url = "https://openrouter.ai/api"
+
+[[janus.model-list]]
+name = "muse-spark-1.2"
+provider = "meta"
+api-key-env = "META_API_KEY"
+base-url = "https://api.meta.ai"
+
+[[janus.model-list]]
+name = "accounts/fireworks/models/glm-5p3"
+provider = "fireworks"
+api-key-env = "FIREWORKS_API_KEY"
+base-url = "https://api.fireworks.ai/inference"
+
+[[janus.model-list]]
+name = "openai/gpt-oss-120b"
+provider = "groq"
+api-key-env = "GROQ_API_KEY"
+base-url = "https://api.groq.com/openai"
+
+[[janus.model-list]]
+name = "sonar"
+provider = "perplexity"
+api-key-env = "PERPLEXITY_API_KEY"
+base-url = "https://api.perplexity.ai/chat/completions"
+
+[[janus.model-list]]
+name = "gemini-3.7-flash"
+provider = "gemini"
+api-key-env = "GEMINI_API_KEY"
+base-url = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+[[janus.model-list]]
+name = "z-ai/glm-5.3"
+provider = "openrouter"
+api-key-env = "OPENROUTER_API_KEY"
+base-url = "https://openrouter.ai/api"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.00044
+output-per-1k = 0.00132
+cache-read-per-1k = 0.000014
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "claude-sonnet-5"
+input-per-1k = 0.002
+output-per-1k = 0.01
+cache-read-per-1k = 0.0002
+cache-creation-per-1k = 0.0025
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gpt-5.6-luna"
+input-per-1k = 0.0002
+output-per-1k = 0.0012
+cache-read-per-1k = 0.00002
+cache-creation-per-1k = 0.00025
+web-search-per-1k = 10.0
+long-context-threshold = 272000
+long-input-per-1k = 0.0004
+long-output-per-1k = 0.0018
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gpt-5.6"
+input-per-1k = 0.004
+output-per-1k = 0.02
+cache-read-per-1k = 0.0004
+cache-creation-per-1k = 0.005
+web-search-per-1k = 10.0
+long-context-threshold = 272000
+long-input-per-1k = 0.008
+long-output-per-1k = 0.03
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "deepseek-v4-pro"
+input-per-1k = 0.00132
+output-per-1k = 0.00396
+cache-read-per-1k = 0.000044
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "deepseek-v4-flash-vision-exp"
+input-per-1k = 0.00044
+output-per-1k = 0.00132
+cache-read-per-1k = 0.000014
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "grok-4.6"
+input-per-1k = 0.002
+output-per-1k = 0.006
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "moonshotai/kimi-k3"
+input-per-1k = 0.003
+output-per-1k = 0.015
+cache-read-per-1k = 0.0003
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "minimax/minimax-m3"
+input-per-1k = 0.0003
+output-per-1k = 0.0012
+cache-read-per-1k = 0.00006
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "muse-spark-1.2"
+input-per-1k = 0.00125
+output-per-1k = 0.00425
+cache-read-per-1k = 0.00015
+web-search-per-1k = 10.0
+default-max-tokens = 4096
+
+# --- parity providers (approximate public list prices, USD-per-1K) ------------
+[[janus.pricing.models]]
+name = "accounts/fireworks/models/glm-5p3"
+input-per-1k = 0.0014
+output-per-1k = 0.0044
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "openai/gpt-oss-120b"
+input-per-1k = 0.00006
+output-per-1k = 0.00029
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "sonar"
+input-per-1k = 0.001
+output-per-1k = 0.001
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gemini-3.7-flash"
+input-per-1k = 0.0003
+output-per-1k = 0.0025
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "z-ai/glm-5.3"
+input-per-1k = 0.0014
+output-per-1k = 0.0044
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed"
+soft-cap-fraction = 0.8
+
+[janus.store]
+type = "postgres"
+jdbc-url-env = "JANUS_DB_URL"
+user-env = "JANUS_DB_USER"
+password-env = "JANUS_DB_PASS"
+max-pool-size = 5
+retention = 1000
+
+[janus.router]
+max-retries = 1

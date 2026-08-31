@@ -1,0 +1,178 @@
+# =============================================================================
+# Janus — Docker Compose.
+#
+# The `janus` service is the only always-on service: with the memory-store config
+# (the default mount) it runs with ZERO external dependencies — `docker compose up`
+# brings up Janus alone. Optional profiles (never started unless requested):
+#
+#   --profile postgres        Janus + Postgres (janus switches to the postgres-store
+#                             config via JANUS_COMPOSE_CONFIG — see below). The
+#                             fail-fast contract: if Postgres is not reachable at
+#                             boot, Janus REFUSES to start (a silent memory fallback
+#                             would violate read-your-writes in multi-node).
+#   --profile fake-upstream   The committed store-smoke fake upstream
+#                             (scripts/smoke/store/fake_upstream.py + golden fixtures,
+#                             both mounted read-only) so the admin/chat smoke runs
+#                             fully offline.
+#   --profile node2           A second Janus node sharing the SAME Postgres — the
+#                             two-node store smoke shape (keys created on
+#                             one node authenticate on the other; spend aggregates
+#                             in the shared DB).
+#
+# Config selection: the janus service mounts ${JANUS_COMPOSE_CONFIG:-./config/
+# config.memory.toml} — plain `docker compose up` = memory store; for a postgres-
+# backed janus (profile postgres) run:
+#     JANUS_COMPOSE_CONFIG=./config/config.postgres.toml \
+#       docker compose --profile postgres up -d
+# Secrets (JANUS_MASTER_KEY, provider keys) come from the root .env (env_file,
+# optional — the compose file itself holds no secrets); DB credentials too, when
+# the root .env defines JANUS_DB_URL/_USER/_PASS (otherwise the compose-internal
+# Postgres defaults in config/compose-db.env apply); the config.toml mounts
+# env-var NAMES only (api-key-env / master-key-env / jdbc-url-env — the env-var-name
+# pattern). The default memory config is auth-on: set JANUS_MASTER_KEY in the
+# root .env or the container fails fast. MICRONAUT_CONFIG_FILES is how the
+# native image (mainClass JanusApplication) receives config — never --config.
+#
+# Runtime shape: read-only rootfs + tmpfs /tmp (HikariCP/native temp files; the
+# image writes nothing locally), image HEALTHCHECK (busybox wget → /health/
+# readiness), restart unless-stopped. The compose `healthcheck` is NOT duplicated
+# here — the image's HEALTHCHECK drives `docker compose ps` health.
+#
+# depends_on / ordering: `node2` declares `postgres: condition: service_healthy`
+# (a REAL readiness gate; node2's profile always includes the postgres profile).
+# The primary `janus` deliberately does NOT — compose rejects a depends_on whose
+# dependency's profile is inactive, and `docker compose up` (memory leg) must
+# work with zero profiles. Postgres-backed janus ordering is handled by:
+#   1) start postgres first, wait for pg_isready, then start janus (the smoke
+#      harness does exactly this), or
+#   2) rely on `restart: unless-stopped`: each failed boot (fail-fast, exit
+#      nonzero — no hang) is retried until postgres is reachable.
+# =============================================================================
+name: janus
+
+services:
+  janus:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: janus:dev
+    ports:
+      - "8080:8080"
+    env_file:
+      # Ordered: later env_file entries win. ./config/compose-db.env carries
+      # the compose-internal Postgres defaults (janus/janus @ postgres:5432 —
+      # used only when the mounted config has [janus.store] type = "postgres";
+      # harmless with the memory default); the repo-root .env (optional — the
+      # compose file itself holds no secrets) overrides them when it defines
+      # JANUS_DB_URL/_USER/_PASS. Secrets (JANUS_MASTER_KEY, provider keys)
+      # come from the root .env the same way.
+      - path: ./config/compose-db.env
+      - path: ../.env
+        required: false
+    environment:
+      MICRONAUT_CONFIG_FILES: /etc/janus/config.toml
+      # The mounted config.memory.toml is auth-on: JANUS_MASTER_KEY unset ⇒ the
+      # container FAILS FAST (a forgotten key must not silently run
+      # unauthenticated). Deliberately NO `environment: JANUS_MASTER_KEY` or
+      # `environment: JANUS_DB_*` entries (same footgun class): compose
+      # interpolation `${VAR:-default}` reads only the shell env / deploy/.env —
+      # NOT the repo-root .env — so the interpolated default would OVERRIDE the
+      # env_file value. With the master key that boots the gateway with auth OFF
+      # despite a key in the root .env; with JANUS_DB_URL it silently points the
+      # gateway at the fresh compose-internal DB instead of the root-.env one.
+      # env_file is the sole channel for those vars (environment overrides it).
+    volumes:
+      - ${JANUS_COMPOSE_CONFIG:-./config/config.memory.toml}:/etc/janus/config.toml:ro
+    tmpfs:
+      - /tmp
+    read_only: true
+    restart: unless-stopped
+
+  # Optional second Janus node (store-smoke nodeA/nodeB shape): postgres-store config,
+  # SHARED with the primary janus when it is postgres-backed too (run both with
+  # JANUS_COMPOSE_CONFIG=./config/config.postgres.toml --profile node2).
+  node2:
+    profiles: ["node2"]
+    image: janus:dev
+    ports:
+      - "8082:8080"
+    env_file:
+      # Same channel as the primary janus service: compose-db.env defaults
+      # first, repo-root .env (optional) overriding them.
+      - path: ./config/compose-db.env
+      - path: ../.env
+        required: false
+    environment:
+      MICRONAUT_CONFIG_FILES: /etc/janus/config.toml
+      # Same footgun rule as the primary janus service: the master key and any
+      # DB overrides come ONLY from env_file — no `environment: JANUS_MASTER_KEY`
+      # / `JANUS_DB_*` entries, whose `${VAR:-default}` interpolation (shell env /
+      # deploy/.env — NOT the repo-root .env) would override the env_file values.
+    volumes:
+      - ./config/config.postgres.toml:/etc/janus/config.toml:ro
+    tmpfs:
+      - /tmp
+    read_only: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Optional Postgres (profile postgres / node2): the Testcontainers
+  # convention (janus/janus/janus), internal port only, persistent volume,
+  # pg_isready healthcheck. SchemaMigration auto-applies db/migration/V*.sql at
+  # PostgresCallStore construction — no init-container/migration step needed.
+  postgres:
+    profiles: ["postgres", "node2"]
+    # Digest-pinned: postgres:16-alpine at its index digest for attestable,
+    # reproducible builds (no silent floating-tag drift under 16-alpine).
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_USER: janus
+      POSTGRES_PASSWORD: janus
+      POSTGRES_DB: janus
+    volumes:
+      - janus-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U janus -d janus"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  # Optional fake upstream (profile fake-upstream): the committed store-smoke fake +
+  # the golden fixtures, both mounted read-only — the admin/chat smoke is
+  # fully offline. Exposed on :9877 for host-side drills too.
+  fake-upstream:
+    profiles: ["fake-upstream", "postgres", "node2"]
+    # Digest-pinned: python:3-slim at its index digest (reproducible builds).
+    image: python@sha256:a7fb1e634c4a578f9e0bd6327f11a3cde11b7a9395f48e24360c0988bcc5c2bc
+    working_dir: /app
+    volumes:
+      # The committed store-smoke fake + its golden corpus, both read-only
+      # (fake_upstream_container.py is the in-container adapter: the store-smoke fake
+      # binds 127.0.0.1 — the host-runner convention — which other containers
+      # cannot reach; the adapter rebinds to 0.0.0.0 before importing it).
+      - ../scripts/smoke/store/fake_upstream.py:/app/fake_upstream.py:ro
+      - ../scripts/smoke/docker/fake_upstream_container.py:/app/fake_upstream_container.py:ro
+      - ../janus-core/src/test/resources/fixtures:/app/fixtures:ro
+    command:
+      - python3
+      - /app/fake_upstream_container.py
+      - --port
+      - "9877"
+      - --name
+      - compose-fake
+      - --fixtures
+      - /app/fixtures/openai
+    ports:
+      - "9877:9877"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:9877/', timeout=2)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  janus-pgdata: {}

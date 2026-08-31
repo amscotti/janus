@@ -1,0 +1,1 @@
+{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"What is the weather in Paris?"}],"stream":true,"stream_options":{"include_usage":true},"max_completion_tokens":4096}

@@ -1,0 +1,62 @@
+# the store layer gate — node A drill config (lives under scripts/smoke/store/, NOT the
+# repo root; root config.toml stays the dev-facing example — zero production diff).
+#
+# Multi-node gate 2 shape: node A (port 18080; node B is config.nodeB.toml on 18081)
+# with the SHARED Postgres store ([janus.store] type = "postgres" — env-ref'd JDBC
+# creds, env-var-name pattern: the URL lives in JANUS_DB_URL, never TOML), the shared master
+# key (JANUS_MASTER_KEY — admin ops land in the shared DB), one alias
+# `deepseek-v4-flash` → the golden fake upstream (:9877 — free-port substituted by the
+# runner), DeepSeek pricing (0.14 input / 0.28 output per 1K — the exact-cost table)
+# and [janus.limits] window = "fixed" (Postgres mode is fixed-window ONLY — the
+# fix-2 decision: sliding + postgres is rejected at boot; see docs/clustering.md).
+#
+# Boot forms (the runner branches on leg):
+# JVM leg: JANUS_MASTER_KEY=… JANUS_DB_URL=… MICRONAUT_SERVER_PORT=… \
+#./gradlew :janus-cli:run --no-daemon --args='--config <ABS>/config.nodeA.toml'
+# (JanusCli parses --config → micronaut.config.files; absolute path
+# required — Gradle `run` executes from the module dir, config pinned this)
+# Native leg: JANUS_MASTER_KEY=… JANUS_DB_URL=… MICRONAUT_CONFIG_FILES=<ABS>/…/config.nodeA.toml
+# <native>/janus (the GraalVM image's mainClass is JanusApplication,
+# which does NOT parse --config)
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18080 # node B: 18081 (both env-overridable by the runner)
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:9877" # the golden fake, pattern
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.14
+output-per-1k = 0.28
+default-max-tokens = 4096
+
+[janus.limits]
+window = "fixed" # postgres mode is fixed-window only (fix 2)
+
+[janus.store]
+type = "postgres"
+jdbc-url-env = "JANUS_DB_URL" # set by run.sh from the drill container
+user-env = "JANUS_DB_USER"
+password-env = "JANUS_DB_PASS"
+max-pool-size = 5
+retention = 1000

@@ -1,0 +1,173 @@
+# Local config for pointing Claude Code / Codex / OpenCode at Janus.
+# Secrets via env names only. Port 18080 so a default 8080 Janus can coexist.
+
+[micronaut.application]
+name = "janus-agent-proxy"
+
+[micronaut.server]
+port = 18080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.health]
+enabled = true
+details-visible = "ANONYMOUS"
+sensitive = false
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[janus]
+name = "janus"
+version = "0.1.0"
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.router]
+max-retries = 1
+allowed-fails = 2
+cooldown-time = 10
+
+[[janus.model-list]]
+name = "claude-sonnet-5"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+[[janus.model-list]]
+name = "claude-opus-5"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+# Claude Code's haiku-tier background tasks (titles, topic detection) route
+# here via ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5.
+[[janus.model-list]]
+name = "claude-haiku-4-5"
+provider = "anthropic"
+api-key-env = "ANTHROPIC_API_KEY"
+base-url = "https://api.anthropic.com"
+
+[[janus.model-list]]
+name = "gpt-5.6-luna"
+provider = "openai"
+api-key-env = "OPENAI_API_KEY"
+base-url = "https://api.openai.com"
+
+[[janus.model-list]]
+name = "gpt-5.6"
+provider = "openai"
+api-key-env = "OPENAI_API_KEY"
+base-url = "https://api.openai.com"
+
+# Codex CLI default id (Aug 2026). Janus sends the alias upstream unchanged.
+[[janus.model-list]]
+name = "gpt-5.3-codex"
+provider = "openai"
+api-key-env = "OPENAI_API_KEY"
+base-url = "https://api.openai.com"
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "deepseek"
+api-key-env = "DEEPSEEK_API_KEY"
+base-url = "https://api.deepseek.com"
+
+[[janus.model-list]]
+name = "grok-4.6"
+provider = "xai"
+api-key-env = "XAI_API_KEY"
+base-url = "https://api.x.ai"
+
+[janus.providers.anthropic]
+wire-format = "anthropic"
+base-url = "https://api.anthropic.com"
+api-key-env = "ANTHROPIC_API_KEY"
+
+[janus.providers.openai]
+wire-format = "openai-compatible"
+base-url = "https://api.openai.com"
+api-key-env = "OPENAI_API_KEY"
+
+[janus.providers.deepseek]
+wire-format = "openai-compatible"
+base-url = "https://api.deepseek.com"
+api-key-env = "DEEPSEEK_API_KEY"
+
+[janus.providers.xai]
+wire-format = "openai-compatible"
+base-url = "https://api.x.ai"
+api-key-env = "XAI_API_KEY"
+
+# Official USD-per-1M ÷ 1000 → Janus USD-per-1K (Aug 2026).
+[janus.pricing]
+[[janus.pricing.models]]
+name = "claude-sonnet-5"
+input-per-1k = 0.002
+output-per-1k = 0.01
+cache-read-per-1k = 0.0002
+cache-creation-per-1k = 0.0025
+web-search-per-1k = 10.0
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "claude-opus-5"
+input-per-1k = 0.005
+output-per-1k = 0.025
+cache-read-per-1k = 0.0005
+cache-creation-per-1k = 0.00625
+web-search-per-1k = 10.0
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "claude-haiku-4-5"
+input-per-1k = 0.0008
+output-per-1k = 0.004
+cache-read-per-1k = 0.00008
+cache-creation-per-1k = 0.001
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gpt-5.6-luna"
+input-per-1k = 0.0002
+output-per-1k = 0.0012
+cache-read-per-1k = 0.00002
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gpt-5.6"
+input-per-1k = 0.005
+output-per-1k = 0.03
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "gpt-5.3-codex"
+input-per-1k = 0.005
+output-per-1k = 0.03
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.00014
+output-per-1k = 0.00028
+default-max-tokens = 4096
+
+[[janus.pricing.models]]
+name = "grok-4.6"
+input-per-1k = 0.002
+output-per-1k = 0.006
+cache-read-per-1k = 0.0005
+default-max-tokens = 4096
+long-context-threshold = 200000
+long-input-per-1k = 0.004
+long-output-per-1k = 0.012
+long-cache-read-per-1k = 0.001
+
+[janus.limits]
+window = "fixed"

@@ -1,0 +1,5 @@
+# W24 gate runtime artifacts — never commit
+.run/
+.venv/
+__pycache__/
+*.pyc

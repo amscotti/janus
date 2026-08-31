@@ -1,0 +1,7 @@
+# W08 OpenAI-face gate — local-only artifacts (fresh venv + runtime temp dirs).
+# RESULTS.md is committed (the gate's results record); everything else here is
+# reproducible noise the runner recreates.
+.venv/
+.run/
+*.log
+*.pid

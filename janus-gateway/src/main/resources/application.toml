@@ -1,0 +1,63 @@
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 8080
+
+# Management endpoints.
+# [endpoints.all] flips Micronaut's endpoint default-EnabledCondition on for EVERY
+# endpoint on the classpath (override the @Endpoint defaultEnabled=false), so the
+# shipped surface is health + metrics (each carrying its own sensitive = false
+# below) plus every other management endpoint. Those are locked down: sensitive =
+# true makes the framework 401 them (EndpointsFilter, no security module needed),
+# and stop/refresh are additionally disabled outright as belt-and-suspenders — the
+# destructive pair must never be reachable by an unauthenticated caller.
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.health]
+enabled = true
+details-visible = "ANONYMOUS"
+sensitive = false
+
+# Hard-disabled on top of endpoints.all.sensitive = true: remote shutdown and
+# config refresh are destructive; a future config edit that flips endpoints.all
+# sensitivity back to false must not re-expose them.
+# Graceful shutdown: on SIGTERM keep serving until in-flight requests (incl.
+# SSE streams) complete or the quiet-period elapses — pairs with
+# terminationGracePeriodSeconds in deploy/k8s/deployment.yaml.
+[micronaut.lifecycle.graceful-shutdown]
+enabled = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+# Prometheus metrics — Micronaut's default prometheus endpoint path is /prometheus;
+# the operator contract is /metrics, so the path is pinned here (tests assert
+# /prometheus → 404 on JVM and native). [micronaut.metrics]
+# enabled = true is the default when micrometer-core is present, spelled out for
+# explicitness; the export step stays the default.
+#
+# The micrometer-core dependency also activates Micronaut's built-in JSON
+# MetricsEndpoint (id "metrics", default path /metrics — a JSON view of the same
+# MeterRegistry). It would collide with the prometheus path override below (two GET
+# /metrics routes → Micronaut's "more than 1 route matched" 400), so it is disabled:
+# the Prometheus text exposition is the single /metrics source (PLAN governance).
+[endpoints.prometheus]
+enabled = true
+sensitive = false
+path = "/metrics"
+
+[endpoints.metrics]
+enabled = false
+
+[micronaut.metrics]
+enabled = true
+
+[janus]
+name = "janus"
+version = "0.1.0"

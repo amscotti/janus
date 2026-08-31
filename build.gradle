@@ -1,0 +1,231 @@
+// Root build: shared configuration for all Janus modules.
+// Module layout: core / provider / router / store / gateway / cli.
+
+plugins {
+ id 'com.diffplug.spotless' version '8.9.0' apply false
+ id 'net.ltgt.errorprone' version '5.1.0' apply false
+ id 'io.micronaut.application' version '5.0.2' apply false
+ // Pin the GraalVM native plugin above io.micronaut.application's transitive
+ // 1.1.2 (plugin-classpath conflict resolution picks this version): 1.1.4+
+ // uses the explicit project-dependency notation (native-build-tools PR #903),
+ // removing the last Gradle 10 deprecation warning owned by the toolchain.
+ id 'org.graalvm.buildtools.native' version '1.1.11' apply false
+ // Fat/uber JAR for JVM distribution (janus-gateway only).
+ id 'com.gradleup.shadow' version '9.6.1' apply false
+ // JMH microbenchmarks — applied only on janus-core (opt-in; not part of `build`).
+ id 'me.champeau.jmh' version '0.7.3' apply false
+ // Root only needs the plugin for the aggregate JacocoReport task type.
+ id 'jacoco'
+ // Root lifecycle tasks (build/check/clean) — the root project applies no Java
+ // plugin, so `./gradlew build` needs `base` for the root to participate in the
+ // gate (and for verifyArtifacts to hook into `check`).
+ id 'base'
+}
+
+// JaCoCo version pin (JDK 25-capable). Applied to every subproject below.
+ext.jacocoToolVersion = '0.8.13'
+
+// Micronaut compile-time DI / AOP classes that are not hand-written product code —
+// excluding them keeps the coverage report focused on application sources.
+ext.jacocoExcludes = [
+ '**/package-info.class',
+ '**/*$Definition.class',
+ '**/*$Definition$*.class',
+ '**/*$Introspection.class',
+ '**/*$Introspection$*.class',
+ '**/*$Intercepted.class',
+ '**/*$Intercepted$*.class',
+]
+
+subprojects {
+ apply plugin: 'java-library'
+ apply plugin: 'com.diffplug.spotless'
+ apply plugin: 'jacoco'
+ // NOTE: net.ltgt.errorprone disabled — it broke annotation processing on
+ // Gradle 9.6/JDK 25 during scaffold. scaffold is complete (v1.0.0 tagged);
+ // re-enabling is a deferred a future release hardening item, not a pending re-enable.
+ // apply plugin: 'net.ltgt.errorprone'
+
+ spotless {
+ java {
+ palantirJavaFormat('2.96.0')
+ targetExclude('**/build/**')
+ }
+ }
+
+ java {
+ toolchain {
+ languageVersion = JavaLanguageVersion.of(25)
+ }
+ }
+
+ jacoco {
+ toolVersion = rootProject.ext.jacocoToolVersion
+ }
+
+ tasks.withType(JavaCompile).configureEach {
+ options.encoding = 'UTF-8'
+ // Lint everything, fail on warnings (native-image discipline starts at compile time).
+ // -processing: multi-round APs (Micronaut) leave annotations "unclaimed" across rounds.
+ // -classfile: third-party bytecode (e.g. Micronaut HTTP + Jackson annotation migration)
+ // can reference missing annotation methods; not actionable in application code.
+ options.compilerArgs += [
+ '-Xlint:all',
+ '-Xlint:-processing',
+ '-Xlint:-classfile',
+ '-Werror',
+ ]
+ }
+
+ tasks.withType(Test).configureEach {
+ useJUnitPlatform()
+  testLogging {
+   events 'passed', 'skipped', 'failed'
+   exceptionFormat = 'full'
+  }
+ // Only the default unit/integration `test` task contributes to coverage by
+ // default. Dedicated tasks (liveTest, captureFixtures) stay opt-in and do not
+ // rewrite the module report unless you run their own jacoco report.
+ }
+
+ // Per-module HTML + XML under <module>/build/reports/jacoco/test/
+ tasks.named('jacocoTestReport', JacocoReport).configure {
+ dependsOn tasks.named('test')
+ reports {
+ xml.required = true
+ html.required = true
+ csv.required = false
+ }
+ // Drop Micronaut-generated DI classes from the denominator.
+ classDirectories.setFrom(
+ files(classDirectories.files.collect { dir ->
+ fileTree(dir: dir, exclude: rootProject.ext.jacocoExcludes)
+ }))
+ }
+
+ // After every `test`, refresh the module coverage report.
+ tasks.named('test').configure {
+ finalizedBy tasks.named('jacocoTestReport')
+ }
+
+ dependencies {
+ // errorprone 'com.google.errorprone:error_prone_core:2.50.0' // re-enable with plugin
+ testImplementation platform("org.junit:junit-bom:${junitBomVersion}")
+ testImplementation 'org.junit.jupiter:junit-jupiter'
+ // Architecture rules (ArchitectureTest in gateway/cli) — bytecode dependency checks.
+ testImplementation "com.tngtech.archunit:archunit-junit5:${archunitVersion}"
+ // Gradle 9 no longer injects the JUnit Platform launcher automatically
+ testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+ }
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate coverage: one HTML tree for the whole product surface.
+//
+//./gradlew coverage
+// open build/reports/jacoco/aggregate/html/index.html
+//
+// Report-only (no % gate) — visibility first; thresholds can be added later
+// via jacocoTestCoverageVerification when the baseline is understood.
+// ---------------------------------------------------------------------------
+tasks.register('codeCoverageReport', JacocoReport) {
+ group = 'verification'
+ description = 'Aggregate JaCoCo HTML/XML coverage report across all modules.'
+
+ def covered = subprojects.findAll { it.plugins.hasPlugin('java') }
+
+ dependsOn covered.collect { it.tasks.named('test') }
+ dependsOn covered.collect { it.tasks.named('jacocoTestReport') }
+
+ additionalSourceDirs.from = covered.collectMany { p ->
+ p.sourceSets.main.allSource.srcDirs
+ }
+ sourceDirectories.from = covered.collectMany { p ->
+ p.sourceSets.main.allSource.srcDirs
+ }
+ classDirectories.from = covered.collectMany { p ->
+ p.files(p.sourceSets.main.output.classesDirs).collect { dir ->
+ p.fileTree(dir: dir, exclude: rootProject.ext.jacocoExcludes)
+ }
+ }
+ // Lazy: each module's default test task writes build/jacoco/test.exec
+ executionData.from = covered.collect { p ->
+ p.layout.buildDirectory.file('jacoco/test.exec')
+ }
+
+ reports {
+ html.required = true
+ xml.required = true
+ csv.required = false
+ html.outputLocation = layout.buildDirectory.dir('reports/jacoco/aggregate/html')
+ xml.outputLocation = layout.buildDirectory.file('reports/jacoco/aggregate/jacoco.xml')
+ }
+
+ doLast {
+ def html = reports.html.outputLocation.get().asFile
+ def index = new File(html, 'index.html')
+ logger.lifecycle('')
+ logger.lifecycle('Coverage report: {}', index.exists() ? index : html)
+ logger.lifecycle('XML (CI/tools): {}', reports.xml.outputLocation.get().asFile)
+ }
+}
+
+// Convenience alias used in docs/CI.
+tasks.register('coverage') {
+ group = 'verification'
+ description = 'Run all unit tests and produce the aggregate JaCoCo report.'
+ dependsOn tasks.named('codeCoverageReport')
+}
+
+// Opt-in JMH microbenchmarks (janus-core only). Not part of `build` / `check`.
+tasks.register('jmh') {
+ group = 'verification'
+ description = 'Run JMH microbenchmarks (janus-core codecs / SSE). Machine-local scores.'
+ dependsOn ':janus-core:jmh'
+}
+
+// Ad-hoc multi-node Postgres focus (also runs inside :janus-gateway:test when Docker is up).
+tasks.register('twoNodeTest') {
+ group = 'verification'
+ description = 'Two-node Postgres integration (Docker; fake upstream; no live API spend).'
+ dependsOn ':janus-gateway:twoNodeTest'
+}
+
+// C18 verify-artifacts: the Java build gate parses no YAML/bash/Python, so a
+// corruption of the deploy/docs/smoke layer (e.g. flattened indentation) can pass
+// `build` while every compose file, workflow and harness is broken. This task runs
+// the offline parse gates (yaml + bash -n + py_compile + docker compose config +
+// prose-corruption grep) and is wired into the root `build` (the documented gate),
+// so `./gradlew build` fails on such a regression. (CI runs
+// scripts/verify-artifacts.sh directly too.)
+tasks.register('verifyArtifacts', Exec) {
+ group = 'verification'
+ description = 'Parse every repo YAML, bash -n every script, py_compile every harness, validate docker-compose.'
+ workingDir = rootProject.projectDir
+ commandLine './scripts/verify-artifacts.sh'
+ // On CI (docker guaranteed) the compose-config leg is REQUIRED — without this a
+ // missing docker silently degrades the leg to a WARN and a broken compose file
+ // passes the gate. Local no-docker dev keeps the WARN behavior.
+ // Same contract for the PyYAML (YAML parse) leg of the guard.
+ environment 'VERIFY_ARTIFACTS_REQUIRE_DOCKER', System.getenv('CI') ? '1' : '0'
+ environment 'VERIFY_ARTIFACTS_REQUIRE_YAML', System.getenv('CI') ? '1' : '0'
+}
+
+// C26: fixture-based tests for the verify-artifacts guard itself (the guard is a
+// shell script the Java gate cannot parse). Covers the fresh-clone gate (the
+// guard must be tracked + executable), one broken .sh/.py/.yml/corruption-signature
+// fixture per leg (each must exit 1) and a clean fixture tree (exit 0) — the
+// regression class that shipped the untracked-file state and the §(b) subshell
+// bug. Runs before the guard so a broken guard cannot silently no-op its own test.
+tasks.register('verifyArtifactsTest', Exec) {
+ group = 'verification'
+ description = 'Fixture-based tests for scripts/verify-artifacts.sh (C26).'
+ workingDir = rootProject.projectDir
+ commandLine './scripts/test_verify_artifacts.sh'
+}
+tasks.named('verifyArtifacts') {
+ dependsOn tasks.named('verifyArtifactsTest')
+}
+tasks.named('check') {
+ dependsOn tasks.named('verifyArtifacts')
+}

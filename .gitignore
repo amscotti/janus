@@ -1,0 +1,52 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Native image (root-anchored so META-INF/native-image/ resources are NOT ignored)
+/native-image/
+*.so
+
+# OS / editor
+.DS_Store
+*.swp
+
+# Environment / secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Local scratch (real-provider smoke, ad-hoc experiments)
+/tmp/
+
+# Editor/agent local config (opencode.json pins the agent's own model)
+/opencode.json
+
+# Smoke harness local state (test-only; never committed)
+scripts/smoke/**/.run/
+scripts/smoke/**/.venv/
+# Live-provider native smoke local log
+scripts/live-provider/.run-native-live.log
+**/__pycache__/
+*.pyc
+
+# Per-run smoke/bench narratives (gate runners rewrite these locally)
+scripts/**/RESULTS.md
+
+# Bench harness local noise
+scripts/bench/__pycache__/
+# Large / machine-local bench logs (keep small raw tool archives + summaries)
+scripts/bench/.run/*.log
+scripts/bench/.run/
+# Per-run generated configs under .run (ports substituted)
+scripts/bench/.run/config.bench.*.toml
+scripts/bench/.run/config.native-regress.toml
+

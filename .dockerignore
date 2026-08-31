@@ -1,0 +1,52 @@
+# Root .dockerignore for the Janus image build (deploy/Dockerfile — build
+# context is the repo root so the Gradle multi-module build can run in the
+# builder stage). Keep the build context as small as possible; anything not
+# needed by `./gradlew :janus-gateway:nativeCompile` can be excluded.
+
+# Gradle / build outputs (rebuilt in the builder stage)
+.gradle/
+build/
+**/build/
+# Belt-and-suspenders: nothing above excludes gradle/ today, but the wrapper jar
+# is required by ./gradlew in the builder stage — keep it if a future rule
+# (e.g. **/*.jar) starts excluding it.
+!gradle/wrapper/gradle-wrapper.jar
+
+# VCS / IDE
+.git/
+.gitignore
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Agent loop local state
+agent/
+.run/
+**/.run/
+
+# Review-cycle automation + findings (committed artifacts; the builder does not need them)
+/review/
+
+# Environment / secrets (never bake credentials into an image)
+.env
+.env.*
+!.env.example
+**/.env
+
+# OS / editor noise
+.DS_Store
+*.swp
+
+# Python venvs / caches from the smoke harnesses
+**/.venv/
+scripts/bench/.litellm-venv/
+**/__pycache__/
+*.pyc
+
+# Native-image intermediate artifacts (root-anchored /native-image/ is a
+# build-time resource dir; stray binaries are not needed in the context)
+/native-image/
+*.so

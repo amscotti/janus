@@ -1,0 +1,27 @@
+// janus-store: CallStore interface (in-memory default, optional Postgres JDBC), keys, pricing.
+// the Postgres backend — HikariCP pool + the PostgreSQL
+// driver, janus-store's first third-party dependencies (the "build.gradle
+// unchanged" rule was scoped to TODO[3] explicitly requires the pool). The
+// gateway picks them up transitively for its runtime classpath and nativeCompile.
+// janus-store stays Micronaut-free (javax.sql / java.sql / java.time only — the
+// PLAN §4 boundary rule is about module imports; HikariCP/Postgres are third-party).
+dependencies {
+ api project(':janus-core')
+
+ implementation "com.zaxxer:HikariCP:${hikariVersion}"
+ implementation "org.postgresql:postgresql:${postgresVersion}"
+
+ // parity suite: real Postgres via Testcontainers (Docker-gated, disabledWithoutDocker).
+ testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
+ testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+}
+
+// (close): run the Testcontainers suites with Ryuk DISABLED. Testcontainers
+// 1.21.x reads only the TESTCONTAINERS_RYUK_DISABLED env var (the old ryuk.disabled
+// property is gone), and Ryuk cannot start inside the lima Docker VM this machine uses
+// (its socket mount path does not exist inside the VM) — which silently skipped the
+// whole Postgres parity suite before. Container cleanup is handled by the suites'
+// own shutdown hooks/AfterAll (PgTestDb), so disabling Ryuk is safe here.
+test {
+ environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
+}

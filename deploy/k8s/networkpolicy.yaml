@@ -1,0 +1,90 @@
+# =============================================================================
+# Janus — NetworkPolicy. OPTIONAL, but recommended when the cluster has a
+# CNI that enforces policies (Calico/Cilium/OVN).
+#
+# Janus has no inter-node protocol. The only pod-to-pod traffic is Janus →
+# Postgres (5432), and the only ingress is the HTTP listener (8080) from the
+# ingress/namespace. Restricting 8080 ingress to the ingress controller's
+# namespace (or to a label like `networking/allow-janus-ingress: "true"` on
+# client pods) prevents cross-namespace pods from reaching the
+# (master-key-gated) admin routes.
+#
+# The Janus→Postgres egress rule keeps the janus pod from reaching arbitrary
+# cluster services (a misconfigured base-url can't be used as a pivot).
+# Postgres accepts only janus pods on 5432.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: janus
+  labels:
+    app: janus
+spec:
+  podSelector:
+    matchLabels:
+      app: janus
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    # Allow the ingress controller (adjust the namespace/label to your setup)
+    # and namespace-local clients (health probes, other app pods) on 8080.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector: {}          # same-namespace pods (probes, curl, admin)
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # Janus → Postgres (only when the postgres-backed store is configured).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: janus-postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    # DNS for upstream provider resolution (egress to the internet at large is
+    # NOT restricted — upstream HTTPS (443) is the gateway's whole job; the
+    # rule above only pins the DB path).
+    - to:
+        - namespaceSelector: {}    # cluster DNS (kube-dns/coredns)
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Explicit allow-all egress: with policyTypes Egress, rules are
+    # deny-by-default — the rules above would otherwise block the gateway's
+    # upstream HTTPS (443) calls. This last rule restores unrestricted internet
+    # egress. NOTE: ipBlock (not namespaceSelector) is required — a
+    # namespaceSelector only matches pod IPs in namespaces, never external
+    # provider IPs, so under an enforcing CNI it would silently deny all
+    # upstream traffic. The postgres/DNS rules above remain as documentation of
+    # the intended data paths, and a stricter operator can drop this rule.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: janus-postgres
+  labels:
+    app: janus-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app: janus-postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    # Only janus pods may reach Postgres; everything else is denied.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: janus
+      ports:
+        - port: 5432
+          protocol: TCP

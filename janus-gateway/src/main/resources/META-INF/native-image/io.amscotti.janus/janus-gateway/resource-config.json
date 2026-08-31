@@ -1,0 +1,15 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "db/migration/.*\\.sql"
+      },
+      {
+        "pattern": "META-INF/services/java.sql.Driver"
+      },
+      {
+        "pattern": "micronaut-banner\\.txt"
+      }
+    ]
+  }
+}
