@@ -191,6 +191,15 @@ class InMemorySpendLedgerTest {
     }
 
     @Test
+    void nonFiniteSoftFractionIsRejected() {
+        // NaN slips past a `< 0 || > 1` range check and would zero the soft cap.
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> ledger.reserve("k1", 300, 1_000, Double.NaN, 0));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> ledger.reserve("k1", 300, 1_000, Double.POSITIVE_INFINITY, 0));
+    }
+
+    @Test
     void softFractionFlagsAllowedReservationsWithoutBlocking() {
         SpendLedger.ReserveResult first = ledger.reserve("k1", 300, 1_000, 0.8, 0);
         assertInstanceOf(SpendLedger.ReserveResult.Allowed.class, first);

@@ -129,7 +129,7 @@ public final class InMemorySpendLedger implements SpendLedger {
             String keyId, long estimateMicroUsd, long hardCapMicroUsd, double softFraction, long windowSeconds) {
         Objects.requireNonNull(keyId, "keyId");
         requireNonNegative(estimateMicroUsd, "estimateMicroUsd");
-        if (softFraction < 0 || softFraction > 1) {
+        if (!(softFraction >= 0 && softFraction <= 1)) {
             throw new IllegalArgumentException("softFraction must be in [0, 1] (got " + softFraction + ")");
         }
         // Defense-in-depth: clamp the estimate to the cap when a cap applies.

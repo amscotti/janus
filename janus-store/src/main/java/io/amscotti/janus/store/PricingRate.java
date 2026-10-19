@@ -85,19 +85,22 @@ public record PricingRate(
     }
 
     public PricingRate {
-        if (inputPer1K < 0
-                || outputPer1K < 0
-                || cacheReadPer1K < 0
-                || cacheCreationPer1K < 0
+        // Finiteness is part of the contract: TOML admits nan/inf spellings, and
+        // a NaN rate would slip past a `< 0` check and price every request at
+        // $0 (a silent budget bypass); an infinite rate saturates estimates.
+        if (invalidRate(inputPer1K)
+                || invalidRate(outputPer1K)
+                || invalidRate(cacheReadPer1K)
+                || invalidRate(cacheCreationPer1K)
                 || defaultMaxTokens < 0
-                || webSearchPer1K < 0
+                || invalidRate(webSearchPer1K)
                 || longContextThreshold < 0
-                || longInputPer1K < 0
-                || longOutputPer1K < 0
-                || longCacheReadPer1K < 0
-                || longCacheCreationPer1K < 0) {
+                || invalidRate(longInputPer1K)
+                || invalidRate(longOutputPer1K)
+                || invalidRate(longCacheReadPer1K)
+                || invalidRate(longCacheCreationPer1K)) {
             throw new IllegalArgumentException(
-                    "rates, default-max-tokens and long-context knobs must be non-negative (got input="
+                    "rates, default-max-tokens and long-context knobs must be finite and non-negative (got input="
                             + inputPer1K
                             + ", output="
                             + outputPer1K
@@ -122,6 +125,10 @@ public record PricingRate(
                     "long-context-threshold is set but every long-* rate is 0 — set long-input-per-1k /"
                             + " long-output-per-1k (and cache rates if needed)");
         }
+    }
+
+    private static boolean invalidRate(double rate) {
+        return !Double.isFinite(rate) || rate < 0;
     }
 
     /**
