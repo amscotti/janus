@@ -27,8 +27,9 @@ enum Face {
     /** The OpenAI chat-completions face ({@code POST /v1/chat/completions}). */
     OPENAI("openai", "/v1/chat/completions", Match.EXACT),
 
-    /** The Anthropic messages face ({@code POST /v1/messages}). */
-    ANTHROPIC("anthropic", "/v1/messages", Match.EXACT),
+    /** The Anthropic messages face ({@code POST /v1/messages} +
+     * {@code POST /v1/messages/count_tokens}). */
+    ANTHROPIC("anthropic", "/v1/messages", Match.EXACT, "/v1/messages/count_tokens"),
 
     /** The OpenAI Responses face ({@code /v1/responses*}, any method). */
     RESPONSES("responses", "/v1/responses", Match.PREFIX);
@@ -41,11 +42,17 @@ enum Face {
     private final String label;
     private final String route;
     private final Match match;
+    private final String extraExactRoute;
 
     Face(String label, String route, Match match) {
+        this(label, route, match, null);
+    }
+
+    Face(String label, String route, Match match, String extraExactRoute) {
         this.label = label;
         this.route = route;
         this.match = match;
+        this.extraExactRoute = extraExactRoute;
     }
 
     /** The Tier-1 {@code face} metrics label (never a model alias or request id). */
@@ -61,7 +68,8 @@ enum Face {
     /** Whether this face requires a virtual key for the given (already normalized) path. */
     boolean requiresVirtualKey(String normalizedPath) {
         return switch (match) {
-            case EXACT -> normalizedPath.equals(route);
+            case EXACT ->
+                normalizedPath.equals(route) || (extraExactRoute != null && normalizedPath.equals(extraExactRoute));
             // Prefix boundary: the route itself or a sub-path beneath it — never
             // `/v1/responsesfoo` (the same boundary discipline as the filter's /key
             // branch: equals(route) || startsWith(route + "/")).

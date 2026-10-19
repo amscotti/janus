@@ -3,6 +3,14 @@ name = "janus"
 
 [micronaut.server]
 port = 8080
+# Request-body ceiling. Micronaut's 10MB defaults reject legitimate
+# 1M-context prompts (multi-MB JSON, more with base64 vision parts); 32MB
+# matches the standard Messages endpoint's own ceiling while still bounding
+# per-request memory. Both knobs bind: max-request-size is the hard
+# content-length ceiling, max-request-buffer-size caps how much body the
+# @Body String binding buffers. Oversize requests get a 413.
+max-request-size = "32MB"
+max-request-buffer-size = "32MB"
 
 # Management endpoints.
 # [endpoints.all] flips Micronaut's endpoint default-EnabledCondition on for EVERY

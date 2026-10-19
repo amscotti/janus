@@ -27,6 +27,8 @@ import java.util.stream.Stream;
  * finally block) to release the upstream connection — closing is the only way the
  * connection is released, even after the stream has been fully consumed. The gateway
  * owns this lifecycle; the router preserves it by returning the stream unwrapped.
+ * <li>{@link #countTokens(ChatRequest)} is an optional capability (Anthropic
+ * token counting); backends without it keep the defaults.
  * <li>{@code meta} passes through untouched for backends: delegation is
  * transparent, a backend never writes {@link ChatRequest#meta} or
  * {@link ChatResponse#meta}, and reads only its own documented whitelisted
@@ -63,4 +65,17 @@ public interface ChatBackend {
      * caller must close the returned stream to release the upstream connection.
      */
     Stream<StreamChunk> stream(ChatRequest request);
+
+    /** Whether this backend can count input tokens upstream (default: no). */
+    default boolean supportsTokenCounting() {
+        return false;
+    }
+
+    /**
+     * Count the input tokens {@code request} would consume on this backend.
+     * Only meaningful when {@link #supportsTokenCounting()}.
+     */
+    default long countTokens(ChatRequest request) {
+        throw new UnsupportedOperationException("token counting is not supported by backend " + name());
+    }
 }

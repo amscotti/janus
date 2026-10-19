@@ -19,8 +19,11 @@ class FaceTest {
     void chatFacesMatchExactlyAndOnlyTheirRoute() {
         assertTrue(Face.OPENAI.requiresVirtualKey("/v1/chat/completions"));
         assertTrue(Face.ANTHROPIC.requiresVirtualKey("/v1/messages"));
+        assertTrue(Face.ANTHROPIC.requiresVirtualKey("/v1/messages/count_tokens"), "count_tokens is authenticated");
+        assertEquals(Face.ANTHROPIC, Face.of("/v1/messages/count_tokens").orElseThrow());
         assertFalse(Face.OPENAI.requiresVirtualKey("/v1/chat/completions/extra"));
         assertFalse(Face.ANTHROPIC.requiresVirtualKey("/v1/messagesfoo"));
+        assertFalse(Face.ANTHROPIC.requiresVirtualKey("/v1/messages/count_tokens/extra"));
         assertTrue(Face.OPENAI.gatesOnPostOnly(), "the chat faces 401 only on POST");
         assertTrue(Face.ANTHROPIC.gatesOnPostOnly());
     }

@@ -21,7 +21,10 @@ final class FakeBackend implements ChatBackend {
     final Stream<StreamChunk> stream;
     final List<ChatRequest> completeCalls = new ArrayList<>();
     final List<ChatRequest> streamCalls = new ArrayList<>();
+    final List<ChatRequest> countTokensCalls = new ArrayList<>();
     final AtomicBoolean streamClosed = new AtomicBoolean();
+    boolean tokenCounting;
+    long tokenCount;
 
     FakeBackend(String name, ChatResponse response, Stream<StreamChunk> stream) {
         this.name = name;
@@ -50,5 +53,16 @@ final class FakeBackend implements ChatBackend {
     public Stream<StreamChunk> stream(ChatRequest request) {
         streamCalls.add(request);
         return stream;
+    }
+
+    @Override
+    public boolean supportsTokenCounting() {
+        return tokenCounting;
+    }
+
+    @Override
+    public long countTokens(ChatRequest request) {
+        countTokensCalls.add(request);
+        return tokenCount;
     }
 }

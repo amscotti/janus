@@ -105,6 +105,7 @@ public final class AnthropicAdapter implements ProviderAdapter {
     public static final String DEFAULT_BASE_URL = "https://api.anthropic.com";
     public static final String DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
     public static final String MESSAGES_PATH = "/v1/messages";
+    public static final String COUNT_TOKENS_PATH = "/v1/messages/count_tokens";
 
     private static final String MESSAGE_STOP = "message_stop";
     /** Connect deadline (docs/architecture.md timeouts table) — pinned by TimeoutContractTest. */
@@ -292,6 +293,47 @@ public final class AnthropicAdapter implements ProviderAdapter {
     }
 
     @Override
+    public boolean supportsTokenCounting() {
+        return true;
+    }
+
+    /**
+     * {@code POST /v1/messages/count_tokens}: the Messages request shape
+     * without {@code max_tokens}/{@code stream} (the codec's count-tokens
+     * encode); the {@code {"input_tokens": N}} response is probed with
+     * {@link JsonProbe} (no second JSON parser in this module). Errors map
+     * exactly like {@link #complete(ChatRequest)}.
+     */
+    @Override
+    public long countTokens(ChatRequest request) {
+        Objects.requireNonNull(request, "request");
+        String body = codec.encodeCountTokensRequest(request);
+        HttpResponse<InputStream> response =
+                send(httpRequest(countTokensEndpoint(), body, request), HttpResponse.BodyHandlers.ofInputStream());
+        int status = response.statusCode();
+        if (!HttpSupport.isSuccess(status)) {
+            throw errorStatusException(
+                    response, bodyReadTimeout, status, "upstream returned HTTP " + status + " for token counting");
+        }
+        String responseBody;
+        try {
+            responseBody = HttpSupport.readBody(response.body(), bodyReadTimeout);
+        } finally {
+            HttpSupport.closeQuietly(response.body());
+        }
+        String raw = JsonProbe.jsonMemberValue(responseBody, "input_tokens");
+        try {
+            return Long.parseLong(raw == null ? "" : raw.trim());
+        } catch (NumberFormatException e) {
+            throw new ProviderException(
+                    ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD,
+                    "upstream returned an invalid token-count body",
+                    null,
+                    e);
+        }
+    }
+
+    @Override
     public Stream<StreamChunk> stream(ChatRequest request) {
         Objects.requireNonNull(request, "request");
         HttpResponse<InputStream> response = send(request, true, HttpResponse.BodyHandlers.ofInputStream());
@@ -316,7 +358,10 @@ public final class AnthropicAdapter implements ProviderAdapter {
     // ------------------------------------------------------------------ HTTP
 
     private <T> HttpResponse<T> send(ChatRequest request, boolean stream, HttpResponse.BodyHandler<T> handler) {
-        HttpRequest httpRequest = httpRequest(request, stream);
+        return send(httpRequest(request, stream), handler);
+    }
+
+    private <T> HttpResponse<T> send(HttpRequest httpRequest, HttpResponse.BodyHandler<T> handler) {
         try {
             return httpClient.send(httpRequest, handler);
         } catch (HttpTimeoutException e) {
@@ -337,8 +382,11 @@ public final class AnthropicAdapter implements ProviderAdapter {
     }
 
     private HttpRequest httpRequest(ChatRequest request, boolean stream) {
-        String body = codec.encodeRequest(withStream(request, stream));
-        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint())
+        return httpRequest(endpoint(), codec.encodeRequest(withStream(request, stream)), request);
+    }
+
+    private HttpRequest httpRequest(URI uri, String body, ChatRequest request) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(requestTimeout)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
@@ -352,6 +400,11 @@ public final class AnthropicAdapter implements ProviderAdapter {
             builder.header("anthropic-beta", header);
         }
         return builder.build();
+    }
+
+    private URI countTokensEndpoint() {
+        // Goes through endpoint() so the blank-base discovery guard applies.
+        return URI.create(endpoint() + "/count_tokens");
     }
 
     private URI endpoint() {

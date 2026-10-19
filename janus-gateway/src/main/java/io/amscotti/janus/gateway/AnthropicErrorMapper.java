@@ -5,6 +5,7 @@ import io.amscotti.janus.core.codec.AnthropicErrorBody;
 import io.amscotti.janus.core.codec.AnthropicErrorPayload;
 import io.amscotti.janus.provider.ProviderException;
 import io.amscotti.janus.router.UnknownModelException;
+import io.amscotti.janus.router.UnsupportedTokenCountingException;
 import io.amscotti.janus.store.UnpricedModelException;
 import io.micronaut.http.HttpStatus;
 
@@ -19,6 +20,9 @@ import io.micronaut.http.HttpStatus;
  * AnthropicCodecException TYPE_INVALID_REQUEST | 400 | invalid_request_error
  * AnthropicCodecException TYPE_API_ERROR | 500 | api_error
  * UnknownModelException | 404 | not_found_error
+ * ContentLengthExceeded/BufferLengthExceeded | 413 | invalid_request_error
+ * HttpStatusException (framework, e.g. 415) | its status | invalid_request_error
+ * UnsupportedTokenCountingException | 400 | invalid_request_error
  * ProviderException TYPE_AUTH | 401 | authentication_error
  * ProviderException TYPE_RATE_LIMITED | 429 | rate_limit_error
  * ProviderException TYPE_UPSTREAM_5XX | 502 | api_error
@@ -89,6 +93,9 @@ class AnthropicErrorMapper {
         if (throwable instanceof UnknownModelException unknown) {
             return mapping(HttpStatus.NOT_FOUND, TYPE_NOT_FOUND_ERROR, unknown.getMessage());
         }
+        if (throwable instanceof UnsupportedTokenCountingException unsupported) {
+            return mapping(HttpStatus.BAD_REQUEST, TYPE_INVALID_REQUEST, unsupported.getMessage());
+        }
         if (throwable instanceof io.amscotti.janus.router.BackendException backend) {
             // The router's own typed dispatch failure (probe-slot contention during a
             // half-open transition, no claimable candidate) — the same availability
@@ -131,6 +138,27 @@ class AnthropicErrorMapper {
         }
         if (throwable instanceof UnpricedModelException unpriced) {
             return mapping(HttpStatus.BAD_REQUEST, TYPE_INVALID_REQUEST, unpriced.getMessage());
+        }
+        if (throwable instanceof io.micronaut.http.exceptions.ContentLengthExceededException tooLarge) {
+            return mapping(
+                    HttpStatus.REQUEST_ENTITY_TOO_LARGE, TYPE_INVALID_REQUEST, redactSecrets(tooLarge.getMessage()));
+        }
+        if (throwable instanceof io.micronaut.http.exceptions.BufferLengthExceededException) {
+            return mapping(
+                    HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                    TYPE_INVALID_REQUEST,
+                    "request body exceeds the maximum buffered size");
+        }
+        if (throwable instanceof io.micronaut.http.exceptions.HttpStatusException httpStatus) {
+            // Framework client errors (413 body too large, 415 unsupported
+            // media type): keep the framework status in the face envelope.
+            String message = httpStatus.getMessage();
+            return mapping(
+                    httpStatus.getStatus(),
+                    TYPE_INVALID_REQUEST,
+                    message == null || message.isBlank()
+                            ? httpStatus.getStatus().getReason()
+                            : redactSecrets(message));
         }
         if (throwable instanceof RateLimitExceededException rateLimit) {
             return switch (rateLimit.reason()) {

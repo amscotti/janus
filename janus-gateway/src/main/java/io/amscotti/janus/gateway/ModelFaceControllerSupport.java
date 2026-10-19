@@ -160,6 +160,26 @@ abstract class ModelFaceControllerSupport {
     protected abstract int statusOf(Throwable throwable);
 
     /**
+     * Token counting dispatch (the Anthropic face's {@code count_tokens}
+     * route): a pre-flight estimate, not a completion — no governance
+     * reserve/settle and no spend, so it deliberately does not run the
+     * {@link #execute} ladder. Callers still scope-check and meter the
+     * request (see {@link #recordMetered}).
+     */
+    protected final long dispatchCountTokens(ChatRequest request) {
+        return router.countTokens(request);
+    }
+
+    /** Best-effort Tier-1 request metering for side routes outside {@link #execute}. */
+    protected final void recordMetered(int status, long startNanos, HttpRequest<?> httpRequest) {
+        try {
+            metricsRecorder.recordRequest(face(), status, elapsedMillis(startNanos), keyIdOf(httpRequest));
+        } catch (RuntimeException e) {
+            LOG.warn("metrics recordRequest failed (contained): {}", String.valueOf(e.getMessage()));
+        }
+    }
+
+    /**
      * The shared ladder (javadoc comments preserved from the extracted controllers —
      * they are the invariant documentation, not decoration).
      */

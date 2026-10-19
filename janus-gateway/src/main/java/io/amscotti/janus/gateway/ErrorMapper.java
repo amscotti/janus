@@ -18,6 +18,8 @@ import java.util.regex.Pattern;
  * OpenAiCodecException TYPE_INVALID_REQUEST | 400 | invalid_request_error | null
  * OpenAiCodecException TYPE_API_ERROR | 500 | api_error | null
  * UnknownModelException | 404 | invalid_request_error | model_not_found
+ * ContentLengthExceeded/BufferLengthExceeded | 413 | invalid_request_error | —
+ * HttpStatusException (framework, e.g. 415) | its status | invalid_request_error | —
  * ProviderException TYPE_AUTH | 401 | authentication_error | null
  * ProviderException TYPE_RATE_LIMITED | 429 | rate_limit_error | rate_limit_exceeded
  * ProviderException TYPE_UPSTREAM_5XX | 502 | server_error | null
@@ -182,6 +184,33 @@ class ErrorMapper {
                     // The reference's error_code/1 maps authorization to "forbidden".
                     mapping(HttpStatus.FORBIDDEN, TYPE_PERMISSION_ERROR, keyAuth.getMessage(), CODE_FORBIDDEN);
             };
+        }
+        if (throwable instanceof io.micronaut.http.exceptions.ContentLengthExceededException tooLarge) {
+            return mapping(
+                    HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                    TYPE_INVALID_REQUEST,
+                    redactSecrets(tooLarge.getMessage()),
+                    null);
+        }
+        if (throwable instanceof io.micronaut.http.exceptions.BufferLengthExceededException tooLarge) {
+            return mapping(
+                    HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                    TYPE_INVALID_REQUEST,
+                    "request body exceeds the maximum buffered size",
+                    null);
+        }
+        if (throwable instanceof io.micronaut.http.exceptions.HttpStatusException httpStatus) {
+            // Framework client errors raised before/around route code (413 body
+            // too large, 415 unsupported media type): keep the framework status
+            // in the face envelope instead of degrading to the catch-all 500.
+            String message = httpStatus.getMessage();
+            return mapping(
+                    httpStatus.getStatus(),
+                    TYPE_INVALID_REQUEST,
+                    message == null || message.isBlank()
+                            ? httpStatus.getStatus().getReason()
+                            : redactSecrets(message),
+                    null);
         }
         if (throwable instanceof RateLimitExceededException rateLimit) {
             return switch (rateLimit.reason()) {

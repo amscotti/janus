@@ -189,6 +189,38 @@ class GatewayExceptionHandlerTest {
         assertEquals("30", response.getHeaders().get(HttpHeaders.RETRY_AFTER), "upstream Retry-After forwarded");
         assertTrue(response.body().contains("\"type\":\"error\""), response.body());
     }
+    // ---------------------------- framework client errors keep their status
+
+    @Test
+    void oversizedBodyIs413OnBothFaces() {
+        // Micronaut raises ContentLengthExceededException during body binding —
+        // before any controller code. It must surface as a per-face 413, never
+        // the catch-all 500.
+        var tooBig = new io.micronaut.http.exceptions.ContentLengthExceededException(
+                "Content Length [33554433] exceeds max request size [33554432]");
+        HttpResponse<String> anthropic = handler.handle(HttpRequest.POST("/v1/messages", "{}"), tooBig);
+        assertEquals(HttpStatus.REQUEST_ENTITY_TOO_LARGE, anthropic.getStatus());
+        assertTrue(anthropic.body().contains("\"type\":\"invalid_request_error\""), anthropic.body());
+        HttpResponse<String> openAi = handler.handle(HttpRequest.POST("/v1/chat/completions", "{}"), tooBig);
+        assertEquals(HttpStatus.REQUEST_ENTITY_TOO_LARGE, openAi.getStatus());
+        assertTrue(openAi.body().contains("\"error\":{\"message\""), openAi.body());
+        assertTrue(openAi.body().contains("\"type\":\"invalid_request_error\""), openAi.body());
+    }
+
+    @Test
+    void unsupportedMediaTypeIs415OnBothFaces() {
+        var wrongType = new io.micronaut.http.exceptions.HttpStatusException(
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type");
+        assertEquals(
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                handler.handle(HttpRequest.POST("/v1/messages", "{}"), wrongType)
+                        .getStatus());
+        assertEquals(
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+                handler.handle(HttpRequest.POST("/v1/chat/completions", "{}"), wrongType)
+                        .getStatus());
+    }
+
     // ---------------------------- the 5xx log line is secret-redacted
 
     @Test

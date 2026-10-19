@@ -396,6 +396,28 @@ public final class Router {
     }
 
     /**
+     * Count the input tokens {@code request} would consume for its model
+     * alias. Token counting is tokenizer-specific, so this deliberately does
+     * <b>not</b> load-balance: the first candidate (config order) that
+     * supports token counting serves, and its count is the answer for that
+     * candidate's upstream model. No supporting candidate →
+     * {@link UnsupportedTokenCountingException}; unknown alias →
+     * {@link UnknownModelException}. Single attempt, no breaker/retry
+     * accounting (a pre-flight estimate, not a completion).
+     */
+    public long countTokens(ChatRequest request) {
+        Objects.requireNonNull(request, "request");
+        List<ChatBackend> candidates =
+                balancedRoutes == null ? List.of(route(request.model())) : resolveCandidates(request.model());
+        for (ChatBackend candidate : candidates) {
+            if (candidate.supportsTokenCounting()) {
+                return candidate.countTokens(request);
+            }
+        }
+        throw new UnsupportedTokenCountingException(request.model());
+    }
+
+    /**
      * Unmodifiable set of the configured model aliases ( {@code GET /v1/models}).
      * Insertion order is preserved (config order) so the listing is deterministic.
      */

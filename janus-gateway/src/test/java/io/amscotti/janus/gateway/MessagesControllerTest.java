@@ -128,6 +128,62 @@ class MessagesControllerTest {
     }
 
     @Test
+    void largeBodyWithinRaisedLimitIsAccepted() {
+        // 1M-context prompts exceed Micronaut's 10MB default: an ~11MB body must
+        // reach the codec (application.toml pins 32MB), not die in binding.
+        TestRouterFactory.BACKEND.completeReturns(new ChatResponse(
+                "msg_big",
+                "message",
+                1_700_000_000L,
+                "deepseek-v4-flash",
+                List.of(new ChatChoice(0, new AssistantMessage("ok", null), "end_turn")),
+                new Usage(10, 1, 11),
+                ChatResponse.STOP_REASON_STOP,
+                Map.of(),
+                Map.of()));
+        String padding = "x".repeat(11 * 1024 * 1024);
+        String body = "{\"model\":\"deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"" + padding
+                + "\"}],\"max_tokens\":16}";
+        HttpResponse<String> http = client.toBlocking()
+                .exchange(HttpRequest.POST("/v1/messages", body).contentType(MediaType.APPLICATION_JSON), String.class);
+        assertEquals(HttpStatus.OK, http.getStatus());
+    }
+
+    @Test
+    void bodyOver32MegabytesIs413AnthropicEnvelope() {
+        String padding = "x".repeat(33 * 1024 * 1024);
+        String body = "{\"model\":\"deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"" + padding
+                + "\"}],\"max_tokens\":16}";
+        HttpResponse<String> http =
+                errorResponse(HttpRequest.POST("/v1/messages", body).contentType(MediaType.APPLICATION_JSON));
+        assertEquals(HttpStatus.REQUEST_ENTITY_TOO_LARGE, http.getStatus());
+        assertTrue(http.body().contains("\"type\":\"invalid_request_error\""), http.body());
+    }
+
+    @Test
+    void countTokensReturnsInputTokens() {
+        TestRouterFactory.BACKEND.countTokensReturns(321);
+        HttpResponse<String> http = client.toBlocking()
+                .exchange(
+                        HttpRequest.POST("/v1/messages/count_tokens", anthropicBody(false))
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("anthropic-version", "2023-06-01"),
+                        String.class);
+        assertEquals(HttpStatus.OK, http.getStatus());
+        assertEquals("{\"input_tokens\":321}", http.body());
+    }
+
+    @Test
+    void countTokensUnsupportedBackendIs400InvalidRequest() {
+        TestRouterFactory.BACKEND.countTokensUnsupported();
+        HttpResponse<String> http = errorResponse(HttpRequest.POST("/v1/messages/count_tokens", anthropicBody(false))
+                .contentType(MediaType.APPLICATION_JSON));
+        assertEquals(HttpStatus.BAD_REQUEST, http.getStatus());
+        assertTrue(http.body().contains("\"type\":\"invalid_request_error\""), http.body());
+        assertTrue(http.body().contains("token counting is not supported"), http.body());
+    }
+
+    @Test
     void unknownModelIs404NotFoundError() {
         HttpResponse<String> http =
                 errorResponse(HttpRequest.POST("/v1/messages", anthropicBody("no-such-model", false))

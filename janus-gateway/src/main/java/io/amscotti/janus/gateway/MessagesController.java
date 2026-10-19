@@ -39,6 +39,11 @@ import org.reactivestreams.Publisher;
  * header (a per-request client opt-in; see
  * {@link io.amscotti.janus.provider.ProviderAdapter}).
  *
+ * <p>The face also serves {@code POST /v1/messages/count_tokens} (Anthropic
+ * token counting): same decode/scope/metering discipline, but a pre-flight
+ * estimate — no governance spend. Only Anthropic-native backends can count;
+ * other providers surface a typed 400.
+ *
  * <p>{@code @ExecuteOn(TaskExecutors.BLOCKING)}: the whole invocation — including the
  * blocking upstream send inside {@code router.stream}/{@code router.complete} — runs
  * on the blocking pool, never on the Netty event loop (Micronaut 5.1 has no virtual
@@ -84,6 +89,25 @@ class MessagesController extends ModelFaceControllerSupport {
     @ExecuteOn(TaskExecutors.BLOCKING)
     HttpResponse<?> messages(@Body @Nullable String rawBody, HttpRequest<?> httpRequest) {
         return execute(rawBody, httpRequest);
+    }
+
+    @Post(
+            value = "/messages/count_tokens",
+            consumes = MediaType.APPLICATION_JSON,
+            produces = MediaType.APPLICATION_JSON)
+    @ExecuteOn(TaskExecutors.BLOCKING)
+    HttpResponse<String> countTokens(@Body @Nullable String rawBody, HttpRequest<?> httpRequest) {
+        long startNanos = System.nanoTime();
+        try {
+            ChatRequest request = decorate(httpRequest, decode(rawBody));
+            KeyAuthFilter.checkScope(httpRequest, request.model());
+            long inputTokens = dispatchCountTokens(request);
+            recordMetered(200, startNanos, httpRequest);
+            return HttpResponse.ok("{\"input_tokens\":" + inputTokens + "}").contentType(MediaType.APPLICATION_JSON);
+        } catch (RuntimeException e) {
+            recordMetered(statusOf(e), startNanos, httpRequest);
+            throw e;
+        }
     }
 
     @Override

@@ -652,7 +652,7 @@ public record JanusConfig(
          * config errors, null values (absent keys) are the factory-default cases.
          */
         public LimitsConfig {
-            if (softCapFraction != null && (softCapFraction < 0.0 || softCapFraction > 1.0)) {
+            if (softCapFraction != null && !(softCapFraction >= 0.0 && softCapFraction <= 1.0)) {
                 throw new IllegalArgumentException(
                         "[janus.limits] soft-cap-fraction must be in [0, 1] (got " + softCapFraction + ")");
             }

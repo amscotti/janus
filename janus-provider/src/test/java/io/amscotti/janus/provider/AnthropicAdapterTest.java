@@ -139,6 +139,30 @@ class AnthropicAdapterTest {
     }
 
     @Test
+    void countTokensHitsCountTokensPathAndReturnsInputTokens() {
+        serveResponse(200, "application/json", "{\"input_tokens\":1234}");
+        ChatRequest request = request(false);
+
+        assertTrue(adapter.supportsTokenCounting());
+        assertEquals(1234, adapter.countTokens(request));
+        assertEquals("/v1/messages/count_tokens", capturedPath.get());
+        assertEquals(CODEC.encodeCountTokensRequest(request), capturedBody.get());
+        assertFalse(capturedBody.get().contains("max_tokens"), capturedBody.get());
+        assertEquals("sk-ant-test", capturedXApiKey.get());
+    }
+
+    @Test
+    void countTokensErrorStatusMapsLikeComplete() {
+        serveResponse(
+                400,
+                "application/json",
+                "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad\"}}");
+        ProviderException e = assertThrows(ProviderException.class, () -> adapter.countTokens(request(false)));
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, e.type());
+        assertEquals(400, e.statusCode());
+    }
+
+    @Test
     void blankSecretOmitsXApiKeyHeader() {
         adapter = new AnthropicAdapter(baseUri.toString(), "");
         serveResponse(200, "application/json", RESPONSE_BODY);

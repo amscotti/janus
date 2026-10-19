@@ -28,6 +28,9 @@ import java.util.stream.Stream;
  * finally block) to release the upstream connection — closing is the only way the
  * connection is released, even after the stream has been fully consumed (the
  * gateway,, owns the lifecycle; pins the contract with a test).
+ * <li>{@link #countTokens(ChatRequest)} is an optional capability (Anthropic's
+ * {@code POST /v1/messages/count_tokens}); adapters without an upstream
+ * token-counting endpoint keep the defaults (unsupported).
  * </ul>
  *
  * <p><b>Errors.</b> Upstream and transport failures surface as unchecked {@link
@@ -89,4 +92,21 @@ public interface ProviderAdapter {
      * returned stream to release the upstream connection.
      */
     Stream<StreamChunk> stream(ChatRequest request);
+
+    /** Whether this adapter can count input tokens upstream (default: no). */
+    default boolean supportsTokenCounting() {
+        return false;
+    }
+
+    /**
+     * Count the input tokens {@code request} would consume upstream, without
+     * running a completion. Only meaningful when {@link #supportsTokenCounting()}.
+     */
+    default long countTokens(ChatRequest request) {
+        throw new ProviderException(
+                ProviderException.TYPE_UPSTREAM_4XX,
+                "token counting is not supported by provider " + name(),
+                400,
+                null);
+    }
 }

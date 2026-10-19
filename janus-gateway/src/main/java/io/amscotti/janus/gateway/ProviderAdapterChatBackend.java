@@ -48,4 +48,14 @@ final class ProviderAdapterChatBackend implements ChatBackend {
     public Stream<StreamChunk> stream(ChatRequest request) {
         return adapter.stream(request);
     }
+
+    @Override
+    public boolean supportsTokenCounting() {
+        return adapter.supportsTokenCounting();
+    }
+
+    @Override
+    public long countTokens(ChatRequest request) {
+        return adapter.countTokens(request);
+    }
 }

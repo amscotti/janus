@@ -230,7 +230,7 @@ final class Governance {
         this.spendLedger = Objects.requireNonNull(spendLedger, "spendLedger");
         this.notifier = Objects.requireNonNull(notifier, "notifier");
         this.metricsRecorder = Objects.requireNonNull(metricsRecorder, "metricsRecorder");
-        if (softCapFraction < 0 || softCapFraction > 1) {
+        if (!(softCapFraction >= 0 && softCapFraction <= 1)) {
             throw new IllegalArgumentException("softCapFraction must be in [0, 1] (got " + softCapFraction + ")");
         }
         this.softCapFraction = softCapFraction;

@@ -25,6 +25,9 @@ final class FakeBackend implements ChatBackend {
     private final AtomicBoolean streamClosed = new AtomicBoolean();
     final List<ChatRequest> completeCalls = new ArrayList<>();
     final List<ChatRequest> streamCalls = new ArrayList<>();
+    final List<ChatRequest> countTokensCalls = new ArrayList<>();
+    private boolean tokenCounting;
+    private long tokenCount;
 
     FakeBackend(String name) {
         this(name, "http://fake/" + name);
@@ -43,6 +46,15 @@ final class FakeBackend implements ChatBackend {
     void completeFails(Throwable failure) {
         this.completeFailure = failure;
         this.response = null;
+    }
+
+    void countTokensReturns(long count) {
+        this.tokenCounting = true;
+        this.tokenCount = count;
+    }
+
+    void countTokensUnsupported() {
+        this.tokenCounting = false;
     }
 
     void streamReturns(Stream<StreamChunk> stream) {
@@ -83,5 +95,16 @@ final class FakeBackend implements ChatBackend {
             throw new IllegalStateException("no stream configured for fake backend " + name);
         }
         return stream.onClose(() -> streamClosed.set(true));
+    }
+
+    @Override
+    public boolean supportsTokenCounting() {
+        return tokenCounting;
+    }
+
+    @Override
+    public long countTokens(ChatRequest request) {
+        countTokensCalls.add(request);
+        return tokenCount;
     }
 }
