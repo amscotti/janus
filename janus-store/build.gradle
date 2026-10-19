@@ -12,12 +12,12 @@ dependencies {
  implementation "org.postgresql:postgresql:${postgresVersion}"
 
  // parity suite: real Postgres via Testcontainers (Docker-gated, disabledWithoutDocker).
- testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
- testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+ testImplementation "org.testcontainers:testcontainers-postgresql:${testcontainersVersion}"
+ testImplementation "org.testcontainers:testcontainers-junit-jupiter:${testcontainersVersion}"
 }
 
 // (close): run the Testcontainers suites with Ryuk DISABLED. Testcontainers
-// 1.21.x reads only the TESTCONTAINERS_RYUK_DISABLED env var (the old ryuk.disabled
+// Testcontainers reads only the TESTCONTAINERS_RYUK_DISABLED env var (the old ryuk.disabled
 // property is gone), and Ryuk cannot start inside the lima Docker VM this machine uses
 // (its socket mount path does not exist inside the VM) — which silently skipped the
 // whole Postgres parity suite before. Container cleanup is handled by the suites'

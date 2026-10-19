@@ -39,8 +39,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * The automated two-node integration test (Docker-gated).
@@ -154,7 +154,7 @@ class TwoNodeIntegrationTest {
     private static final int PG_HOST_PORT = 15432;
 
     /** The shared Postgres — host port {@value #PG_HOST_PORT} bound to match the test-task env pin. */
-    private static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>(PG_IMAGE)
+    private static final PostgreSQLContainer PG = new PostgreSQLContainer(PG_IMAGE)
             .withDatabaseName("janus")
             .withUsername("janus")
             .withPassword("janus")

@@ -124,8 +124,8 @@ dependencies {
  // factory/boot tests: the postgres branch of CallStoreFactory against a real
  // Postgres (Testcontainers, Docker-gated — same versions as the janus-store parity
  // suite; the factory's memory branch needs no Docker).
- testImplementation "org.testcontainers:postgresql:${testcontainersVersion}"
- testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+ testImplementation "org.testcontainers:testcontainers-postgresql:${testcontainersVersion}"
+ testImplementation "org.testcontainers:testcontainers-junit-jupiter:${testcontainersVersion}"
 }
 
 // TwoNodeIntegrationTest: two PRODUCTION-wired contexts resolve the
@@ -162,7 +162,7 @@ test {
  environment 'JANUS_DB_USER', 'janus'
  environment 'JANUS_DB_PASS', 'janus'
  // (close): Ryuk cannot start inside the lima Docker VM (see
- // janus-store/build.gradle) — testcontainers 1.21.x reads TESTCONTAINERS_RYUK_DISABLED.
+ // janus-store/build.gradle) — Testcontainers reads TESTCONTAINERS_RYUK_DISABLED.
  environment 'TESTCONTAINERS_RYUK_DISABLED', 'true'
 }
 

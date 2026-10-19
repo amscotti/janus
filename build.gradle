@@ -2,8 +2,8 @@
 // Module layout: core / provider / router / store / gateway / cli.
 
 plugins {
- id 'com.diffplug.spotless' version '8.9.0' apply false
- id 'net.ltgt.errorprone' version '5.1.0' apply false
+ id 'com.diffplug.spotless' version '8.10.4' apply false
+ id 'net.ltgt.errorprone' version '5.1.1' apply false
  id 'io.micronaut.application' version '5.0.2' apply false
  // Pin the GraalVM native plugin above io.micronaut.application's transitive
  // 1.1.2 (plugin-classpath conflict resolution picks this version): 1.1.4+
@@ -23,7 +23,7 @@ plugins {
 }
 
 // JaCoCo version pin (JDK 25-capable). Applied to every subproject below.
-ext.jacocoToolVersion = '0.8.13'
+ext.jacocoToolVersion = '0.8.15'
 
 // Micronaut compile-time DI / AOP classes that are not hand-written product code —
 // excluding them keeps the coverage report focused on application sources.

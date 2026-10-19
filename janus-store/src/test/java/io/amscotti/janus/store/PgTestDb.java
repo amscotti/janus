@@ -7,7 +7,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Clock;
 import javax.sql.DataSource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * Shared Testcontainers Postgres for the janus-store JDBC suites (the parity
@@ -26,7 +26,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 final class PgTestDb {
 
     /** The shared container (started once per JVM, see {@link #ensureStarted()}). */
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
 
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(POSTGRES::stop, "pg-testdb-shutdown"));
