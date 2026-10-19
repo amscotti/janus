@@ -105,7 +105,10 @@ def main() -> None:
     # burst even though they are pooled and stable afterward (verified: runs 2+ are
     # flat). Warm the pool first so the baseline sample measures steady state, not
     # pool warm-up.
-    _warmup(args.base_url, args.model, streams=5)
+    _warmup(args.base_url, args.model, streams=args.streams)
+    # Pool threads materialize with lag after a burst; let them land before
+    # the baseline sample or the measured batch inherits warm-up growth.
+    time.sleep(args.settle)
 
     threads_before = platform_threads(args.janus_pid)
 

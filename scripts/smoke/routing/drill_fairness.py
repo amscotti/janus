@@ -33,13 +33,17 @@ DUMMY_KEY = "janus-smoke-dummy-key"
 _BASE = ""
 
 
-def _warmup() -> None:
-    client = OpenAI(base_url=_BASE, api_key=DUMMY_KEY, timeout=30.0, max_retries=0)
-    list(client.chat.completions.create(
-        model="deepseek-v4-flash",
-        messages=[{"role": "user", "content": "mode=stream w24-fairness-warmup"}],
-        stream=True,
-))
+def _warmup(streams: int) -> None:
+    """Warm pooled platform threads at full burst width (see thread-slack note)."""
+    results: dict = {}
+    threads: list[threading.Thread] = []
+    for i in range(streams):
+        t = threading.Thread(target=_worker, args=(i, results), name=f"warmup-fair-{i}")
+        threads.append(t)
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60.0)
 
 
 def _worker(idx: int, results: dict) -> None:
@@ -91,7 +95,8 @@ def main() -> None:
     _BASE = args.base_url
     c1, c2 = [p.strip() for p in args.counters.split(",") if p.strip()]
 
-    _warmup()
+    _warmup(args.streams)
+    time.sleep(args.settle)
     threads_before = platform_threads(args.janus_pid)
     counters_before = snapshot([c1, c2])
 

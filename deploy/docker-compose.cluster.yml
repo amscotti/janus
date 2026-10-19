@@ -97,19 +97,21 @@ services:
     <<: *janus-node
     container_name: janus-cluster-1
     ports:
-      - "18081:8080"
+      # Host ports overridable like the LB port (a busy host may already
+      # serve on 18081-18083); defaults stay 18081-18083.
+      - "${JANUS_CLUSTER_NODE1_PORT:-18081}:8080"
 
   janus-2:
     <<: *janus-node
     container_name: janus-cluster-2
     ports:
-      - "18082:8080"
+      - "${JANUS_CLUSTER_NODE2_PORT:-18082}:8080"
 
   janus-3:
     <<: *janus-node
     container_name: janus-cluster-3
     ports:
-      - "18083:8080"
+      - "${JANUS_CLUSTER_NODE3_PORT:-18083}:8080"
 
   haproxy:
     # Digest-pinned: haproxy:2.9-alpine at its index digest for attestable,

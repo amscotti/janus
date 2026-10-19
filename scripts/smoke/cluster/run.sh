@@ -61,6 +61,12 @@ if command -v lsof >/dev/null && lsof -nP -iTCP:"$JANUS_CLUSTER_LB_PORT" -sTCP:L
 fi
 export JANUS_CLUSTER_LB_PORT
 LB="http://127.0.0.1:${JANUS_CLUSTER_LB_PORT}"
+# Per-node host ports (per-node /metrics scrapes); overridable like the LB port.
+JANUS_CLUSTER_NODE1_PORT="${JANUS_CLUSTER_NODE1_PORT:-18081}"
+JANUS_CLUSTER_NODE2_PORT="${JANUS_CLUSTER_NODE2_PORT:-18082}"
+JANUS_CLUSTER_NODE3_PORT="${JANUS_CLUSTER_NODE3_PORT:-18083}"
+export JANUS_CLUSTER_NODE1_PORT JANUS_CLUSTER_NODE2_PORT JANUS_CLUSTER_NODE3_PORT
+NODES="http://127.0.0.1:${JANUS_CLUSTER_NODE1_PORT},http://127.0.0.1:${JANUS_CLUSTER_NODE2_PORT},http://127.0.0.1:${JANUS_CLUSTER_NODE3_PORT}"
 if [[ "$JANUS_CLUSTER_LB_PORT" != "8080" ]]; then
   log "host :8080 is in use — publishing HAProxy on :${JANUS_CLUSTER_LB_PORT}"
 fi
@@ -166,9 +172,9 @@ boot_stack() {  # boot_stack <config-rel-to-deploy> <profiles...>
   log "compose up janus-1/2/3 + haproxy"
   compose "$@" up -d janus-1 janus-2 janus-3 haproxy > "$RUN_DIR/compose-up.log" 2>&1 \
     || { tail -80 "$RUN_DIR/compose-up.log" >&2; die "compose up nodes/lb FAILED"; }
-  wait_url "http://127.0.0.1:18081/health/readiness" "janus-1" 180
-  wait_url "http://127.0.0.1:18082/health/readiness" "janus-2" 180
-  wait_url "http://127.0.0.1:18083/health/readiness" "janus-3" 180
+  wait_url "http://127.0.0.1:${JANUS_CLUSTER_NODE1_PORT}/health/readiness" "janus-1" 180
+  wait_url "http://127.0.0.1:${JANUS_CLUSTER_NODE2_PORT}/health/readiness" "janus-2" 180
+  wait_url "http://127.0.0.1:${JANUS_CLUSTER_NODE3_PORT}/health/readiness" "janus-3" 180
   wait_url "${LB}/health/readiness" "haproxy" 60
   log "stack healthy (3 nodes + LB)"
 }
@@ -180,7 +186,7 @@ boot_stack() {  # boot_stack <config-rel-to-deploy> <profiles...>
   echo "- **Date:** $(date -u '+%Y-%m-%d %H:%M UTC')"
   echo "- **Commit:** $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "- **Image:** \`$IMAGE_TAG\`"
-  echo "- **LB:** ${LB}  ·  nodes :18081 :18082 :18083"
+  echo "- **LB:** ${LB}  ·  nodes :${JANUS_CLUSTER_NODE1_PORT} :${JANUS_CLUSTER_NODE2_PORT} :${JANUS_CLUSTER_NODE3_PORT}"
 } > "$RESULTS"
 
 # ---------------------------------------------------------------- image
@@ -210,7 +216,7 @@ else
   } >> "$RESULTS"
   run_drill "cluster through HAProxy" python3 "$HARNESS/drill_cluster.py" \
     --lb "$LB" \
-    --nodes http://127.0.0.1:18081,http://127.0.0.1:18082,http://127.0.0.1:18083 \
+    --nodes "$NODES" \
     --master-key "$MASTER_KEY" \
     --pg-container janus-cluster-postgres \
     --counter "$RUN_DIR/fake.counters.json"

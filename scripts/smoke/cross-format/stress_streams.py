@@ -49,23 +49,28 @@ def platform_threads(pid: int) -> int:
     raise RuntimeError(f"cannot measure platform thread count for pid {pid}")
 
 
-def _warmup(base_url: str) -> None:
-    """Drain both streaming paths once so pooled platform threads exist before sampling."""
-    oa = OpenAI(base_url=base_url, api_key=DUMMY_KEY, timeout=30.0, max_retries=0)
-    # sdk_base_url: the anthropic SDK appends /v1/messages to base_url itself — a
-    # /v1-prefixed gateway URL would hit /v1/v1/messages (404).
-    an = AnthropicClient(base_url=sdk_base_url(base_url), api_key=DUMMY_KEY, timeout=30.0, max_retries=0)
-    list(oa.chat.completions.create(
-        model="deepseek-v4-flash",
-        messages=[{"role": "user", "content": "mode=stream warmup-openai"}],
-        stream=True,
-))
-    list(an.messages.create(
-        model="deepseek-v4-flash",
-        max_tokens=MAX_TOKENS,
-        messages=[{"role": "user", "content": "mode=stream warmup-anthropic"}],
-        stream=True,
-))
+def _warmup(streams: int) -> None:
+    """Warm the pooled platform threads at full burst width before sampling.
+
+    One stream per face is not enough: the JDK HttpClient / Netty pools scale
+    up ONCE to the concurrent-connection width (observed +36..57 threads for
+    a 50-stream burst), which a single-stream warmup never triggers — the
+    measurement then attributes pool warm-up to the measured batch. Running
+    one full-width batch first keeps the check's teeth: a per-stream
+    platform-thread leak still grows on the measured batch.
+    """
+    results: dict = {}
+    threads: list[threading.Thread] = []
+    for i in range(streams):
+        if i % 2 == 0:
+            t = threading.Thread(target=_openai_worker, args=(i, results), name=f"warmup-oi-{i}")
+        else:
+            t = threading.Thread(target=_anthropic_worker, args=(i, results), name=f"warmup-ai-{i}")
+        threads.append(t)
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30.0)
 
 
 def _openai_worker(idx: int, results: dict) -> None:
@@ -138,7 +143,8 @@ def main() -> None:
     _BASE = args.base_url
 
     # Warm-up: pooled platform threads exist before the baseline sample.
-    _warmup(args.base_url)
+    _warmup(args.streams)
+    time.sleep(args.settle)
 
     threads_before = platform_threads(args.janus_pid)
 
