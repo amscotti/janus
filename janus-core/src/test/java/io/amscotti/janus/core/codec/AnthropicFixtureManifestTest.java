@@ -107,10 +107,11 @@ class AnthropicFixtureManifestTest {
     @Test
     void extendedThinkingStreamDecodesWithoutAborting() throws Exception {
         // The extended-thinking fixture exercises real Anthropic block/delta
-        // types the codec does not model (thinking_delta, signature_delta, server_tool_use)
-        // interleaved with text — the pre-fix codec threw InvalidTypeIdException on the
-        // first thinking_delta and killed the whole stream. The fixture must decode through
-        // the stateful decoder with the thinking/unknown frames dropped and the text kept.
+        // types (thinking_delta, signature_delta, server_tool_use) interleaved
+        // with text — the pre-modeling codec threw InvalidTypeIdException on
+        // the first thinking_delta and killed the whole stream. The fixture
+        // must decode through the stateful decoder with thinking kept as
+        // reasoning fragments, unknown frames dropped, and the text kept.
         List<SseTestFrames.SseFrame> frames = SseTestFrames.frames(read("extended-thinking.stream.sse"));
         assertEquals(12, frames.size(), "extended-thinking frame count (README record)");
         AnthropicStreamDecoder decoder = codec.newStreamDecoder();
@@ -121,13 +122,20 @@ class AnthropicFixtureManifestTest {
                 chunks.add(chunk);
             }
         }
-        // role chunk (id/model from message_start) + the single text delta + the terminal
-        // usage chunk — thinking frames and the server_tool_use block are dropped.
-        assertEquals(3, chunks.size(), "thinking/unknown frames must be dropped, never abort");
+        // role chunk (id/model from message_start) + thinking fragment +
+        // signature fragment + the single text delta + the terminal usage
+        // chunk — the server_tool_use block is dropped.
+        assertEquals(5, chunks.size(), "thinking kept, unknown frames dropped, never abort");
         assertEquals("msg_01", chunks.get(0).id());
-        assertEquals("The answer is 42.", chunks.get(1).choices().get(0).delta().content());
+        assertEquals(
+                "Let me",
+                chunks.get(1).choices().get(0).delta().reasoningContent().text());
+        assertEquals(
+                "sig_01",
+                chunks.get(2).choices().get(0).delta().reasoningContent().signature());
+        assertEquals("The answer is 42.", chunks.get(3).choices().get(0).delta().content());
         // message_start input 25 + message_delta output 12 → merged terminal usage.
-        assertEquals(new Usage(25, 12, 37), chunks.get(2).usage());
+        assertEquals(new Usage(25, 12, 37), chunks.get(4).usage());
     }
 
     @Test

@@ -25,6 +25,9 @@ import java.util.Map;
  * <p>{@code content} is a {@link String} for classic chat, or a list/array of multimodal
  * parts ({@code text} / {@code image_url}) — mapped onto
  * {@link io.amscotti.janus.core.model.ContentPart}s by the codec.
+ * {@code reasoningContent} is the assistant-message {@code reasoning_content}
+ * field (OpenAI-compatible reasoning replay); it has a per-message canonical
+ * home ({@code AssistantMessage.reasoningContents}) and is never folded.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record OpenAiMessage(
@@ -33,9 +36,21 @@ public record OpenAiMessage(
         String name,
         String toolCallId,
         List<OpenAiToolCall> toolCalls,
+        String reasoningContent,
 
         @JsonAnySetter @JsonInclude(JsonInclude.Include.NON_EMPTY)
         Map<String, Object> extras) {
+
+    /** Compatibility form at the earlier (6-arg) arity — no reasoning content. */
+    public OpenAiMessage(
+            String role,
+            Object content,
+            String name,
+            String toolCallId,
+            List<OpenAiToolCall> toolCalls,
+            Map<String, Object> extras) {
+        this(role, content, name, toolCallId, toolCalls, null, extras);
+    }
 
     public OpenAiMessage {
         toolCalls = toolCalls == null ? null : List.copyOf(toolCalls);

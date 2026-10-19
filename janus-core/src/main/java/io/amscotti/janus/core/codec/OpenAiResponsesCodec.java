@@ -12,6 +12,7 @@ import io.amscotti.janus.core.model.HostedToolCall;
 import io.amscotti.janus.core.model.HostedToolDefinition;
 import io.amscotti.janus.core.model.ImageUrlContent;
 import io.amscotti.janus.core.model.Message;
+import io.amscotti.janus.core.model.ReasoningContent;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.SystemMessage;
 import io.amscotti.janus.core.model.TextContent;
@@ -540,6 +541,28 @@ public final class OpenAiResponsesCodec {
             // single-choice contract, pinned byte-golden), later choices are suffixed.
             String messageId =
                     choice.index() == 0 ? "msg_" + canonical.id() : "msg_" + canonical.id() + "_" + choice.index();
+            // Canonical reasoning text rides a reasoning item ahead of the
+            // message (summary form — this stateless face has no encrypted
+            // payload); signatures/redacted data have no Responses home.
+            if (assistant.reasoningContents() != null) {
+                StringBuilder reasoningText = new StringBuilder();
+                for (ReasoningContent reasoning : assistant.reasoningContents()) {
+                    if (reasoning != null && reasoning.text() != null) {
+                        reasoningText.append(reasoning.text());
+                    }
+                }
+                if (!reasoningText.isEmpty()) {
+                    String reasoningId = choice.index() == 0
+                            ? "rs_" + canonical.id()
+                            : "rs_" + canonical.id() + "_" + choice.index();
+                    output.add(new OpenAiResponsesReasoningItem(
+                            reasoningId,
+                            "reasoning",
+                            "completed",
+                            List.of(new OpenAiResponsesReasoningItem.SummaryText(
+                                    "summary_text", reasoningText.toString()))));
+                }
+            }
             String text = assistant.content();
             if (text != null && !text.isBlank()) {
                 output.add(new OpenAiResponsesMessageItem(

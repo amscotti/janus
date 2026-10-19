@@ -9,8 +9,9 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
  * component on every subtype via {@code As.EXISTING_PROPERTY}, so the wire output is
  * exactly one {@code type} field per item).
  *
- * <p>Items: {@code message} (assistant text), {@code function_call}, and the
- * {@code web_search_call} family. Encode-only today (the face builds these from the
+ * <p>Items: {@code message} (assistant text), {@code function_call}, the
+ * {@code web_search_call} family, and {@code reasoning} (summary text).
+ * Encode-only today (the face builds these from the
  * canonical response; it never parses an upstream Responses object — upstreams speak
  * chat-completions), but the closed {@code @JsonSubTypes} keeps a future decode
  * (stateful retrieval, if ever added) native-image clean.
@@ -20,9 +21,13 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
     @JsonSubTypes.Type(value = OpenAiResponsesMessageItem.class, name = "message"),
     @JsonSubTypes.Type(value = OpenAiResponsesFunctionCallItem.class, name = "function_call"),
     @JsonSubTypes.Type(value = OpenAiResponsesWebSearchCallItem.class, name = "web_search_call"),
+    @JsonSubTypes.Type(value = OpenAiResponsesReasoningItem.class, name = "reasoning"),
 })
 public sealed interface OpenAiResponsesOutputItem
-        permits OpenAiResponsesMessageItem, OpenAiResponsesFunctionCallItem, OpenAiResponsesWebSearchCallItem {
+        permits OpenAiResponsesMessageItem,
+                OpenAiResponsesFunctionCallItem,
+                OpenAiResponsesWebSearchCallItem,
+                OpenAiResponsesReasoningItem {
 
     /** The synthesized item id ({@code msg_…} / {@code fc_…}) — distinct from call ids. */
     String id();

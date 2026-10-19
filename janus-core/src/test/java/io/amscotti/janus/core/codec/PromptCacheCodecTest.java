@@ -221,11 +221,18 @@ class PromptCacheCodecTest {
     }
 
     @Test
-    void supportsExplicitOpenAiBreakpointsMatchesGpt56FamilyOnly() {
+    void supportsExplicitOpenAiBreakpointsMatchesGpt56AndLaterGenerations() {
         assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-5.6-luna"));
         assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-5.6"));
         assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("openai/gpt-5.6-luna"));
         assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-5.7"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-6-astra"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-6.1-sol"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-6-luna"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("openai/gpt-6.1-sol"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-7"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-10.2"));
+        assertFalse(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-5"));
         assertFalse(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-5.5"));
         assertFalse(PromptCache.supportsExplicitOpenAiBreakpoints("deepseek-v4-flash"));
         assertFalse(PromptCache.supportsExplicitOpenAiBreakpoints("claude-sonnet-5"));

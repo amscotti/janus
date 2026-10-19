@@ -16,12 +16,12 @@ package io.amscotti.janus.core.model;
  * {@link FunctionCall#arguments} for invocations. {@code description} is the tool's
  * human-readable description ({@code null} unless the caller set it).
  *
- * <p><b>{@code strict}.</b> OpenAI structured-outputs'
- * {@code function.strict} flag — a first-class slot because it cannot ride extras (the
- * extras merge is top-level only and {@code tools} is a mapped key). {@code null} means
- * absent: the OpenAI egress omits it (byte-identical to pre-slot behavior), the
- * Anthropic egress drops it (no Anthropic equivalent — documented). The Responses face
- * maps its flat {@code tools[].strict} here.
+ * <p><b>{@code strict}.</b> Structured-outputs' strict-schema flag
+ * (OpenAI {@code function.strict}, Anthropic {@code tools[].strict}) — a first-class
+ * slot because it cannot ride extras (the extras merge is top-level only and
+ * {@code tools} is a mapped key). {@code null} means absent: both egresses omit it
+ * (byte-identical to pre-slot behavior). The Responses face maps its flat
+ * {@code tools[].strict} here.
  */
 public record ToolDefinition(
         String type, String name, String description, String inputSchema, Boolean strict, Object cacheControl) {

@@ -11,6 +11,7 @@ import io.amscotti.janus.core.model.ChatRole;
 import io.amscotti.janus.core.model.ChunkChoice;
 import io.amscotti.janus.core.model.Delta;
 import io.amscotti.janus.core.model.FunctionCall;
+import io.amscotti.janus.core.model.ReasoningContent;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.ToolCall;
 import io.amscotti.janus.core.model.Usage;
@@ -112,17 +113,19 @@ class OpenAiChunkCodecTest {
     @Test
     void deepSeekReasoningContentStaysInsideTheDeltaOnDecodeAndReencode() {
         // DeepSeek streaming sends delta.reasoning_content — it must keep its
-        // position inside the delta (Delta.reasoning), so a DeepSeek SDK client consuming
-        // Janus's stream sees the reasoning text and a strict OpenAI upstream never
-        // receives a bogus top-level reasoning_content field.
+        // position inside the delta (the typed Delta.reasoningContent), so a
+        // DeepSeek SDK client consuming Janus's stream sees the reasoning text
+        // and a strict OpenAI upstream never receives a bogus top-level
+        // reasoning_content field.
         String upstream = """
                 {"id": "chatcmpl-123", "object": "chat.completion.chunk", "created": 1, "model": "deepseek-v4-flash",
                  "choices": [{"index": 0, "delta": {"role": "assistant", "reasoning_content": "think", "content": "hi"}, "finish_reason": null}]}
                 """;
         StreamChunk decoded = codec.decodeChunk(upstream);
         assertEquals(
-                Map.of("reasoning_content", "think"),
-                decoded.choices().get(0).delta().reasoning());
+                new ReasoningContent("think", null, null),
+                decoded.choices().get(0).delta().reasoningContent());
+        assertNull(decoded.choices().get(0).delta().reasoning());
         // the delta-level unknown must NOT be hoisted to the chunk top-level extras
         assertEquals(Map.of(), decoded.extras());
 

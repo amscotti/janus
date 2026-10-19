@@ -10,6 +10,7 @@ import io.amscotti.janus.core.model.ChatChoice;
 import io.amscotti.janus.core.model.ChatResponse;
 import io.amscotti.janus.core.model.FunctionCall;
 import io.amscotti.janus.core.model.HostedToolCall;
+import io.amscotti.janus.core.model.ReasoningContent;
 import io.amscotti.janus.core.model.ToolCall;
 import io.amscotti.janus.core.model.ToolMessage;
 import io.amscotti.janus.core.model.Usage;
@@ -258,12 +259,15 @@ class AnthropicResponseCodecTest {
     }
 
     @Test
-    void decodeDropsThinkingBlocks() throws Exception {
+    void decodeKeepsThinkingBlocksAsSignedReasoningContent() throws Exception {
         ChatResponse response = codec.decodeResponse(
                 "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\","
                         + "\"content\":[{\"type\":\"thinking\",\"thinking\":\"x\",\"signature\":\"s\"},"
                         + "{\"type\":\"text\",\"text\":\"a\"}]}");
-        assertEquals(List.of(new ChatChoice(0, new AssistantMessage("a", null), null)), response.choices());
+        assertEquals(
+                List.of(new ChatChoice(
+                        0, new AssistantMessage("a", null, null, List.of(new ReasoningContent("x", "s", null))), null)),
+                response.choices());
     }
 
     @Test
@@ -356,24 +360,29 @@ class AnthropicResponseCodecTest {
     }
 
     @Test
-    void decodeThinkingOnlyResponseToSingleEmptyChoice() throws Exception {
-        // A response whose content is entirely thinking blocks (all dropped) must
-        // still yield exactly one canonical choice with empty content — zero choices would
-        // be a broken 200 for OpenAI-face clients (an empty choices array), even though the
-        // upstream is billed for real output tokens.
+    void decodeThinkingOnlyResponseToSingleChoiceWithReasoning() throws Exception {
+        // A response whose content is entirely thinking blocks must still yield
+        // exactly one canonical choice — empty text content with the reasoning
+        // kept alongside. Zero choices would be a broken 200 for OpenAI-face
+        // clients (an empty choices array), even though the upstream is billed
+        // for real output tokens.
         ChatResponse response = codec.decodeResponse(
                 "{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\","
                         + "\"content\":[{\"type\":\"thinking\",\"thinking\":\"reasoning\",\"signature\":\"s\"}],"
                         + "\"stop_reason\":\"end_turn\"}");
         assertEquals(
-                List.of(new ChatChoice(0, new AssistantMessage("", null), "stop")),
+                List.of(new ChatChoice(
+                        0,
+                        new AssistantMessage("", null, null, List.of(new ReasoningContent("reasoning", "s", null))),
+                        "stop")),
                 response.choices(),
                 "one choice with empty content, never zero choices");
-        // Re-encode to the OpenAI face: a valid choices:[...] with empty content.
+        // Re-encode to the OpenAI face: empty content, reasoning as reasoning_content.
         OpenAiMessageCodec openAi = new OpenAiMessageCodec(JsonSupport.mapper());
         String openAiJson = openAi.encodeResponse(response);
         assertTrue(
-                openAiJson.contains("\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\"}"),
+                openAiJson.contains(
+                        "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":\"reasoning\"}"),
                 openAiJson);
     }
 

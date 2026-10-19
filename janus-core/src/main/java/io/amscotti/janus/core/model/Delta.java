@@ -10,18 +10,31 @@ import java.util.Map;
  * Streaming content delta. All components nullable — an SSE chunk may carry only a role,
  * only content, or only tool-call fragments.
  *
+ * <p>{@code reasoningContent} is the typed reasoning fragment (Anthropic
+ * {@code thinking_delta}/{@code signature_delta}, an OpenAI-wire
+ * {@code reasoning_content} string); see {@link ReasoningContent}.
+ *
  * <p>{@code reasoning} is the delta-level pass-through home (mirrors
- * {@link ChatRequest#reasoning}): OpenAI delta-level unknowns that have no wire
- * component — first-class DeepSeek's {@code reasoning_content} — ride here on decode
- * (instead of being hoisted to the chunk top level) and are re-emitted <em>inside</em>
- * the delta on the OpenAI encode. {@code null} unless the codec captured delta-level
- * unknowns.
+ * {@link ChatRequest#reasoning}): remaining OpenAI delta-level unknowns that
+ * have no wire component ride here on decode (instead of being hoisted to
+ * the chunk top level) and are re-emitted <em>inside</em> the delta on the
+ * OpenAI encode. {@code null} unless the codec captured delta-level unknowns.
  */
-public record Delta(ChatRole role, String content, List<ToolCall> toolCalls, Map<String, Object> reasoning) {
+public record Delta(
+        ChatRole role,
+        String content,
+        List<ToolCall> toolCalls,
+        Map<String, Object> reasoning,
+        ReasoningContent reasoningContent) {
 
-    /** Convenience form without delta-level reasoning content. */
+    /** Convenience form without delta-level reasoning. */
     public Delta(ChatRole role, String content, List<ToolCall> toolCalls) {
-        this(role, content, toolCalls, null);
+        this(role, content, toolCalls, null, null);
+    }
+
+    /** Compatibility form at the earlier (4-arg) arity — no typed reasoning fragment. */
+    public Delta(ChatRole role, String content, List<ToolCall> toolCalls, Map<String, Object> reasoning) {
+        this(role, content, toolCalls, reasoning, null);
     }
 
     public Delta {
@@ -39,9 +52,10 @@ public record Delta(ChatRole role, String content, List<ToolCall> toolCalls, Map
     public String toString() {
         if (ContentLogging.enabled()) {
             return "Delta[role=" + role + ", content=" + content + ", toolCalls=" + toolCalls + ", reasoning="
-                    + reasoning + "]";
+                    + reasoning + ", reasoningContent=" + reasoningContent + "]";
         }
         return "Delta[role=" + role + ", toolCalls=" + (toolCalls == null ? 0 : toolCalls.size()) + ", reasoning="
-                + (reasoning == null ? "absent" : "present") + ", content not logged]";
+                + (reasoning == null ? "absent" : "present") + ", reasoningContent="
+                + (reasoningContent == null ? "absent" : "present") + ", content not logged]";
     }
 }

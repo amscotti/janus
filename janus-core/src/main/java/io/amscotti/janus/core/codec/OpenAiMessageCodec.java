@@ -13,6 +13,7 @@ import io.amscotti.janus.core.model.FunctionCall;
 import io.amscotti.janus.core.model.ImageSourceContent;
 import io.amscotti.janus.core.model.ImageUrlContent;
 import io.amscotti.janus.core.model.Message;
+import io.amscotti.janus.core.model.ReasoningContent;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.SystemMessage;
 import io.amscotti.janus.core.model.TextContent;
@@ -361,6 +362,23 @@ public final class OpenAiMessageCodec {
 
     // -------------------------------------------------------------------- chunk
 
+    /** Canonical delta → OpenAI delta extras: pass-through unknowns plus the
+     * typed reasoning fragment's text as {@code reasoning_content} (typed wins). */
+    private static Map<String, Object> deltaExtrasForWire(Delta delta) {
+        if (delta == null) {
+            return null;
+        }
+        Map<String, Object> extras = delta.reasoning() == null ? null : new HashMap<>(delta.reasoning());
+        ReasoningContent fragment = delta.reasoningContent();
+        if (fragment != null && fragment.text() != null) {
+            if (extras == null) {
+                extras = new HashMap<>();
+            }
+            extras.put("reasoning_content", fragment.text());
+        }
+        return extras;
+    }
+
     public StreamChunk decodeChunk(String json) throws OpenAiCodecException {
         JsonNode root = readTree(json, OpenAiCodecException.TYPE_API_ERROR);
         rejectArrayFormContent(root, "chunk");
@@ -382,9 +400,11 @@ public final class OpenAiMessageCodec {
                     delta == null || delta.role() == null ? null : delta.role().wire(),
                     delta == null ? null : delta.content(),
                     toOpenAiToolCalls(delta == null ? null : delta.toolCalls(), 0),
-                    // Delta-level reasoning content (DeepSeek
-                    // reasoning_content) re-emits inside the delta — never top-level.
-                    delta == null ? null : delta.reasoning());
+                    // Delta-level reasoning re-emits inside the delta — never
+                    // top-level. The typed fragment's text becomes
+                    // reasoning_content; signature/redacted fragments have no
+                    // OpenAI-wire home.
+                    deltaExtrasForWire(delta));
             dtoChoices.add(new OpenAiChunkChoice(
                     choice.index(),
                     dtoDelta,
@@ -517,6 +537,32 @@ public final class OpenAiMessageCodec {
         return fromObject;
     }
 
+    /** Wire {@code reasoning_content} text → canonical reasoning units (unsigned). */
+    private static List<ReasoningContent> reasoningContentsFromWire(String reasoningContent) {
+        if (reasoningContent == null || reasoningContent.isEmpty()) {
+            return null;
+        }
+        return List.of(new ReasoningContent(reasoningContent, null, null));
+    }
+
+    /**
+     * Canonical reasoning units → the single wire {@code reasoning_content}
+     * string: visible texts join in order; signatures and redacted payloads
+     * have no OpenAI-wire home and do not contribute.
+     */
+    private static String reasoningTextForWire(AssistantMessage assistant) {
+        if (assistant.reasoningContents() == null) {
+            return null;
+        }
+        StringBuilder text = new StringBuilder();
+        for (ReasoningContent reasoning : assistant.reasoningContents()) {
+            if (reasoning != null && reasoning.text() != null) {
+                text.append(reasoning.text());
+            }
+        }
+        return text.isEmpty() ? null : text.toString();
+    }
+
     /** Wire-only message fields (unknown fields) fold into request extras. The wire
      * {@code name} is not folded — it has a per-message canonical home. */
     private static void foldMessageExtras(OpenAiMessage dtoMessage, Map<String, Object> extras) {
@@ -530,7 +576,8 @@ public final class OpenAiMessageCodec {
                 new AssistantMessage(
                         requireStringContent(dto.content(), "assistant"),
                         toCanonicalToolCalls(dto.toolCalls()),
-                        dto.name());
+                        dto.name(),
+                        reasoningContentsFromWire(dto.reasoningContent()));
             case TOOL -> new ToolMessage(dto.toolCallId(), requireStringContent(dto.content(), "tool"), dto.name());
             // Reached only for *named* system messages (unnamed ones are flattened
             // into ChatRequest.system before mapping) — the name has a canonical home.
@@ -706,7 +753,14 @@ public final class OpenAiMessageCodec {
                     : PromptCache.openAiTextWithCacheControl(text, PromptCache.EPHEMERAL);
             dtoMessages.set(
                     target,
-                    new OpenAiMessage(msg.role(), marked, msg.name(), msg.toolCallId(), msg.toolCalls(), msg.extras()));
+                    new OpenAiMessage(
+                            msg.role(),
+                            marked,
+                            msg.name(),
+                            msg.toolCallId(),
+                            msg.toolCalls(),
+                            msg.reasoningContent(),
+                            msg.extras()));
             return;
         }
         if (content instanceof List<?> list && !list.isEmpty()) {
@@ -724,7 +778,13 @@ public final class OpenAiMessageCodec {
                 dtoMessages.set(
                         target,
                         new OpenAiMessage(
-                                msg.role(), copy, msg.name(), msg.toolCallId(), msg.toolCalls(), msg.extras()));
+                                msg.role(),
+                                copy,
+                                msg.name(),
+                                msg.toolCallId(),
+                                msg.toolCalls(),
+                                msg.reasoningContent(),
+                                msg.extras()));
             }
         }
     }
@@ -756,6 +816,7 @@ public final class OpenAiMessageCodec {
                         assistant.name(),
                         null,
                         toOpenAiToolCalls(assistant.toolCalls(), null),
+                        reasoningTextForWire(assistant),
                         null);
             case ToolMessage tool ->
                 new OpenAiMessage("tool", tool.content(), tool.name(), tool.toolCallId(), null, null);
@@ -914,7 +975,12 @@ public final class OpenAiMessageCodec {
             role = requireRole(dto.role(), "response message", OpenAiCodecException.TYPE_API_ERROR);
         }
         return switch (role) {
-            case ASSISTANT -> new AssistantMessage(dto.content(), toCanonicalToolCalls(dto.toolCalls()));
+            case ASSISTANT ->
+                new AssistantMessage(
+                        dto.content(),
+                        toCanonicalToolCalls(dto.toolCalls()),
+                        null,
+                        reasoningContentsFromWire(dto.reasoningContent()));
             case USER -> new UserMessage(dto.content());
             case SYSTEM -> new SystemMessage(dto.content());
             case TOOL -> new ToolMessage(null, dto.content());
@@ -928,7 +994,11 @@ public final class OpenAiMessageCodec {
     private static OpenAiResponseMessage toOpenAiResponseMessage(Message message) {
         if (message instanceof AssistantMessage assistant) {
             return new OpenAiResponseMessage(
-                    "assistant", assistant.content(), toOpenAiToolCalls(assistant.toolCalls(), null), null);
+                    "assistant",
+                    assistant.content(),
+                    toOpenAiToolCalls(assistant.toolCalls(), null),
+                    reasoningTextForWire(assistant),
+                    null);
         }
         return new OpenAiResponseMessage(message.role().wire(), contentOf(message), null, null);
     }
@@ -988,16 +1058,26 @@ public final class OpenAiMessageCodec {
                 // Anthropic encode maps canonical values through canonicalToAnthropic).
                 String finishReason =
                         choice.finishReason() == null ? null : normalizeFinishReason(choice.finishReason());
-                // Delta-level unknowns (first-class DeepSeek
-                // reasoning_content) keep their position — they ride Delta.reasoning and
-                // re-emerge inside the delta, never hoisted to the chunk top level.
-                Map<String, Object> deltaReasoning =
-                        dtoDelta == null || dtoDelta.extras().isEmpty()
-                                ? null
-                                : unmodifiable(new HashMap<>(dtoDelta.extras()));
+                // Delta-level unknowns keep their position — they ride
+                // Delta.reasoning and re-emerge inside the delta, never hoisted
+                // to the chunk top level. A string reasoning_content (DeepSeek
+                // and peers) is lifted into the typed reasoning fragment so it
+                // can cross to the Anthropic face as thinking_delta.
+                Map<String, Object> deltaExtras = dtoDelta == null ? new HashMap<>() : new HashMap<>(dtoDelta.extras());
+                ReasoningContent fragment = null;
+                if (deltaExtras.get("reasoning_content") instanceof String reasoningText) {
+                    deltaExtras.remove("reasoning_content");
+                    fragment = new ReasoningContent(reasoningText, null, null);
+                }
+                Map<String, Object> deltaReasoning = deltaExtras.isEmpty() ? null : unmodifiable(deltaExtras);
                 choices.add(new ChunkChoice(
                         choice.index(),
-                        new Delta(role, dtoDelta == null ? null : dtoDelta.content(), toolCalls, deltaReasoning),
+                        new Delta(
+                                role,
+                                dtoDelta == null ? null : dtoDelta.content(),
+                                toolCalls,
+                                deltaReasoning,
+                                fragment),
                         finishReason));
             }
         }

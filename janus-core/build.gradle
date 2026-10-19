@@ -17,8 +17,8 @@ dependencies {
  // role discriminator), so downstream modules compiling against core.model (e.g.
  // janus-provider) must see them; otherwise javac warns "unknown enum constant"
  // while reading Message.class and -Werror fails the build. Pinned to the same version
- // tools.jackson:jackson-bom 3.1.5 (via the Micronaut platform) requires.
- api 'com.fasterxml.jackson.core:jackson-annotations:2.21'
+ // tools.jackson:jackson-bom 3.2.3 (via the Micronaut platform) requires.
+ api 'com.fasterxml.jackson.core:jackson-annotations:2.22'
 }
 
 // JMH: component-level timing (codec / SSE grammar). Complements load tests

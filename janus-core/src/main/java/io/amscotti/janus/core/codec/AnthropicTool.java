@@ -22,11 +22,12 @@ public record AnthropicTool(
         Object cacheControl,
         String type,
         Integer maxUses,
-        Map<String, Object> userLocation) {
+        Map<String, Object> userLocation,
+        Boolean strict) {
 
     /** Compatibility form at the earlier (4-arg) arity — a custom tool (no type slot). */
     public AnthropicTool(String name, String description, Map<String, Object> inputSchema, Object cacheControl) {
-        this(name, description, inputSchema, cacheControl, null, null, null);
+        this(name, description, inputSchema, cacheControl, null, null, null, null);
     }
 
     public AnthropicTool {

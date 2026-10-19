@@ -10,6 +10,7 @@ import io.amscotti.janus.core.model.ChatRole;
 import io.amscotti.janus.core.model.ChunkChoice;
 import io.amscotti.janus.core.model.Delta;
 import io.amscotti.janus.core.model.FunctionCall;
+import io.amscotti.janus.core.model.ReasoningContent;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.ToolCall;
 import io.amscotti.janus.core.model.Usage;
@@ -217,19 +218,31 @@ class AnthropicChunkCodecTest {
 
     @Test
     void unknownContentBlockAndDeltaTypesAreTolerated() {
-        // thinking_delta / signature_delta (extended thinking), server_tool_use /
-        // web_search_tool_result / fallback are real Anthropic block/delta types the codec
-        // does not model — they must be dropped, never abort the stream (Anthropic's
-        // versioning contract: clients should handle unknown event types gracefully). The
-        // pre-fix codec threw InvalidTypeIdException on the first one and killed the stream.
-        assertNull(
+        // server_tool_use / web_search_tool_result / fallback are real Anthropic
+        // block/delta types the codec does not model — they must be dropped, never
+        // abort the stream (Anthropic's versioning contract: clients should handle
+        // unknown event types gracefully). The pre-fix codec threw
+        // InvalidTypeIdException on the first one and killed the stream.
+        // thinking_delta / signature_delta are modeled: they decode to reasoning
+        // fragments (and used to be the frames that aborted the stream).
+        assertEquals(
+                new ReasoningContent("hmm", null, null),
                 codec.decodeChunk(
-                        "content_block_delta",
-                        "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}"));
-        assertNull(
+                                "content_block_delta",
+                                "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"hmm\"}}")
+                        .choices()
+                        .get(0)
+                        .delta()
+                        .reasoningContent());
+        assertEquals(
+                new ReasoningContent(null, "sig_1", null),
                 codec.decodeChunk(
-                        "content_block_delta",
-                        "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}"));
+                                "content_block_delta",
+                                "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}")
+                        .choices()
+                        .get(0)
+                        .delta()
+                        .reasoningContent());
         assertNull(
                 codec.decodeChunk(
                         "content_block_start",
@@ -243,22 +256,33 @@ class AnthropicChunkCodecTest {
     }
 
     @Test
-    void extendedThinkingStreamDecodesToTextChunksOnly() {
+    void extendedThinkingStreamDecodesThinkingThenText() {
         // content_block_start(thinking) → thinking_delta → signature_delta →
-        // content_block_stop → text delta: the thinking frames are dropped, the text
-        // survives, no exception (the pre-fix codec aborted on the first thinking_delta).
+        // content_block_stop → text delta: the thinking frames decode to reasoning
+        // fragments, the text survives, no exception (the pre-modeling codec
+        // dropped or aborted on the first thinking_delta).
         assertNull(
                 codec.decodeChunk(
                         "content_block_start",
                         "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}"));
-        assertNull(
+        assertEquals(
+                new ReasoningContent("Let me", null, null),
                 codec.decodeChunk(
-                        "content_block_delta",
-                        "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me\"}}"));
-        assertNull(
+                                "content_block_delta",
+                                "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me\"}}")
+                        .choices()
+                        .get(0)
+                        .delta()
+                        .reasoningContent());
+        assertEquals(
+                new ReasoningContent(null, "sig_1", null),
                 codec.decodeChunk(
-                        "content_block_delta",
-                        "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}"));
+                                "content_block_delta",
+                                "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}")
+                        .choices()
+                        .get(0)
+                        .delta()
+                        .reasoningContent());
         assertNull(codec.decodeChunk("content_block_stop", "{\"type\":\"content_block_stop\",\"index\":0}"));
         StreamChunk text = codec.decodeChunk(
                 "content_block_delta",

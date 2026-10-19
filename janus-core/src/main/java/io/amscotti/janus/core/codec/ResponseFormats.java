@@ -4,7 +4,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Chat Completions {@code response_format} versus Responses {@code text.format}.
+ * Chat Completions {@code response_format} versus Responses {@code text.format}
+ * and Anthropic {@code output_config.format}.
  *
  * <p>Canonical {@link io.amscotti.janus.core.model.ChatRequest#responseFormat} is the
  * Chat Completions shape. Responses {@code json_schema} is flat
@@ -53,6 +54,43 @@ public final class ResponseFormats {
         responses.put("type", "json_schema");
         inner.forEach((k, v) -> responses.put(String.valueOf(k), v));
         return responses;
+    }
+
+    /**
+     * Chat Completions {@code response_format} → Anthropic {@code output_config.format}.
+     * Anthropic structured outputs carry only {@code {type: "json_schema", schema}}:
+     * the Chat wrapper's {@code name}/{@code strict}/{@code description} have no
+     * format home and are dropped. Non-{@code json_schema} types
+     * ({@code json_object}, {@code text}) and a {@code json_schema} without a schema
+     * object have no Anthropic home → {@code null}.
+     */
+    public static Map<String, Object> toAnthropic(Map<?, ?> format) {
+        Map<String, Object> flat = toResponses(format);
+        if (flat == null || !"json_schema".equals(String.valueOf(flat.get("type")))) {
+            return null;
+        }
+        Object schema = flat.get("schema");
+        if (!(schema instanceof Map<?, ?>)) {
+            return null;
+        }
+        Map<String, Object> anthropic = new LinkedHashMap<>();
+        anthropic.put("type", "json_schema");
+        anthropic.put("schema", schema);
+        return anthropic;
+    }
+
+    /**
+     * Anthropic {@code output_config.format} → Chat Completions {@code response_format}
+     * (nested {@code json_schema} wrapper), or {@code null} when the Anthropic format
+     * is not a schema-bearing {@code json_schema} object.
+     */
+    public static Map<String, Object> fromAnthropic(Map<?, ?> format) {
+        if (format == null
+                || !"json_schema".equals(String.valueOf(format.get("type")))
+                || !(format.get("schema") instanceof Map<?, ?>)) {
+            return null;
+        }
+        return toChat(format);
     }
 
     private static Map<String, Object> copy(Map<?, ?> format) {

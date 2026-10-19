@@ -15,6 +15,7 @@ import io.amscotti.janus.core.model.HostedToolDefinition;
 import io.amscotti.janus.core.model.ImageSourceContent;
 import io.amscotti.janus.core.model.ImageUrlContent;
 import io.amscotti.janus.core.model.Message;
+import io.amscotti.janus.core.model.ReasoningContent;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.SystemMessage;
 import io.amscotti.janus.core.model.TextContent;
@@ -120,12 +121,18 @@ import tools.jackson.databind.node.ObjectNode;
  * {@code object} maps from the wire {@code type} ({@code "message"}). (4) Multi-choice
  * canonical responses collapse into one joined choice on Anthropic decode. (5) OpenAI-only
  * canonical fields ({@code n}, {@code seed}, {@code frequencyPenalty},
- * {@code presencePenalty}, {@code logitBias}, {@code responseFormat}) have no Anthropic
+ * {@code presencePenalty}, {@code logitBias}) have no Anthropic
  * wire home and are dropped on encode unless the caller put them in {@code extras}.
- * (6) {@code stop_sequence} is dropped on decode; thinking blocks are dropped (extended
- * thinking content pipeline deferred); unknown content-block/delta types
- * ({@code thinking_delta}, {@code signature_delta}, {@code server_tool_use}, …) are
- * tolerated and dropped instead of aborting the decode — on <em>both</em> the streaming
+ * {@code responseFormat} is the exception: a {@code json_schema} format maps to
+ * Anthropic structured outputs ({@code output_config.format}) in both directions
+ * (the chat wrapper's {@code name}/{@code strict} are lost; {@code json_object}/
+ * {@code text} formats have no Anthropic home and are dropped), and tool-level
+ * {@code strict} round-trips on the tools array.
+ * (6) {@code stop_sequence} is dropped on decode; thinking/redacted blocks and
+ * {@code thinking_delta}/{@code signature_delta} frames map to canonical
+ * {@code ReasoningContent} and re-emit (signed tool-loop replay); unknown
+ * content-block/delta types ({@code server_tool_use}, …) are tolerated and
+ * dropped instead of aborting the decode — on <em>both</em> the streaming
  * and the non-streaming response path (the paths must agree on Anthropic's
  * versioning contract; a payload that streams must also decode). The request face is
  * the exception: an unknown block type inside a request message is a typed
@@ -215,7 +222,11 @@ public final class AnthropicMessageCodec {
             // effort value already travels in the canonical reasoning slot (→ thinking
             // + output_config), and a non-effort-shaped object must not leak onto the
             // Anthropic wire as an unknown field (real Anthropic 400s those).
-            "reasoning");
+            "reasoning",
+            // The chat-wire structured-output spelling has a translated Anthropic
+            // home (output_config.format, from the canonical responseFormat slot);
+            // a raw extras copy of it must not also reach the Anthropic wire.
+            "response_format");
 
     /**
      * Shape the extras {@code metadata} entry for the Anthropic wire, merging the
@@ -282,6 +293,19 @@ public final class AnthropicMessageCodec {
     }
 
     public String encodeRequest(ChatRequest canonical) throws AnthropicCodecException {
+        return encodeRequest(canonical, false);
+    }
+
+    /**
+     * The {@code POST /v1/messages/count_tokens} body: the Messages request
+     * shape without {@code max_tokens} (not a parameter on that endpoint —
+     * Anthropic 400s unknown fields) and without {@code stream}.
+     */
+    public String encodeCountTokensRequest(ChatRequest canonical) throws AnthropicCodecException {
+        return encodeRequest(canonical, true);
+    }
+
+    private String encodeRequest(ChatRequest canonical, boolean countTokens) throws AnthropicCodecException {
         validateRequest(canonical);
         List<String> systemParts = new ArrayList<>();
         if (nonBlank(canonical.system())) {
@@ -327,12 +351,12 @@ public final class AnthropicMessageCodec {
                 canonical.model(),
                 dtoMessages,
                 systemWire,
-                canonical.maxTokens() == null ? DEFAULT_MAX_TOKENS : canonical.maxTokens(),
+                countTokens ? null : canonical.maxTokens() == null ? DEFAULT_MAX_TOKENS : canonical.maxTokens(),
                 canonical.temperature(),
                 canonical.topP(),
                 canonical.topK(),
                 canonical.stop(),
-                canonical.stream() ? Boolean.TRUE : null,
+                !countTokens && canonical.stream() ? Boolean.TRUE : null,
                 // D1 (blessed fix): Anthropic has no stream_options — real Anthropic
                 // rejects unknown request fields (400 invalid_request_error), so the
                 // canonical's streamOptions (OpenAI-idiomatic) must NOT reach the
@@ -344,7 +368,7 @@ public final class AnthropicMessageCodec {
                 toolChoiceForAnthropic(canonical.toolChoice(), extras),
                 thinkingForAnthropic(canonical.reasoning()),
                 canonical.cacheControl(),
-                outputConfigForAnthropic(canonical.reasoning()),
+                outputConfigForAnthropic(canonical.reasoning(), canonical.responseFormat()),
                 null);
         // Shape the wire extras for the Anthropic egress — remap the one field
         // with a legal home, drop the OpenAI-only fields real Anthropic rejects.
@@ -388,6 +412,7 @@ public final class AnthropicMessageCodec {
         for (ChatChoice choice : canonical.choices()) {
             Message message = choice.message();
             if (message instanceof AssistantMessage assistant) {
+                addReasoningBlocks(content, assistant);
                 if (assistant.toolCalls() != null && !assistant.toolCalls().isEmpty()) {
                     // mixed text + tool calls → [text block] + [tool_use blocks]
                     if (nonBlank(assistant.content())) {
@@ -564,7 +589,7 @@ public final class AnthropicMessageCodec {
                 null, // frequencyPenalty
                 null, // presencePenalty
                 null, // logitBias
-                null, // responseFormat
+                responseFormatFromAnthropic(dto.outputConfig()),
                 dto.stream() != null && dto.stream(),
                 dto.streamOptions(),
                 toReasoning(dto.thinking(), dto.outputConfig(), extras),
@@ -585,8 +610,9 @@ public final class AnthropicMessageCodec {
      * {@code build_canonical_messages} precedent): text blocks join into the message
      * content, {@code tool_use} blocks become {@link ToolCall}s on an assistant message,
      * {@code tool_result} blocks become {@link ToolMessage}s (prepended by a user message
-     * when text is present), thinking blocks are dropped (documented + pinned), image
-     * blocks become multimodal {@link UserMessage} parts.
+     * when text is present), thinking/redacted blocks collect into the assistant
+     * message's reasoning contents (signed replay), image blocks become
+     * multimodal {@link UserMessage} parts.
      */
     private List<Message> toCanonicalMessages(ChatRole role, AnthropicMessage dto) {
         Object content = dto.content();
@@ -600,6 +626,7 @@ public final class AnthropicMessageCodec {
             StringBuilder text = new StringBuilder();
             List<ContentPart> parts = new ArrayList<>();
             List<ToolCall> toolCalls = new ArrayList<>();
+            List<ReasoningContent> reasoningContents = new ArrayList<>();
             List<ToolMessage> toolResults = new ArrayList<>();
             boolean sawImage = false;
             for (Object item : list) {
@@ -609,8 +636,13 @@ public final class AnthropicMessageCodec {
                         text.append(textBlock.text());
                         parts.add(new TextContent(textBlock.text(), textBlock.cacheControl()));
                     }
-                } else if (block instanceof AnthropicThinkingBlock) {
-                    // dropped: the canonical model has no thinking-content home (documented).
+                } else if (block instanceof AnthropicThinkingBlock || block instanceof AnthropicRedactedThinkingBlock) {
+                    if (role == ChatRole.USER) {
+                        throw codec(
+                                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                                "thinking block in a user message is malformed (thinking belongs to assistant messages)");
+                    }
+                    reasoningContents.add(reasoningFromBlock(block));
                 } else if (block instanceof AnthropicImageBlock image) {
                     if (role != ChatRole.USER) {
                         throw codec(
@@ -662,13 +694,15 @@ public final class AnthropicMessageCodec {
                 if (role == ChatRole.USER && (sawImage || sawCache)) {
                     return List.of(UserMessage.multimodal(parts));
                 }
+                List<ReasoningContent> reasoning = reasoningContents.isEmpty() ? null : reasoningContents;
                 return List.of(
                         role == ChatRole.USER
                                 ? new UserMessage(text.toString())
-                                : new AssistantMessage(text.toString(), null));
+                                : new AssistantMessage(text.toString(), null, null, reasoning));
             }
             String assistantText = text.isEmpty() ? null : text.toString();
-            return List.of(new AssistantMessage(assistantText, toolCalls));
+            return List.of(new AssistantMessage(
+                    assistantText, toolCalls, null, reasoningContents.isEmpty() ? null : reasoningContents));
         }
         throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "content must be a string or an array of blocks");
     }
@@ -897,14 +931,20 @@ public final class AnthropicMessageCodec {
                 yield new AnthropicMessage("user", user.content(), null);
             }
             case AssistantMessage assistant -> {
-                if (assistant.toolCalls() != null && !assistant.toolCalls().isEmpty()) {
-                    // mixed text + tool calls → content block array
-                    List<AnthropicContentBlock> blocks = new ArrayList<>();
+                List<AnthropicContentBlock> reasoningBlocks = new ArrayList<>();
+                boolean hasReasoning = addReasoningBlocks(reasoningBlocks, assistant);
+                boolean hasTools =
+                        assistant.toolCalls() != null && !assistant.toolCalls().isEmpty();
+                if (hasTools || hasReasoning) {
+                    // signed thinking first (its wire position), then text, then tool_use
+                    List<AnthropicContentBlock> blocks = new ArrayList<>(reasoningBlocks);
                     if (nonBlank(assistant.content())) {
                         blocks.add(new AnthropicTextBlock("text", assistant.content()));
                     }
-                    for (ToolCall call : assistant.toolCalls()) {
-                        blocks.add(toToolUseBlock(call));
+                    if (hasTools) {
+                        for (ToolCall call : assistant.toolCalls()) {
+                            blocks.add(toToolUseBlock(call));
+                        }
                     }
                     yield new AnthropicMessage("assistant", blocks, null);
                 }
@@ -922,6 +962,45 @@ public final class AnthropicMessageCodec {
                         null);
             }
         };
+    }
+
+    /** A thinking/redacted block → its canonical reasoning unit (null for other blocks). */
+    private static ReasoningContent reasoningFromBlock(AnthropicContentBlock block) {
+        if (block instanceof AnthropicThinkingBlock thinking) {
+            return new ReasoningContent(thinking.thinking(), thinking.signature(), null);
+        }
+        if (block instanceof AnthropicRedactedThinkingBlock redacted) {
+            return new ReasoningContent(null, null, redacted.data());
+        }
+        return null;
+    }
+
+    /**
+     * Append the Anthropic-emittable reasoning blocks of an assistant message
+     * (redacted payloads and <em>signed</em> thinking) — unsigned foreign
+     * reasoning text (OpenAI-wire {@code reasoning_content}) has no Anthropic
+     * replay home and is skipped rather than forged. Returns true when any
+     * block was appended.
+     */
+    private static boolean addReasoningBlocks(List<AnthropicContentBlock> blocks, AssistantMessage assistant) {
+        if (assistant.reasoningContents() == null) {
+            return false;
+        }
+        boolean added = false;
+        for (ReasoningContent reasoning : assistant.reasoningContents()) {
+            if (reasoning == null) {
+                continue;
+            }
+            if (reasoning.redactedData() != null) {
+                blocks.add(new AnthropicRedactedThinkingBlock("redacted_thinking", reasoning.redactedData()));
+                added = true;
+            } else if (reasoning.signature() != null) {
+                blocks.add(new AnthropicThinkingBlock(
+                        "thinking", reasoning.text() == null ? "" : reasoning.text(), reasoning.signature()));
+                added = true;
+            }
+        }
+        return added;
     }
 
     /** Canonical {@code ToolCall} → Anthropic {@code tool_use} block (arguments → input object). */
@@ -965,7 +1044,7 @@ public final class AnthropicMessageCodec {
                         tool.inputSchema() == null
                                 ? null
                                 : writeRawJson(tool.inputSchema(), AnthropicCodecException.TYPE_INVALID_REQUEST),
-                        null,
+                        tool.strict(),
                         tool.cacheControl()));
             }
         }
@@ -1020,7 +1099,14 @@ public final class AnthropicMessageCodec {
                         };
                     }
                     result.add(new AnthropicTool(
-                            "web_search", null, null, null, "web_search_20250305", maxUses, webSearch.userLocation()));
+                            "web_search",
+                            null,
+                            null,
+                            null,
+                            "web_search_20250305",
+                            maxUses,
+                            webSearch.userLocation(),
+                            null));
                 } else {
                     throw codec(
                             AnthropicCodecException.TYPE_INVALID_REQUEST,
@@ -1048,7 +1134,11 @@ public final class AnthropicMessageCodec {
                     tool.name(),
                     tool.description(),
                     readInputObject(tool.inputSchema(), tool.name()),
-                    tool.cacheControl()));
+                    tool.cacheControl(),
+                    null,
+                    null,
+                    null,
+                    tool.strict()));
         }
         return result;
     }
@@ -1102,6 +1192,7 @@ public final class AnthropicMessageCodec {
         List<ChatChoice> choices = new ArrayList<>();
         StringBuilder text = new StringBuilder();
         List<ToolCall> toolCalls = new ArrayList<>();
+        List<ReasoningContent> reasoningContents = new ArrayList<>();
         List<HostedToolCall> hostedCalls = new ArrayList<>();
         if (blocks != null) {
             for (AnthropicContentBlock block : blocks) {
@@ -1121,8 +1212,8 @@ public final class AnthropicMessageCodec {
                     if (textBlock.text() != null) {
                         text.append(textBlock.text());
                     }
-                } else if (block instanceof AnthropicThinkingBlock) {
-                    // dropped: the reference rejects thinking blocks from choices (documented + pinned).
+                } else if (block instanceof AnthropicThinkingBlock || block instanceof AnthropicRedactedThinkingBlock) {
+                    reasoningContents.add(reasoningFromBlock(block));
                 } else if (block instanceof AnthropicToolUseBlock toolUse) {
                     toolCalls.add(new ToolCall(
                             toolUse.id(),
@@ -1156,7 +1247,13 @@ public final class AnthropicMessageCodec {
         String assistantText = text.isEmpty() && !toolCalls.isEmpty() ? null : text.toString();
         // Anthropic has a single content array: one canonical choice, index 0.
         choices.add(new ChatChoice(
-                0, new AssistantMessage(assistantText, toolCalls.isEmpty() ? null : toolCalls), stopReason));
+                0,
+                new AssistantMessage(
+                        assistantText,
+                        toolCalls.isEmpty() ? null : toolCalls,
+                        null,
+                        reasoningContents.isEmpty() ? null : reasoningContents),
+                stopReason));
         return new ChatResponse(
                 dto.id() == null ? DEFAULT_RESPONSE_ID : dto.id(),
                 dto.type() == null ? DEFAULT_RESPONSE_OBJECT : dto.type(),
@@ -1211,6 +1308,20 @@ public final class AnthropicMessageCodec {
      * index counts text and tool blocks; the OpenAI wire keys tool calls only). */
     StreamChunk chunkFromContentBlockStart(AnthropicContentBlockStart dto, int index) {
         AnthropicContentBlock block = dto.contentBlock();
+        ReasoningContent startReasoning = reasoningFromBlock(block);
+        if (startReasoning != null && !startReasoning.isEmpty()) {
+            // A redacted block carries its full payload in the start event; a
+            // thinking start usually opens empty (text arrives via deltas) and
+            // stays a no-op like a text block-open.
+            return new StreamChunk(
+                    null,
+                    null,
+                    0L,
+                    null,
+                    List.of(new ChunkChoice(0, new Delta(null, null, null, null, startReasoning), null)),
+                    null,
+                    Map.of());
+        }
         if (block instanceof AnthropicToolUseBlock toolUse) {
             Object input = toolUse.input();
             String arguments = isEmptyInput(input) ? "" : writeRawJson(input, AnthropicCodecException.TYPE_API_ERROR);
@@ -1268,6 +1379,38 @@ public final class AnthropicMessageCodec {
                     0L,
                     null,
                     List.of(new ChunkChoice(0, new Delta(null, textDelta.text(), null), null)),
+                    null,
+                    Map.of());
+        }
+        if (delta instanceof AnthropicThinkingDelta thinkingDelta) {
+            return new StreamChunk(
+                    null,
+                    null,
+                    0L,
+                    null,
+                    List.of(new ChunkChoice(
+                            0,
+                            new Delta(
+                                    null, null, null, null, ReasoningContent.thinking(thinkingDelta.thinking(), null)),
+                            null)),
+                    null,
+                    Map.of());
+        }
+        if (delta instanceof AnthropicSignatureDelta signatureDelta) {
+            return new StreamChunk(
+                    null,
+                    null,
+                    0L,
+                    null,
+                    List.of(new ChunkChoice(
+                            0,
+                            new Delta(
+                                    null,
+                                    null,
+                                    null,
+                                    null,
+                                    ReasoningContent.thinking(null, signatureDelta.signature())),
+                            null)),
                     null,
                     Map.of());
         }
@@ -1377,9 +1520,13 @@ public final class AnthropicMessageCodec {
             return reasoning; // Anthropic-shaped: verbatim
         }
         Object type = reasoning.get("type");
-        if ("adaptive".equals(type) || "enabled".equals(type) || "disabled".equals(type)) {
+        if ("adaptive".equals(type)
+                || "enabled".equals(type)
+                || "disabled".equals(type)
+                || "between_tools".equals(type)) {
             // Claude Code sends {type:"adaptive", display:"omitted"}. Real Anthropic
-            // rejects unknown thinking fields — emit type only.
+            // rejects unknown thinking fields — emit type only. between_tools is
+            // the lowest thinking setting on Claude Sonnet 5.5+.
             return Map.of("type", type);
         }
         Object effort = reasoning.get("effort");
@@ -1390,10 +1537,16 @@ public final class AnthropicMessageCodec {
         return null; // summary-only or unknown shape: no home, dropped
     }
 
-    /** The effort spellings the Anthropic leg serves (validation shared by both shapers). */
+    /**
+     * The effort spellings the Anthropic leg serves (validation shared by both
+     * shapers): the five current levels ({@code low|medium|high|xhigh|max} —
+     * Claude 5.5/Fable and GPT-6 share this vocabulary) plus the legacy
+     * OpenAI-face spellings {@code minimal} (→ {@code low}) and {@code none}
+     * (omit).
+     */
     private static void requireSupportedEffort(String spelling) throws AnthropicCodecException {
         switch (spelling) {
-            case "low", "medium", "high", "minimal", "none" -> {}
+            case "low", "medium", "high", "xhigh", "max", "minimal", "none" -> {}
             default ->
                 throw codec(
                         AnthropicCodecException.TYPE_INVALID_REQUEST,
@@ -1402,24 +1555,46 @@ public final class AnthropicMessageCodec {
     }
 
     /**
-     * The companion to {@link #thinkingForAnthropic}: {@code output_config.effort} for
-     * effort-shaped reasoning (the modern spelling's effort carrier). "minimal" maps
-     * to "low" (the Anthropic vocabulary); "none" omits (thinking already null).
+     * The companion to {@link #thinkingForAnthropic}: the Anthropic
+     * {@code output_config} object, carrying {@code effort} for effort-shaped
+     * reasoning (the modern spelling's effort carrier; "minimal" maps to "low",
+     * "none" omits) and/or {@code format} for a canonical {@code json_schema}
+     * responseFormat (Anthropic structured outputs). A {@code json_schema}
+     * format without a schema object is a typed invalid-request error — never
+     * a silent drop to unconstrained output; non-{@code json_schema} formats
+     * ({@code json_object}/{@code text}) have no Anthropic home and are
+     * dropped (documented).
      */
-    private static Map<String, Object> outputConfigForAnthropic(Map<String, Object> reasoning) {
-        if (reasoning == null) {
-            return null;
-        }
+    private static Map<String, Object> outputConfigForAnthropic(
+            Map<String, Object> reasoning, Map<String, Object> responseFormat) throws AnthropicCodecException {
+        Map<String, Object> config = new LinkedHashMap<>();
         // type+budget_tokens is the verbatim Anthropic-shaped path (budget owns
-        // the slot). type=adaptive still carries effort on a sibling output_config.
-        if (reasoning.containsKey("type") && reasoning.containsKey("budget_tokens")) {
+        // the effort slot). type=adaptive still carries effort on output_config.
+        boolean budgetShaped =
+                reasoning != null && reasoning.containsKey("type") && reasoning.containsKey("budget_tokens");
+        if (reasoning != null && !budgetShaped) {
+            Object effort = reasoning.get("effort");
+            if (effort instanceof String spelling && !"none".equals(spelling)) {
+                config.put("effort", "minimal".equals(spelling) ? "low" : spelling);
+            }
+        }
+        Map<String, Object> format = ResponseFormats.toAnthropic(responseFormat);
+        if (format != null) {
+            config.put("format", format);
+        } else if (responseFormat != null && "json_schema".equals(String.valueOf(responseFormat.get("type")))) {
+            throw codec(
+                    AnthropicCodecException.TYPE_INVALID_REQUEST,
+                    "response_format json_schema without a schema object cannot be served on the Anthropic leg");
+        }
+        return config.isEmpty() ? null : Collections.unmodifiableMap(config);
+    }
+
+    /** Anthropic {@code output_config.format} → the canonical responseFormat slot. */
+    private static Map<String, Object> responseFormatFromAnthropic(Map<String, Object> outputConfig) {
+        if (outputConfig == null || !(outputConfig.get("format") instanceof Map<?, ?> format)) {
             return null;
         }
-        Object effort = reasoning.get("effort");
-        if (!(effort instanceof String spelling) || "none".equals(spelling)) {
-            return null;
-        }
-        return Map.of("effort", "minimal".equals(spelling) ? "low" : spelling);
+        return ResponseFormats.fromAnthropic(format);
     }
 
     // ------------------------------------------------------------ shared helpers
@@ -1584,6 +1759,7 @@ public final class AnthropicMessageCodec {
             case AnthropicToolResultBlock b -> b.type();
             case AnthropicImageBlock b -> b.type();
             case AnthropicThinkingBlock b -> b.type();
+            case AnthropicRedactedThinkingBlock b -> b.type();
             case AnthropicServerToolUseBlock b -> b.type();
             case AnthropicUnknownBlock b -> "unknown";
         };
@@ -1632,20 +1808,26 @@ public final class AnthropicMessageCodec {
         private int nextBlockIndex;
         private OpenBlock openBlock;
 
+        private enum BlockKind {
+            TEXT,
+            TOOL_USE,
+            THINKING
+        }
+
         /** The currently open content block (kind + index + tool identity); null when none is open. */
         private static final class OpenBlock {
             final int index;
-            final boolean toolUse;
+            final BlockKind kind;
             final String toolId;
             final String toolName;
 
-            OpenBlock(int index, boolean toolUse) {
-                this(index, toolUse, null, null);
+            OpenBlock(int index, BlockKind kind) {
+                this(index, kind, null, null);
             }
 
-            OpenBlock(int index, boolean toolUse, String toolId, String toolName) {
+            OpenBlock(int index, BlockKind kind, String toolId, String toolName) {
                 this.index = index;
-                this.toolUse = toolUse;
+                this.kind = kind;
                 this.toolId = toolId;
                 this.toolName = toolName;
             }
@@ -1692,10 +1874,52 @@ public final class AnthropicMessageCodec {
                     boolean firstDeltaHasTools =
                             delta.toolCalls() != null && !delta.toolCalls().isEmpty();
                     if (!firstDeltaHasTools) {
-                        // contract: the first feed lazily creates block 0 (text).
-                        events.add(blockStart(0, false, null, null));
-                        openBlock = new OpenBlock(0, false);
+                        // contract: the first feed lazily creates block 0 (text, or
+                        // thinking when the stream opens with a reasoning fragment).
+                        boolean opensWithThinking = delta.reasoningContent() != null
+                                && !delta.reasoningContent().isEmpty()
+                                && delta.reasoningContent().redactedData() == null
+                                && delta.content() == null;
+                        BlockKind firstKind = opensWithThinking ? BlockKind.THINKING : BlockKind.TEXT;
+                        events.add(blockStart(0, firstKind, null, null));
+                        openBlock = new OpenBlock(0, firstKind);
                         nextBlockIndex = 1;
+                    }
+                }
+                ReasoningContent fragment = delta.reasoningContent();
+                if (fragment != null && !fragment.isEmpty()) {
+                    if (fragment.redactedData() != null) {
+                        // A redacted block is complete in its start event: close
+                        // whatever is open, emit start+stop, leave nothing open.
+                        if (openBlock != null) {
+                            events.add(blockStop(openBlock.index));
+                            openBlock = null;
+                        }
+                        int index = nextBlockIndex++;
+                        events.add(sse(
+                                "content_block_start",
+                                new AnthropicContentBlockStart(
+                                        "content_block_start",
+                                        index,
+                                        new AnthropicRedactedThinkingBlock(
+                                                "redacted_thinking", fragment.redactedData()))));
+                        events.add(blockStop(index));
+                    } else {
+                        if (openBlock != null && openBlock.kind != BlockKind.THINKING) {
+                            events.add(blockStop(openBlock.index));
+                            openBlock = null;
+                        }
+                        if (openBlock == null) {
+                            int index = nextBlockIndex++;
+                            events.add(blockStart(index, BlockKind.THINKING, null, null));
+                            openBlock = new OpenBlock(index, BlockKind.THINKING);
+                        }
+                        if (fragment.text() != null) {
+                            events.add(thinkingDelta(openBlock.index, fragment.text()));
+                        }
+                        if (fragment.signature() != null) {
+                            events.add(signatureDelta(openBlock.index, fragment.signature()));
+                        }
                     }
                 }
                 if (delta.toolCalls() != null) {
@@ -1703,7 +1927,7 @@ public final class AnthropicMessageCodec {
                         FunctionCall function = call.function();
                         String toolId = call.id();
                         String toolName = function == null ? null : function.name();
-                        if (openBlock != null && !openBlock.toolUse) {
+                        if (openBlock != null && openBlock.kind != BlockKind.TOOL_USE) {
                             // Defensive: a tool fragment must never emit
                             // input_json_delta against an open *text* block. Unreachable via
                             // the real wire paths (OpenAI never interleaves text between one
@@ -1715,7 +1939,7 @@ public final class AnthropicMessageCodec {
                         }
                         boolean carriesIdentity = (toolId != null && !toolId.isBlank()) || nonBlank(toolName);
                         if (openBlock != null
-                                && openBlock.toolUse
+                                && openBlock.kind == BlockKind.TOOL_USE
                                 && carriesIdentity
                                 && !sameTool(openBlock, toolId, toolName)) {
                             // A fragment that repeats the open block's
@@ -1729,22 +1953,22 @@ public final class AnthropicMessageCodec {
                         }
                         if (openBlock == null) {
                             int index = nextBlockIndex++;
-                            events.add(blockStart(index, true, toolId, toolName));
-                            openBlock = new OpenBlock(index, true, toolId, toolName);
+                            events.add(blockStart(index, BlockKind.TOOL_USE, toolId, toolName));
+                            openBlock = new OpenBlock(index, BlockKind.TOOL_USE, toolId, toolName);
                         }
                         String partial = function == null || function.arguments() == null ? "" : function.arguments();
                         events.add(inputJsonDelta(openBlock.index, partial));
                     }
                 }
                 if (delta.content() != null) {
-                    if (openBlock != null && openBlock.toolUse) {
+                    if (openBlock != null && openBlock.kind != BlockKind.TEXT) {
                         events.add(blockStop(openBlock.index));
                         openBlock = null;
                     }
                     if (openBlock == null) {
                         int index = nextBlockIndex++;
-                        events.add(blockStart(index, false, null, null));
-                        openBlock = new OpenBlock(index, false);
+                        events.add(blockStart(index, BlockKind.TEXT, null, null));
+                        openBlock = new OpenBlock(index, BlockKind.TEXT);
                     }
                     events.add(textDelta(openBlock.index, delta.content()));
                 }
@@ -1829,11 +2053,28 @@ public final class AnthropicMessageCodec {
             return sse("message_start", new AnthropicMessageStart("message_start", message));
         }
 
-        private AnthropicSseEvent blockStart(int index, boolean toolUse, String id, String name) {
-            AnthropicContentBlock block = toolUse
-                    ? new AnthropicToolUseBlock("tool_use", id, name, Map.of())
-                    : new AnthropicTextBlock("text", "");
+        private AnthropicSseEvent blockStart(int index, BlockKind kind, String id, String name) {
+            AnthropicContentBlock block =
+                    switch (kind) {
+                        case TOOL_USE -> new AnthropicToolUseBlock("tool_use", id, name, Map.of());
+                        case THINKING -> new AnthropicThinkingBlock("thinking", "", "");
+                        case TEXT -> new AnthropicTextBlock("text", "");
+                    };
             return sse("content_block_start", new AnthropicContentBlockStart("content_block_start", index, block));
+        }
+
+        private AnthropicSseEvent thinkingDelta(int index, String thinking) {
+            return sse(
+                    "content_block_delta",
+                    new AnthropicContentBlockDelta(
+                            "content_block_delta", index, new AnthropicThinkingDelta("thinking_delta", thinking)));
+        }
+
+        private AnthropicSseEvent signatureDelta(int index, String signature) {
+            return sse(
+                    "content_block_delta",
+                    new AnthropicContentBlockDelta(
+                            "content_block_delta", index, new AnthropicSignatureDelta("signature_delta", signature)));
         }
 
         private AnthropicSseEvent textDelta(int index, String text) {

@@ -110,7 +110,19 @@
     "allRecordComponents": true
   },
   {
+    "name": "io.amscotti.janus.core.codec.AnthropicRedactedThinkingBlock",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
     "name": "io.amscotti.janus.core.codec.AnthropicServerToolUseBlock",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.AnthropicSignatureDelta",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allRecordComponents": true
@@ -156,6 +168,12 @@
   },
   {
     "name": "io.amscotti.janus.core.codec.AnthropicThinkingBlock",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.AnthropicThinkingDelta",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allRecordComponents": true
@@ -316,6 +334,18 @@
   },
   {
     "name": "io.amscotti.janus.core.codec.OpenAiResponsesOutputText",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.OpenAiResponsesReasoningItem",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.OpenAiResponsesReasoningItem$SummaryText",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allRecordComponents": true
@@ -516,6 +546,12 @@
     "name": "io.amscotti.janus.core.model.Message",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.ReasoningContent",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
   },
   {
     "name": "io.amscotti.janus.core.model.StreamChunk",

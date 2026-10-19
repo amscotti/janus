@@ -36,11 +36,13 @@ public final class PromptCache {
     public static final Map<String, Object> EXPLICIT_OPTIONS = Map.of("mode", "explicit", "ttl", "30m");
 
     /**
-     * GPT-5.6 and later family ids ({@code gpt-5.6}, {@code gpt-5.6-luna},
-     * {@code openai/gpt-5.6-luna}, {@code gpt-5.7}, …). Pre-5.6 ids (including
-     * {@code gpt-5.5}) 400 {@code prompt_cache_breakpoint} / {@code prompt_cache_options}.
+     * GPT version in a family id ({@code gpt-5.6}, {@code gpt-5.6-luna},
+     * {@code openai/gpt-6.1-sol}, {@code gpt-7}, …): group 1 is the major version,
+     * group 2 the optional minor. Compared numerically in
+     * {@link #supportsExplicitOpenAiBreakpoints} so a new major generation (GPT-6+)
+     * is included without another pattern edit.
      */
-    private static final Pattern GPT_56_OR_LATER = Pattern.compile("(?i)(?:^|/)gpt-5\\.(?:[6-9]|[1-9]\\d)");
+    private static final Pattern GPT_VERSION = Pattern.compile("(?i)(?:^|/)gpt-(\\d+)(?:\\.(\\d+))?");
 
     /**
      * Alibaba Qwen ids on OpenAI-compatible wires (OpenRouter {@code qwen/…},
@@ -51,9 +53,26 @@ public final class PromptCache {
 
     private PromptCache() {}
 
-    /** True when the alias may legally carry OpenAI explicit cache fields. */
+    /**
+     * True when the alias may legally carry OpenAI explicit cache fields: GPT-5.6
+     * and later (any 6.x/7.x/… major, or 5.x with minor ≥ 6). Pre-5.6 ids
+     * (including {@code gpt-5.5} and bare {@code gpt-5}) 400
+     * {@code prompt_cache_breakpoint} / {@code prompt_cache_options}.
+     */
     public static boolean supportsExplicitOpenAiBreakpoints(String model) {
-        return model != null && GPT_56_OR_LATER.matcher(model).find();
+        if (model == null) {
+            return false;
+        }
+        var matcher = GPT_VERSION.matcher(model);
+        if (!matcher.find()) {
+            return false;
+        }
+        int major = Integer.parseInt(matcher.group(1));
+        if (major != 5) {
+            return major > 5;
+        }
+        String minor = matcher.group(2);
+        return minor != null && Integer.parseInt(minor) >= 6;
     }
 
     /**

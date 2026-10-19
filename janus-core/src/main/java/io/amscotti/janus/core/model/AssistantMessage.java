@@ -9,13 +9,22 @@ import java.util.List;
  * tool calls); {@link ToolCall#function}.{@code arguments} stays raw JSON. {@code name}
  * is the optional OpenAI wire field (participant name, legal on assistant messages);
  * {@code null} unless the caller set it — the OpenAI codec maps it from/to
- * {@code OpenAiMessage.name}.
+ * {@code OpenAiMessage.name}. {@code reasoningContents} holds complete reasoning
+ * blocks (signed Anthropic thinking, redacted thinking, or unsigned foreign
+ * {@code reasoning_content} text) in wire order; {@code null} when absent.
  */
-public record AssistantMessage(String content, List<ToolCall> toolCalls, String name) implements Message {
+public record AssistantMessage(
+        String content, List<ToolCall> toolCalls, String name, List<ReasoningContent> reasoningContents)
+        implements Message {
 
-    /** Convenience form without a participant name. */
+    /** Convenience form without a participant name or reasoning content. */
     public AssistantMessage(String content, List<ToolCall> toolCalls) {
-        this(content, toolCalls, null);
+        this(content, toolCalls, null, null);
+    }
+
+    /** Compatibility form at the earlier (3-arg) arity — no reasoning content. */
+    public AssistantMessage(String content, List<ToolCall> toolCalls, String name) {
+        this(content, toolCalls, name, null);
     }
 
     public AssistantMessage {
@@ -24,6 +33,8 @@ public record AssistantMessage(String content, List<ToolCall> toolCalls, String 
         // NullPointerException from List.copyOf — the codecs reject it with a typed
         // error.
         toolCalls = toolCalls == null ? null : Collections.unmodifiableList(new ArrayList<>(toolCalls));
+        reasoningContents =
+                reasoningContents == null ? null : Collections.unmodifiableList(new ArrayList<>(reasoningContents));
     }
 
     @Override
@@ -36,9 +47,11 @@ public record AssistantMessage(String content, List<ToolCall> toolCalls, String 
     @Override
     public String toString() {
         if (ContentLogging.enabled()) {
-            return "AssistantMessage[content=" + content + ", toolCalls=" + toolCalls + ", name=" + name + "]";
+            return "AssistantMessage[content=" + content + ", toolCalls=" + toolCalls + ", name=" + name
+                    + ", reasoningContents=" + reasoningContents + "]";
         }
         return "AssistantMessage[toolCalls=" + (toolCalls == null ? 0 : toolCalls.size()) + ", name=" + name
+                + ", reasoningContents=" + (reasoningContents == null ? 0 : reasoningContents.size())
                 + ", content not logged]";
     }
 }

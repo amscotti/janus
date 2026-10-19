@@ -48,6 +48,15 @@ class AnthropicRequestCodecTest {
     }
 
     @Test
+    void countTokensEncodeOmitsMaxTokensAndStream() {
+        // POST /v1/messages/count_tokens takes the Messages request shape
+        // without max_tokens (not a parameter there) and never streams.
+        assertEquals(
+                "{\"model\":\"model-1\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}",
+                codec.encodeCountTokensRequest(minimalRequest(true)));
+    }
+
+    @Test
     void streamTrueRequestEmitsStream() {
         ChatRequest request = new ChatRequest(
                 "model-1",
@@ -392,7 +401,7 @@ class AnthropicRequestCodecTest {
         // {type:"adaptive"} + top-level output_config {effort} — which preserves the
         // effort end-to-end (claude-sonnet-5 rejects thinking.type:"enabled"; live-
         // verified 2026-08). minimal maps to low; none omits both fields entirely.
-        for (String effort : new String[] {"low", "medium", "high"}) {
+        for (String effort : new String[] {"low", "medium", "high", "xhigh", "max"}) {
             ChatRequest request = new ChatRequest(
                     "model-1",
                     List.of(new UserMessage("hi")),
@@ -586,9 +595,11 @@ class AnthropicRequestCodecTest {
     }
 
     @Test
-    void openAiJsonSchemaIsDroppedOnAnthropicEncode() {
+    void openAiJsonSchemaEncodesAsAnthropicOutputConfigFormat() throws Exception {
+        // Anthropic structured outputs (GA): output_config.format {type,schema}.
+        // The chat-wire json_schema wrapper (name/strict) has no format home.
         ChatRequest request = new ChatRequest(
-                "claude-sonnet-5",
+                "claude-sonnet-5-5",
                 List.of(new UserMessage("hi")),
                 null,
                 null,
@@ -607,7 +618,7 @@ class AnthropicRequestCodecTest {
                         "type",
                         "json_schema",
                         "json_schema",
-                        Map.of("name", "answer", "schema", Map.of("type", "object"))),
+                        Map.of("name", "answer", "strict", true, "schema", Map.of("type", "object"))),
                 false,
                 null,
                 null,
@@ -616,7 +627,64 @@ class AnthropicRequestCodecTest {
                 null);
         String json = codec.encodeRequest(request);
         assertFalse(json.contains("response_format"), json);
-        assertFalse(json.contains("json_schema"), json);
+        JsonNode format = mapper.readTree(json).get("output_config").get("format");
+        assertEquals("json_schema", format.get("type").asString());
+        assertEquals("object", format.get("schema").get("type").asString());
+        assertFalse(format.has("name"), json);
+        // aa idempotence for the mapped subset: decode restores a chat-shaped format.
+        ChatRequest roundTripped = codec.decodeRequest(json);
+        assertEquals("json_schema", roundTripped.responseFormat().get("type"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> inner =
+                (Map<String, Object>) roundTripped.responseFormat().get("json_schema");
+        assertEquals(Map.of("type", "object"), inner.get("schema"));
+        assertEquals(
+                format.toString(),
+                mapper.readTree(codec.encodeRequest(roundTripped))
+                        .get("output_config")
+                        .get("format")
+                        .toString());
+    }
+
+    @Test
+    void anthropicOutputConfigFormatAndEffortDecodeTogether() {
+        ChatRequest decoded = codec.decodeRequest("""
+                {
+                  "model": "claude-opus-5-5",
+                  "max_tokens": 16,
+                  "output_config": {
+                    "effort": "low",
+                    "format": {"type": "json_schema", "schema": {"type": "object"}}
+                  },
+                  "messages": [{"role": "user", "content": "hi"}]
+                }
+                """);
+        assertEquals("json_schema", decoded.responseFormat().get("type"));
+        assertEquals("low", decoded.reasoning().get("effort"));
+        String json = codec.encodeRequest(decoded);
+        assertTrue(json.contains("\"effort\":\"low\""), json);
+        assertTrue(json.contains("\"type\":\"json_schema\""), json);
+    }
+
+    @Test
+    void anthropicToolStrictRoundTrips() throws Exception {
+        ChatRequest decoded = codec.decodeRequest("""
+                {
+                  "model": "claude-sonnet-5-5",
+                  "max_tokens": 16,
+                  "tools": [{
+                    "name": "get_weather",
+                    "description": "weather",
+                    "strict": true,
+                    "input_schema": {"type": "object", "properties": {}}
+                  }],
+                  "messages": [{"role": "user", "content": "hi"}]
+                }
+                """);
+        assertEquals(Boolean.TRUE, decoded.tools().get(0).strict());
+        JsonNode tool =
+                mapper.readTree(codec.encodeRequest(decoded)).get("tools").get(0);
+        assertTrue(tool.get("strict").asBoolean());
     }
 
     @Test
@@ -684,9 +752,9 @@ class AnthropicRequestCodecTest {
     }
 
     @Test
-    void toolStrictIsDroppedOnTheAnthropicEncode() {
-        // The Anthropic wire has no `strict` (structured outputs are OpenAI-leg
-        // only) — the canonical slot is documented-dropped on this egress.
+    void toolStrictIsEmittedOnTheAnthropicEncode() {
+        // Anthropic strict tool use (structured outputs): tools[].strict is a
+        // first-class wire field on current models, so the canonical slot maps.
         ChatRequest request = new ChatRequest(
                 "model-1",
                 List.of(new UserMessage("hi")),
@@ -717,7 +785,7 @@ class AnthropicRequestCodecTest {
                 null);
         String json = codec.encodeRequest(request);
         assertTrue(json.contains("\"name\":\"get_weather\""), json);
-        assertFalse(json.contains("strict"), "Anthropic encode drops strict: " + json);
+        assertTrue(json.contains("\"strict\":true"), "Anthropic encode emits strict: " + json);
     }
 
     @Test
@@ -1228,12 +1296,15 @@ class AnthropicRequestCodecTest {
     }
 
     @Test
-    void contentTextBlockArrayFormJoinsAndDropsThinking() throws Exception {
-        ChatRequest request = codec.decodeRequest("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":["
-                + "{\"type\":\"text\",\"text\":\"a\"},"
-                + "{\"type\":\"thinking\",\"thinking\":\"x\",\"signature\":\"s\"},"
-                + "{\"type\":\"text\",\"text\":\"b\"}]}]}");
-        assertEquals(List.of(new UserMessage("ab")), request.messages());
+    void contentThinkingBlockInUserMessageIsRejected() {
+        // Thinking blocks belong to assistant messages; on the request face
+        // client content is never silently dropped, so this is a typed error.
+        assertThrows(
+                AnthropicCodecException.class,
+                () -> codec.decodeRequest("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":["
+                        + "{\"type\":\"text\",\"text\":\"a\"},"
+                        + "{\"type\":\"thinking\",\"thinking\":\"x\",\"signature\":\"s\"},"
+                        + "{\"type\":\"text\",\"text\":\"b\"}]}]}"));
     }
 
     @Test
@@ -1319,6 +1390,29 @@ class AnthropicRequestCodecTest {
         assertEquals("adaptive", node.get("thinking").get("type").asString(), json);
         assertFalse(node.get("thinking").has("display"), json);
         assertEquals("high", node.get("output_config").get("effort").asString(), json);
+    }
+
+    @Test
+    void betweenToolsThinkingTypeRoundTripsOnNativeFace() throws Exception {
+        // Claude Sonnet 5.5+: thinking {type:"between_tools"} is the lowest
+        // thinking setting. Native-face decode→encode must not drop it.
+        ChatRequest request = codec.decodeRequest("{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":64,"
+                + "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+                + "\"thinking\":{\"type\":\"between_tools\"}}");
+        assertEquals("between_tools", request.reasoning().get("type"));
+        String json = codec.encodeRequest(request);
+        assertTrue(json.contains("\"thinking\":{\"type\":\"between_tools\"}"), json);
+    }
+
+    @Test
+    void xhighEffortFromNativeFaceRoundTrips() {
+        // The native face must not 400 on effort levels current Claude models
+        // accept (the five levels are low|medium|high|xhigh|max).
+        ChatRequest request = codec.decodeRequest("{\"model\":\"claude-opus-5-5\",\"max_tokens\":64,"
+                + "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+                + "\"output_config\":{\"effort\":\"xhigh\"}}");
+        String json = codec.encodeRequest(request);
+        assertTrue(json.contains("\"effort\":\"xhigh\""), json);
     }
 
     @Test

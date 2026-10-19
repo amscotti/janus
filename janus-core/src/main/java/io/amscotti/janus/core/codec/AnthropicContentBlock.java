@@ -13,10 +13,12 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
  * {@code ToolCall}s/{@code ToolMessage}s; user-message {@link AnthropicImageBlock}s
  * decode into canonical multimodal parts and encode re-emits them (the request face's
  * vision path — pinned by {@code AnthropicRequestCodecTest} and docs/providers.md
- * "Vision"); on the response/stream paths image blocks are dropped, as are
- * {@link AnthropicThinkingBlock}s (thinking deferred) and non-{@code web_search}
- * {@link AnthropicServerToolUseBlock}s — the decode paths must agree, so a payload
- * that streams also decodes. {@link AnthropicUnknownBlock} is the {@code defaultImpl}
+ * "Vision"); on the response/stream paths image blocks and
+ * non-{@code web_search} {@link AnthropicServerToolUseBlock}s are dropped —
+ * the decode paths must agree, so a payload that streams also decodes.
+ * {@link AnthropicThinkingBlock}/{@link AnthropicRedactedThinkingBlock} map
+ * to/from canonical {@code ReasoningContent} on assistant messages (signed
+ * replay). {@link AnthropicUnknownBlock} is the {@code defaultImpl}
  * catch-all for unrecognized {@code type} ids ({@code web_search_tool_result},
  * {@code fallback}, …) — dropped on the response paths (Anthropic's versioning
  * contract) and a typed invalid-request error on the request face (client content is
@@ -34,6 +36,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
     @JsonSubTypes.Type(value = AnthropicToolResultBlock.class, name = "tool_result"),
     @JsonSubTypes.Type(value = AnthropicImageBlock.class, name = "image"),
     @JsonSubTypes.Type(value = AnthropicThinkingBlock.class, name = "thinking"),
+    @JsonSubTypes.Type(value = AnthropicRedactedThinkingBlock.class, name = "redacted_thinking"),
     @JsonSubTypes.Type(value = AnthropicServerToolUseBlock.class, name = "server_tool_use"),
 })
 public sealed interface AnthropicContentBlock
@@ -42,5 +45,6 @@ public sealed interface AnthropicContentBlock
                 AnthropicToolResultBlock,
                 AnthropicImageBlock,
                 AnthropicThinkingBlock,
+                AnthropicRedactedThinkingBlock,
                 AnthropicServerToolUseBlock,
                 AnthropicUnknownBlock {}
