@@ -63,7 +63,7 @@ MODEL=""
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
   MODEL="deepseek-v4-flash"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  MODEL="claude-sonnet-5"
+  MODEL="claude-sonnet-5-5"
 else
   die "need DEEPSEEK_API_KEY or ANTHROPIC_API_KEY"
 fi

@@ -29,6 +29,6 @@ class LiveProviderSupportCacheTest {
                 "the same client + model list is a cache hit");
         assertNotEquals(
                 LiveProviderSupport.virtualKeyCacheKey(serverA, flash),
-                LiveProviderSupport.virtualKeyCacheKey(serverA, List.of("claude-sonnet-5")));
+                LiveProviderSupport.virtualKeyCacheKey(serverA, List.of("claude-sonnet-5-5")));
     }
 }

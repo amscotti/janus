@@ -36,7 +36,7 @@ export JANUS_LIVE=1
 ```
 
 One opt-in only (`JANUS_LIVE=1`). Additional frontier models (`deepseek-v4-pro`,
-`gpt-5.6`, `claude-opus-5`) run in the same suite; they skip only when that
+`gpt-6-astra`, `claude-opus-5-5`) run in the same suite; they skip only when that
 provider's key is unset — there is no second spend tier.
 
 Note: **DeepSeek's current flagship is `deepseek-v4-flash`** (newer than Pro).
@@ -64,12 +64,12 @@ Note: **DeepSeek's current flagship is `deepseek-v4-flash`** (newer than Pro).
 | Governance | RPM 429; **TPM** preflight 429; budget preflight 429 (no spend when estimate > cap) |
 | Spend settle | Response usage → `janus_key_*` metrics match pricing (`CostCalculator` micro-USD; DeepSeek Flash + Grok 4.6) |
 | Responses face | non-stream text+usage (`object:response`, `store:false` echo); **store:true → named 400**; two-cycle tool-call **replay** (function_call → function_call_output → text) |
-| Responses cross-format matrix | `/v1/responses` → **OpenAI** (non-stream, stream w/ usage-on-completed, reasoning_effort), **Anthropic** (non-stream + stream — effort→thinking live; **web_search** hosted tool with `web_search_call` items back), **xAI** (reasoning low), **OpenRouter** (kimi-k3); "vice versa": Anthropic face `/v1/messages` → gpt-5.6 |
+| Responses cross-format matrix | `/v1/responses` → **OpenAI** (non-stream, stream w/ usage-on-completed, reasoning_effort), **Anthropic** (non-stream + stream — effort→thinking live; **web_search** hosted tool with `web_search_call` items back), **xAI** (reasoning low), **OpenRouter** (kimi-k3); "vice versa": Anthropic face `/v1/messages` → gpt-6-astra |
 | Agent loop | Multi-tool two-cycle history (DeepSeek: tools → results → tools again) |
 | Stream settle | `stream_options.include_usage` terminal usage; **client abort** after first `data:` frame |
 | Multimodal / vision | OpenAI-face `image_url` data-URL → Luna, Grok, Claude, Kimi K3, DeepSeek vision-exp; Anthropic-face `image` block → Claude and vision-exp; HTTPS image URLs (Luna + Claude on a W3C JPEG; Grok on a jsDelivr-hosted image — Wikimedia began 429-rate-limiting xAI's crawler and each provider's crawler has a different allowlist) |
 | Failover | Dead primary (`127.0.0.1:1`) → live DeepSeek secondary |
-| Extra frontier ids | `deepseek-v4-pro` (older DeepSeek tier), `gpt-5.6`, `claude-opus-5`, `grok-4.5` (same `JANUS_LIVE` gate) |
+| Extra frontier ids | `deepseek-v4-pro` (older DeepSeek tier), `gpt-6-astra`, `claude-opus-5-5`, `grok-4.5` (same `JANUS_LIVE` gate) |
 
 Source: `janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProviderIT.java`
 
@@ -81,14 +81,14 @@ Source: `janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProvider
 | DeepSeek | `deepseek-v4-pro` | prior DeepSeek tier (still exercised for coverage) |
 | DeepSeek | `deepseek-v4-flash-vision-exp` | vision (experimental); OpenAI `image_url` + Anthropic `image` |
 | DeepSeek Anthropic API | `deepseek-v4-flash` via `https://api.deepseek.com/anthropic` | `DeepSeekAnthropicLiveIT` — Anthropic adapter, same API key |
-| Anthropic | `claude-sonnet-5` | Sonnet 5 |
-| Anthropic | `claude-opus-5` | flagship |
-| Anthropic | `claude-haiku-4-5` | Haiku 4.5 |
-| OpenAI | `gpt-5.6-luna` | cost tier |
-| OpenAI | `gpt-5.6` | flagship |
+| Anthropic | `claude-sonnet-5-5` | Sonnet 5.5 |
+| Anthropic | `claude-opus-5-5` | flagship |
+| Anthropic | `claude-haiku-5-5` | Haiku 5.5 |
+| OpenAI | `gpt-6-luna` | cost tier |
+| OpenAI | `gpt-6-astra` | flagship |
 | xAI | `grok-4.6` | **current flagship** (reasoning defaults to `high`; live cases pin `low`) |
 | xAI | `grok-4.5` | prior flagship |
-| OpenRouter | `openai/gpt-5.6-luna` | Luna via OR |
+| OpenRouter | `openai/gpt-6-luna` | Luna via OR |
 | OpenRouter | `moonshotai/kimi-k3` | Kimi K3 (reasoning; tests pin `reasoning.effort=none`) |
 | OpenRouter | `minimax/minimax-m3` | MiniMax M3 |
 | OpenRouter | `qwen/qwen3.8-max` | Qwen3.8 Max (tools use `tool_choice=auto`) |

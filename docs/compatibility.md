@@ -9,6 +9,7 @@ port — there is no split.
 |---|---|---|
 | Data | `POST /v1/chat/completions` | JSON + SSE; tools; cross-format translation |
 | Data | `POST /v1/messages` | JSON + SSE; tools; cross-format translation |
+| Data | `POST /v1/messages/count_tokens` | Anthropic token counting proxied to Anthropic-native backends; free/unmetered, scope-checked; other providers → typed `400` |
 | Data | `GET /v1/models` | Configured aliases, config order; `owned_by` is the backend name |
 | Data | `GET /v1/models/{id}` | One alias; unknown id → 404 `model_not_found` |
 | Data | `POST /v1/responses` | Stateless JSON + SSE; see [`responses.md`](./responses.md) |
@@ -36,8 +37,9 @@ parallelism caps.
 | `developer` role | OpenAI wire keeps `"developer"`; Anthropic merges it into `system` |
 | Vision / image input | User-message `ContentPart`s (data URL and https) |
 | Prompt cache | OpenAI GPT-5.6+ `prompt_cache_breakpoint` object + `prompt_cache_key`/`prompt_cache_options`; Qwen OpenAI-compatible `cache_control` on content parts; Anthropic `cache_control` on content blocks (optional `ttl: "1h"`); translated both ways. Chat Completions usage re-emits `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens` |
-| Structured outputs | `response_format` on the OpenAI-compatible leg; dropped on Anthropic encode |
-| Reasoning | Request maps + `reasoning_content` deltas + optional `Usage.reasoningTokens` |
+| Structured outputs | `response_format` ⇄ Anthropic `output_config.format` (`json_schema`; wrapper `name`/`strict` and `json_object`/`text` drop on the Anthropic leg); tool-level `strict` round-trips |
+| Reasoning | Request maps (effort `low`–`max`) + signed thinking round-trip (`AssistantMessage.reasoningContents`) + `thinking_delta`/`signature_delta`/`reasoning_content` stream fragments + optional `Usage.reasoningTokens` |
+| Request size | 32MB body ceiling (`micronaut.server.max-request-size` + buffer, for 1M-context prompts); oversize → per-face `413` envelope |
 | Virtual keys | Hashed at rest; timing-safe compare |
 | Per-key model scopes | Alias allowlist |
 | Rate limits (RPM/TPM) | 429 + `Retry-After`; throttled requests never reach the upstream |
@@ -77,7 +79,7 @@ parallelism caps.
 | Postgres down at boot | Node refuses to start (error names the env var, never the URL) |
 | Postgres down mid-run | Clean `500 api_error`; pool recovers on its own |
 | Client aborts a stream | Upstream cancelled; no call record; request lands in the `4xx` metrics bucket (499) |
-| Extended thinking | `thinking`/`redacted_thinking` blocks in assistant messages are dropped at decode (no canonical home yet) and `thinking_delta`/`signature_delta` stream events are not re-emitted. On current adaptive-thinking models (`claude-sonnet-5`, `claude-opus-5`, `claude-haiku-4-5`) a replayed assistant turn without thinking blocks is accepted; legacy `thinking:{"type":"enabled"}` upstreams may reject the second turn. Full thinking passthrough is deferred |
+| Extended thinking | `thinking`/`redacted_thinking` blocks round-trip with signatures (`AssistantMessage.reasoningContents`), so tool-loop replay works on legacy `thinking:{"type":"enabled"}` upstreams too; `thinking_delta`/`signature_delta` stream events re-emit on both faces. Cross-format, the text rides `reasoning_content` (Chat) / a `reasoning` item (Responses); unsigned foreign text is never forged into a signed Anthropic block. Responses *streaming* reasoning-summary events remain unmodeled |
 
 ## Deliberate choices
 

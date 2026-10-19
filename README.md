@@ -37,11 +37,12 @@ and the not-implemented list are in
 - **Multimodal / vision** — user messages accept OpenAI `image_url` parts and Anthropic `image`
   blocks (data URL ↔ base64, https ↔ url); cross-face conversion is first-class
   (`docs/providers.md`).
-- **Reasoning models** — request `reasoning` / Anthropic `thinking`, stream `reasoning_content` on
-  deltas, optional `Usage.reasoningTokens` from `completion_tokens_details` (pricing still uses
-  prompt + completion rates).
-- **Structured outputs** — OpenAI `response_format` (`json_object` / `json_schema`) is first-class on
-  the OpenAI-compatible leg (dropped on Anthropic encode).
+- **Reasoning models** — request `reasoning` / Anthropic `thinking` (effort `low`–`max`),
+  signed thinking blocks round-trip for tool-loop replay, `thinking_delta` /
+  `reasoning_content` stream deltas, optional `Usage.reasoningTokens` from
+  `completion_tokens_details` (pricing still uses prompt + completion rates).
+- **Structured outputs** — OpenAI `response_format` ⇄ Anthropic `output_config.format`
+  (`json_schema`) on both legs, plus strict tool use.
 - **Pluggable providers** — `ProviderAdapter` SPI declared in TOML: DeepSeek, Anthropic, OpenRouter,
   xAI, Ollama, … (`docs/adding-a-provider.md`, `docs/providers.md`).
 - **Routing & resilience** — six load-balancing strategies (round-robin, least-inflight, latency,
@@ -265,6 +266,7 @@ Full references: [`config.toml`](./config.toml) (canonical, annotated) ·
 |---|---|---|
 | Data | `POST /v1/chat/completions` | OpenAI face — JSON + SSE, cross-format translation |
 | Data | `POST /v1/messages` | Anthropic face — JSON + SSE, cross-format translation |
+| Data | `POST /v1/messages/count_tokens` | Anthropic token counting (Anthropic-native backends) |
 | Data | `GET /v1/models` | configured model aliases (config order) |
 | Data | `GET /v1/models/{id}` | retrieve one alias — 404 `model_not_found` for unknown ids |
 | Data | `POST /v1/responses` | OpenAI Responses face (stateless; JSON + SSE) |

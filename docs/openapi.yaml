@@ -1,7 +1,8 @@
 # Janus admin API — OpenAPI 3.0.3
 #
 # Scope: the admin plane only (`/key/*`). The data plane
-# (`POST /v1/chat/completions`, `POST /v1/messages`, `POST /v1/responses`,
+# (`POST /v1/chat/completions`, `POST /v1/messages`,
+# `POST /v1/messages/count_tokens`, `POST /v1/responses`,
 # `GET /v1/models`) and the ops plane (`/health*`, `/metrics`) are
 # intentionally NOT specified here — see docs/compatibility.md for the full
 # surface.

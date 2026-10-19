@@ -74,9 +74,16 @@ Operator examples use peak unless you explicitly pick the off-peak band.
 
 | Model id | Notes |
 |----------|--------|
-| `gpt-5.6-luna` | Cost tier. Function tools often need `"reasoning_effort": "none"`. |
-| `gpt-5.6` | Full flagship. |
-| `openai/gpt-5.6-luna` (OpenRouter) | Same Luna via OpenRouter prefix. |
+| `gpt-6-astra` | Flagship. 1.05M context (922K max input), 128K max output. Effort `low`–`max`. $10 / $1 read / $12.50 write / $50 per 1M. |
+| `gpt-6.1-sol` | Mid tier. $2 / $0.10 read / $2.50 write / $10 per 1M. |
+| `gpt-6-luna` | Cost tier. $0.10 / $0.01 read / $0.125 write / $0.50 per 1M. On Chat Completions, function calling needs `"reasoning_effort": "none"` (Responses has no such constraint). |
+| `openai/gpt-6-luna` (OpenRouter) | Same Luna via OpenRouter prefix. |
+| `gpt-5.6-luna` / `gpt-5.6` | Prior generation — still served; pricing rows in git history. |
+
+All GPT-6 ids: prompts over 272K input tokens bill the whole request at
+2× input/cache and 1.5× output (`long-context-threshold = 272000` + `long-*`
+rates in `config.toml`). Effort vocabulary is `none|low|medium|high|xhigh|max`
+on both OpenAI and Anthropic legs — Janus passes `xhigh`/`max` through.
 | `moonshotai/kimi-k3` | Reasoning model; pin `"reasoning": {"effort": "none"}` for short replies. Multimodal (vision). Cache-read `$0.30` / 1M (`cache-read-per-1k = 0.0003`). |
 | `minimax/minimax-m3` | Tools with `tool_choice: required` work. Cache-read `$0.06` / 1M. |
 | `qwen/qwen3.8-max` | Rejects `tool_choice: required` in thinking mode — use **`auto`**. Janus forwards Anthropic-shaped `cache_control` on content parts (Qwen's OpenAI-compatible explicit-cache marker). OpenRouter's published explicit-cache list is `qwen3-max` / `qwen-plus` / coder variants — `qwen3.8-max` currently reports `cached_tokens: 0` even on a direct OpenRouter call. |
@@ -85,8 +92,17 @@ Operator examples use peak unless you explicitly pick the off-peak band.
 
 | Model id | Notes |
 |----------|--------|
-| `claude-sonnet-5` | Default Anthropic live path; native face + OpenAI face both work. |
-| `claude-opus-5` | Flagship. |
+| `claude-fable-5-1` | Frontier tier. 1M context. $10 / $0.25 read / $12.50 write (5m) / $50 per 1M. Effort default `high`. |
+| `claude-opus-5-5` | Flagship. $4 / $0.20 read / $5 write / $20 per 1M. Effort default `medium`; adaptive thinking always on (`thinking:{type:"disabled"}` 400s upstream). |
+| `claude-sonnet-5-5` | Default Anthropic live path; native face + OpenAI face both work. $2 / $0.10 read / $2.50 write / $10 per 1M. Lowest thinking setting is `thinking:{type:"between_tools"}` (passed through). |
+| `claude-haiku-5-5` | Cost tier. $0.10 / $0.50 per 1M; prompts over 100K tokens bill $0.50 / $2.50 (`long-context-threshold = 100001`). Effort default `medium`. |
+| `claude-sonnet-5` / `claude-opus-5` | Prior generation — still served. |
+
+Effort levels on current models: `low|medium|high|xhigh|max` (all five on
+Fable 5.1 / Opus 5.5 / Sonnet 5.5 / Haiku 5.5). `POST /v1/messages/count_tokens`
+is proxied to Anthropic-native backends (free, unmetered; other providers
+get a typed 400). Structured outputs (`output_config.format`, strict tool
+use) translate both ways — see below.
 
 Vision: Anthropic image blocks (`type: image`, base64 or url source) and OpenAI
 `image_url` parts both round-trip through the canonical model. HTTPS image URLs
@@ -107,8 +123,9 @@ host must allow xAI's fetcher (Wikimedia works; some W3C hosts 403). `detail` is
 documented xAI spelling).
 
 OpenAI-compatible encode passes `reasoning_effort` strings through, including
-`xhigh`, `max`, and `ultra`. The Anthropic encode still 400s those spellings
-(Anthropic's vocabulary is `low|medium|high|minimal|none`).
+`xhigh`, `max`, and `ultra`. The Anthropic encode accepts its current
+vocabulary (`low|medium|high|xhigh|max`, plus legacy `minimal`→`low` and
+`none`) and typed-400s only on unknown spellings like `ultra`.
 
 Prompt cache markers translate in both directions:
 
@@ -116,9 +133,11 @@ Prompt cache markers translate in both directions:
   `prompt_cache_breakpoint: {"mode": "explicit"}` (boolean `true` is invalid
   upstream and is rewritten to the object on encode). Request-level
   `prompt_cache_key` and `prompt_cache_options` (`mode` `implicit`/`explicit`,
-  `ttl` `"30m"`) pass through on the OpenAI wire. Encode emits these fields only
-  for the GPT-5.6 family (`gpt-5.6`, `gpt-5.6-luna`, `openai/gpt-5.6-luna`,
-  later `gpt-5.x`); earlier models 400 them, so Janus strips the breakpoint and
+  `ttl` `"30m"`) pass through on the OpenAI wire. Encode emits these fields
+  for GPT-5.6 and later generations (`gpt-5.6`, `gpt-5.6-luna`,
+  `openai/gpt-5.6-luna`, `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`, …) — the
+  version gate compares numerically, so new majors are included without a
+  code change. Earlier models 400 them, so Janus strips the breakpoint and
   options. Minimum cacheable prefix is 1,024 tokens.
 - **Qwen (OpenRouter / Alibaba):** OpenAI-compatible content parts carry
   `cache_control: {type: ephemeral}` (same shape as Anthropic). Janus decodes
@@ -138,9 +157,9 @@ Prompt cache markers translate in both directions:
   reverse emits the OpenAI breakpoint on the leading system (or developer)
   message for GPT-5.6+ aliases.
 
-Together is OpenAI-compatible at `https://api.together.xyz`. Replay of
-`reasoning_content` extras is stripped on encode; request-level `thinking`
-and `chat_template_kwargs` pass through.
+Together is OpenAI-compatible at `https://api.together.xyz`. Assistant
+`reasoning_content` is first-class (see Reasoning below); request-level
+`thinking` and `chat_template_kwargs` pass through as extras.
 
 ## Meta Muse Spark
 
@@ -163,9 +182,18 @@ with the base URLs from the table above; the alias is sent upstream unchanged.
 ## Reasoning (first-class)
 
 - **Request:** `ChatRequest.reasoning` / OpenAI `reasoning` object / Anthropic
- `thinking` map are first-class maps (not silent drops).
-- **Stream deltas:** DeepSeek-style `reasoning_content` rides `Delta.reasoning` and
- re-emits inside the delta.
+ `thinking` map are first-class maps (not silent drops). Effort levels
+ `low|medium|high|xhigh|max` pass on both legs; thinking types `adaptive`,
+ `enabled`, `disabled`, `between_tools` pass type-only to Anthropic.
+- **Thinking content:** Anthropic `thinking`/`redacted_thinking` blocks ride
+ `AssistantMessage.reasoningContents` with their `signature`, so tool-loop
+ replay keeps the signed blocks Anthropic requires. On the OpenAI wire the
+ text rides `reasoning_content`; on Responses it rides a `reasoning` output
+ item (summary text). Unsigned foreign reasoning text is never re-emitted
+ as a signed Anthropic block.
+- **Stream deltas:** Anthropic `thinking_delta`/`signature_delta` and
+ DeepSeek-style `reasoning_content` ride the typed `Delta.reasoningContent`
+ and re-emit on both faces.
 - **Usage:** `Usage.reasoningTokens` from OpenAI
  `completion_tokens_details.reasoning_tokens` when present (display/accounting
  transparency). **Pricing** still uses prompt + completion rates; reasoning
@@ -175,8 +203,12 @@ with the base URLs from the table above; the alias is sent upstream unchanged.
 
 - OpenAI `response_format` (`json_object` / `json_schema`) is a first-class
  `ChatRequest.responseFormat` map and round-trips on the OpenAI-compatible leg.
-- Anthropic has no equivalent field — the map is dropped on Anthropic encode
- (documented non-idempotence), same as other OpenAI-only knobs.
+- Anthropic structured outputs map both ways: a Chat `json_schema` format
+ becomes `output_config.format {type:"json_schema", schema}` (the wrapper's
+ `name`/`strict` have no format home and drop; `json_object`/`text` have no
+ Anthropic home and drop). Tool-level `strict: true` round-trips on the
+ tools array. A `json_schema` without a schema object is a typed 400 —
+ never a silent drop to unconstrained output.
 
 ## Multimodal / vision
 

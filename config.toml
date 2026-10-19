@@ -258,6 +258,82 @@ base-url = "https://api.deepseek.com"
 # # long-output-per-1k = 0.012
 # # long-cache-read-per-1k = 0.001
 # #
+# # OpenAI GPT-6 (official Oct 2026; USD-per-1M ÷ 1000). Long tier: prompts
+# # over 272K input tokens bill the whole request at 2x input/cache and
+# # 1.5x output. All three ids: 1.05M context, 128k max output.
+# # [[janus.pricing.models]]
+# # name = "gpt-6-astra"          # $10 in / $1 read / $12.50 write / $50 out
+# # input-per-1k = 0.010
+# # output-per-1k = 0.050
+# # cache-read-per-1k = 0.001
+# # cache-creation-per-1k = 0.0125
+# # long-context-threshold = 272000
+# # long-input-per-1k = 0.020
+# # long-output-per-1k = 0.075
+# # long-cache-read-per-1k = 0.002
+# # long-cache-creation-per-1k = 0.025
+# # [[janus.pricing.models]]
+# # name = "gpt-6.1-sol"          # $2 in / $0.10 read / $2.50 write / $10 out
+# # input-per-1k = 0.002
+# # output-per-1k = 0.010
+# # cache-read-per-1k = 0.0001
+# # cache-creation-per-1k = 0.0025
+# # long-context-threshold = 272000
+# # long-input-per-1k = 0.004
+# # long-output-per-1k = 0.015
+# # long-cache-read-per-1k = 0.0002
+# # long-cache-creation-per-1k = 0.005
+# # [[janus.pricing.models]]
+# # name = "gpt-6-luna"           # $0.10 in / $0.01 read / $0.125 write / $0.50 out
+# # input-per-1k = 0.0001
+# # output-per-1k = 0.0005
+# # cache-read-per-1k = 0.00001
+# # cache-creation-per-1k = 0.000125
+# # long-context-threshold = 272000
+# # long-input-per-1k = 0.0002
+# # long-output-per-1k = 0.00075
+# # long-cache-read-per-1k = 0.00002
+# # long-cache-creation-per-1k = 0.00025
+# #
+# # Anthropic Claude 5.5 / Fable 5.1 (official Oct 2026). cache-creation is
+# # the 5-minute write rate; 1-hour writes bill higher upstream (Fable 5.1
+# # $20, Opus 5.5 $8, Sonnet 5.5 $4, Haiku 5.5 $0.20 per 1M) — Janus has one
+# # creation rate per row, so bump it if you run ttl:"1h" markers. Cache
+# # reads: 0.025x input on Fable 5.1, 0.05x on Opus/Sonnet 5.5.
+# # [[janus.pricing.models]]
+# # name = "claude-fable-5-1"     # $10 in / $0.25 read / $12.50 write / $50 out
+# # input-per-1k = 0.010
+# # output-per-1k = 0.050
+# # cache-read-per-1k = 0.00025
+# # cache-creation-per-1k = 0.0125
+# # web-search-per-1k = 10.0
+# # [[janus.pricing.models]]
+# # name = "claude-opus-5-5"      # $4 in / $0.20 read / $5 write / $20 out
+# # input-per-1k = 0.004
+# # output-per-1k = 0.020
+# # cache-read-per-1k = 0.0002
+# # cache-creation-per-1k = 0.005
+# # web-search-per-1k = 10.0
+# # [[janus.pricing.models]]
+# # name = "claude-sonnet-5-5"    # $2 in / $0.10 read / $2.50 write / $10 out
+# # input-per-1k = 0.002
+# # output-per-1k = 0.010
+# # cache-read-per-1k = 0.0001
+# # cache-creation-per-1k = 0.0025
+# # web-search-per-1k = 10.0
+# # [[janus.pricing.models]]
+# # name = "claude-haiku-5-5"     # $0.10/$0.50 per 1M; over 100k prompt: $0.50/$2.50
+# # input-per-1k = 0.0001
+# # output-per-1k = 0.0005
+# # cache-read-per-1k = 0.00001
+# # cache-creation-per-1k = 0.000125
+# # long-context-threshold = 100001   # vendor tier is "prompts over 100,000"
+# # long-input-per-1k = 0.0005
+# # long-output-per-1k = 0.0025
+# # long-cache-read-per-1k = 0.00005
+# # long-cache-creation-per-1k = 0.000625   # 1h write on the long tier: 0.001
+# # web-search-per-1k = 10.0
+# #
 # # hosted web-search billing (Anthropic bills searches per 1k besides result
 # # tokens, which arrive as ordinary input tokens). Optional; 0 when omitted.
 # # web-search-per-1k = 10.0

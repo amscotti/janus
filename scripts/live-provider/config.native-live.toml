@@ -39,7 +39,7 @@ base-url = "https://api.deepseek.com/anthropic"
 api-key-env = "DEEPSEEK_API_KEY"
 
 [[janus.model-list]]
-name = "claude-sonnet-5"
+name = "claude-sonnet-5-5"
 provider = "anthropic"
 api-key-env = "ANTHROPIC_API_KEY"
 base-url = "https://api.anthropic.com"
@@ -59,10 +59,10 @@ cache-read-per-1k = 0.000014
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
-name = "claude-sonnet-5"
+name = "claude-sonnet-5-5"
 input-per-1k = 0.002
 output-per-1k = 0.01
-cache-read-per-1k = 0.0002
+cache-read-per-1k = 0.0001
 cache-creation-per-1k = 0.0025
 default-max-tokens = 4096
 
