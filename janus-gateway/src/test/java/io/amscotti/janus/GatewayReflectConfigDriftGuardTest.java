@@ -41,7 +41,13 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code com.fasterxml.jackson.annotation} annotation (the non-DTO-annotated
  * surface),
  * <li>the pinned JDBC entries the image needs in postgres mode
- * ({@code org.postgresql.Driver}, {@code org.postgresql.util.PGobject}).
+ * ({@code org.postgresql.Driver}, {@code org.postgresql.util.PGobject}),
+ * <li>the pinned Netty entry ({@code io.netty.util.ReferenceCountUtil}):
+ * Netty 4.2's {@code ResourceLeakDetector.addExclusions} scans its declared
+ * methods reflectively at class init and throws in the native image when
+ * they are unregistered — the first streaming/chunked response (e.g.
+ * {@code /metrics}) then dies with {@code ExceptionInInitializerError}.
+ * Netty's own shipped reflect-config does not cover it.
  * </ol>
  *
  * <p>Every entry must register {@code allDeclaredConstructors} +
@@ -61,6 +67,7 @@ class GatewayReflectConfigDriftGuardTest {
     private static final String JACKSON_ANNOTATION_PACKAGE = "com.fasterxml.jackson.annotation";
     private static final Set<String> PINNED_JDBC_ENTRIES =
             Set.of("org.postgresql.Driver", "org.postgresql.util.PGobject");
+    private static final Set<String> PINNED_NETTY_ENTRIES = Set.of("io.netty.util.ReferenceCountUtil");
 
     @Test
     void reflectConfigCoversExactlyTheDtosConfigRecordsAndJdbcEntries() throws Exception {
@@ -76,11 +83,13 @@ class GatewayReflectConfigDriftGuardTest {
         expected.addAll(jacksonAnnotatedGatewayClasses());
         // (d) pinned JDBC entries (postgres driver + PGobject, /)
         expected.addAll(PINNED_JDBC_ENTRIES);
+        // (e) pinned Netty entry (ReferenceCountUtil reflective scan, class javadoc)
+        expected.addAll(PINNED_NETTY_ENTRIES);
 
         assertEquals(
                 expected,
                 configuredNames(),
-                "reflect-config.json must cover exactly the gateway DTO + JanusConfig record + JDBC entries");
+                "reflect-config.json must cover exactly the gateway DTO + JanusConfig record + JDBC + Netty entries");
         for (JsonNode entry : readConfig()) {
             String name = entry.get("name").asString();
             assertTrue(

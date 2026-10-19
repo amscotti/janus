@@ -120,6 +120,11 @@
     "allRecordComponents": true
   },
   {
+    "name": "io.netty.util.ReferenceCountUtil",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "org.postgresql.Driver",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true
