@@ -34,9 +34,13 @@ always **env var names** in TOML (`api-key-env`), never values.
 
 | Model id | Role | Notes |
 |----------|------|--------|
-| `deepseek-v4-flash` | **Current flagship** (newer than Pro) | Primary live path. Defaults to thinking; set `"thinking": {"type": "disabled"}` for short deterministic answers and tools. |
-| `deepseek-v4-pro` | Prior tier | Still valid; use when you explicitly want Pro. Live failover uses this id (dead primary + live secondary) because Janus sends the client alias upstream with no remap. |
-| `deepseek-v4-flash-vision-exp` | Vision (experimental) | OpenAI `image_url` (data URL or https) and Anthropic `image` blocks. JPEG/PNG/GIF/WebP. Images billed as input tokens (same peak rates as Flash). Only this DeepSeek id accepts images; Flash/Pro return 400. |
+| `deepseek-flash` | **Current flagship** (DeepSeek-V4.1-Flash-1017) | Primary live path. 1M context, 384K max output, native text + image input. Defaults to thinking; set `"thinking": {"type": "disabled"}` for short deterministic answers and tools. |
+| `deepseek-v4-pro` | Pro tier | Still served for workloads that pin Pro. 1M context, text only. Live failover uses this id (dead primary + live secondary) because Janus sends the client alias upstream with no remap. |
+| `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` | Retired compatibility aliases | Accepted by DeepSeek and currently served by V4.1-Flash at Flash prices. New configs should use `deepseek-flash`; the aliases may disappear. |
+
+`deepseek-flash` accepts OpenAI `image_url` (data URL or https) and Anthropic
+`image` blocks (JPEG/PNG/GIF/WebP); images bill as input tokens. Pro does not
+accept images.
 
 DeepSeek also speaks the Anthropic Messages API at
 `https://api.deepseek.com/anthropic` (same `DEEPSEEK_API_KEY`, `x-api-key`).
@@ -52,7 +56,7 @@ base-url = "https://api.deepseek.com/anthropic"
 api-key-env = "DEEPSEEK_API_KEY"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "deepseek-anthropic"
 api-key-env = "DEEPSEEK_API_KEY"
 base-url = "https://api.deepseek.com/anthropic"
@@ -65,28 +69,32 @@ to every `anthropic` backend — a boot warning names the shared key.
 
 Do not give the OpenAI-format Flash row and this Anthropic-format row the
 same `name` unless you want them in one load-balance/failover pool. Peak
-USD-per-1M (cache-miss / output) for Flash and Vision-Exp: `$0.44 / $1.32`
-(Janus per-1K: `0.00044` / `0.00132`); cache-hit input `$0.014` / 1M
-(`cache-read-per-1k = 0.000014`). Pro is 3× those rates. Off-peak is half.
-Operator examples use peak unless you explicitly pick the off-peak band.
+USD-per-1M for Flash is **$0.30 cache-miss input / $0.006 cache hit /
+$1.20 output** (Janus per-1K: `0.0003` / `0.000006` / `0.0012`). Pro is
+`$1.32 / $0.044 / $3.96` per 1M (`0.00132` / `0.000044` / `0.00396`).
+Off-peak is half. Operator examples use peak unless you explicitly pick
+the off-peak band.
 
 ## OpenAI / OpenRouter
 
 | Model id | Notes |
 |----------|--------|
-| `gpt-6-astra` | Flagship. 1.05M context (922K max input), 128K max output. Effort `low`–`max`. $10 / $1 read / $12.50 write / $50 per 1M. |
-| `gpt-6.1-sol` | Mid tier. $2 / $0.10 read / $2.50 write / $10 per 1M. |
-| `gpt-6-luna` | Cost tier. $0.10 / $0.01 read / $0.125 write / $0.50 per 1M. On Chat Completions, function calling needs `"reasoning_effort": "none"` (Responses has no such constraint). |
+| `gpt-6-astra` | Flagship. 1.05M context (922K max input), 128K max output. Effort `low`–`max`. $10 / $1 read / $12.50 30m write / $25 12h write / $50 out per 1M. |
+| `gpt-6.1-sol` | Mid tier. $2 / $0.10 read / $2.50 30m write / $5 12h write / $10 out per 1M. |
+| `gpt-6-luna` | Cost tier. $0.10 / $0.01 read / $0.125 30m write / $0.25 12h write / $0.50 out per 1M. On Chat Completions, function calling needs `"reasoning_effort": "none"` (Responses has no such constraint). |
 | `openai/gpt-6-luna` (OpenRouter) | Same Luna via OpenRouter prefix. |
 | `gpt-5.6-luna` / `gpt-5.6` | Prior generation — still served; pricing rows in git history. |
-
-All GPT-6 ids: prompts over 272K input tokens bill the whole request at
-2× input/cache and 1.5× output (`long-context-threshold = 272000` + `long-*`
-rates in `config.toml`). Effort vocabulary is `none|low|medium|high|xhigh|max`
-on both OpenAI and Anthropic legs — Janus passes `xhigh`/`max` through.
 | `moonshotai/kimi-k3` | Reasoning model; pin `"reasoning": {"effort": "none"}` for short replies. Multimodal (vision). Cache-read `$0.30` / 1M (`cache-read-per-1k = 0.0003`). |
 | `minimax/minimax-m3` | Tools with `tool_choice: required` work. Cache-read `$0.06` / 1M. |
 | `qwen/qwen3.8-max` | Rejects `tool_choice: required` in thinking mode — use **`auto`**. Janus forwards Anthropic-shaped `cache_control` on content parts (Qwen's OpenAI-compatible explicit-cache marker). OpenRouter's published explicit-cache list is `qwen3-max` / `qwen-plus` / coder variants — `qwen3.8-max` currently reports `cached_tokens: 0` even on a direct OpenRouter call. |
+
+All GPT-6 ids: prompts over 272K input tokens bill the whole request at
+2× input/cache and 1.5× output (`long-context-threshold = 272001` + `long-*`
+rates in `config.toml`; 272,000 still bills short). The default 30-minute
+cache write and Responses-only 12-hour write have separate rates
+(`cache-creation-per-1k` / `cache-creation-12h-per-1k`). Effort vocabulary is
+`none|low|medium|high|xhigh|max` on both OpenAI and Anthropic legs — Janus
+passes `xhigh`/`max` through.
 
 ## Anthropic
 
@@ -184,7 +192,8 @@ with the base URLs from the table above; the alias is sent upstream unchanged.
 - **Request:** `ChatRequest.reasoning` / OpenAI `reasoning` object / Anthropic
  `thinking` map are first-class maps (not silent drops). Effort levels
  `low|medium|high|xhigh|max` pass on both legs; thinking types `adaptive`,
- `enabled`, `disabled`, `between_tools` pass type-only to Anthropic.
+ `enabled`, `disabled`, `between_tools` pass through. The optional
+ `display` (`summarized` / `omitted`) survives on adaptive/enabled thinking.
 - **Thinking content:** Anthropic `thinking`/`redacted_thinking` blocks ride
  `AssistantMessage.reasoningContents` with their `signature`, so tool-loop
  replay keeps the signed blocks Anthropic requires. On the OpenAI wire the

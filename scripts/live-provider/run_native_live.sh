@@ -61,7 +61,7 @@ http() {
 
 MODEL=""
 if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
-  MODEL="deepseek-v4-flash"
+  MODEL="deepseek-flash"
 elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   MODEL="claude-sonnet-5-5"
 else

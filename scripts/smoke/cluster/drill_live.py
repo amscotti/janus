@@ -18,9 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "store"))
 from harness_common import generate_key, http_json, http_text  # noqa: E402
 
 MODELS = {
-    "flash": "deepseek-v4-flash",
-    "sonnet": "claude-sonnet-5",
-    "luna": "gpt-5.6-luna",
+    "flash": "deepseek-flash",
+    "sonnet": "claude-sonnet-5-5",
+    "luna": "gpt-6-luna",
     "pro": "deepseek-v4-pro",
     "vision": "deepseek-v4-flash-vision-exp",
     "grok": "grok-4.6",
@@ -107,7 +107,7 @@ def main() -> int:
         assert status == 200, f"OpenAI face → flash: {status} ({payload})"
         text = payload["choices"][0]["message"]["content"]
         assert text and text.strip(), "flash reply empty"
-        log(f"PASS OpenAI face → deepseek-v4-flash ({text!r:.80})")
+        log(f"PASS OpenAI face → deepseek-flash ({text!r:.80})")
 
         status, ctype, raw = stream_post(
             f"{lb}/v1/chat/completions",
@@ -125,7 +125,7 @@ def main() -> int:
         assert "text/event-stream" in ctype, f"OpenAI stream content-type={ctype!r}"
         assert "data:" in raw, f"OpenAI stream missing data: frames: {raw[:240]!r}"
         assert "[DONE]" in raw, f"OpenAI stream missing [DONE]: {raw[-200:]!r}"
-        log("PASS OpenAI face STREAM → deepseek-v4-flash (SSE + [DONE] through HAProxy)")
+        log("PASS OpenAI face STREAM → deepseek-flash (SSE + [DONE] through HAProxy)")
 
     if "sonnet" in wanted:
         status, _, payload = http_json(
@@ -143,7 +143,7 @@ def main() -> int:
         blocks = payload.get("content") or []
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         assert text.strip(), f"sonnet reply empty: {payload}"
-        log(f"PASS Anthropic face → claude-sonnet-5 ({text!r:.80})")
+        log(f"PASS Anthropic face → claude-sonnet-5-5 ({text!r:.80})")
 
         # Cross-format: OpenAI SDK shape → Anthropic upstream
         status, _, payload = http_json(
@@ -158,7 +158,7 @@ def main() -> int:
             timeout=90.0,
 )
         assert status == 200, f"cross-format OpenAI→sonnet: {status} ({payload})"
-        log("PASS cross-format OpenAI face → claude-sonnet-5")
+        log("PASS cross-format OpenAI face → claude-sonnet-5-5")
 
         status, ctype, raw = stream_post(
             f"{lb}/v1/messages",
@@ -174,7 +174,7 @@ def main() -> int:
         assert "text/event-stream" in ctype, f"Anthropic stream content-type={ctype!r}"
         assert "event:" in raw or "data:" in raw, f"Anthropic stream empty: {raw[:240]!r}"
         assert "message_stop" in raw, f"Anthropic stream missing message_stop: {raw[-200:]!r}"
-        log("PASS Anthropic face STREAM → claude-sonnet-5 (SSE through HAProxy)")
+        log("PASS Anthropic face STREAM → claude-sonnet-5-5 (SSE through HAProxy)")
 
         status, ctype, raw = stream_post(
             f"{lb}/v1/chat/completions",
@@ -189,7 +189,7 @@ def main() -> int:
 )
         assert status == 200, f"cross-format stream OpenAI→sonnet: {status}"
         assert "data:" in raw and "[DONE]" in raw, f"cross-format stream malformed: {raw[:240]!r}"
-        log("PASS cross-format STREAM OpenAI face → claude-sonnet-5")
+        log("PASS cross-format STREAM OpenAI face → claude-sonnet-5-5")
 
     if "luna" in wanted:
         status, _, payload = http_json(
@@ -206,7 +206,7 @@ def main() -> int:
 )
         assert status == 200, f"Responses face → luna: {status} ({payload})"
         assert payload.get("object") == "response", payload
-        log("PASS Responses face → gpt-5.6-luna")
+        log("PASS Responses face → gpt-6-luna")
 
         status, ctype, raw = stream_post(
             f"{lb}/v1/responses",
@@ -224,7 +224,7 @@ def main() -> int:
         assert "response.completed" in raw or "response.created" in raw, (
             f"Responses stream missing events: {raw[:240]!r}"
 )
-        log("PASS Responses face STREAM → gpt-5.6-luna through HAProxy")
+        log("PASS Responses face STREAM → gpt-6-luna through HAProxy")
 
     if "pro" in wanted:
         status, _, payload = http_json(

@@ -95,8 +95,8 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "micronaut.http.client.read-timeout", value = "120s")
 // Auth ON via production MasterKeyProvider → JANUS_MASTER_KEY env
 @Property(name = "janus.keys.master-key-env", value = "JANUS_MASTER_KEY")
-// --- DeepSeek (V4 Flash — current DeepSeek flagship; newer than Pro) ---------
-@Property(name = "janus.model-list[0].name", value = "deepseek-v4-flash")
+// --- DeepSeek (V4.1 Flash — current flagship; native text + vision) ----------
+@Property(name = "janus.model-list[0].name", value = "deepseek-flash")
 @Property(name = "janus.model-list[0].provider", value = "deepseek")
 @Property(name = "janus.model-list[0].api-key-env", value = "DEEPSEEK_API_KEY")
 @Property(name = "janus.model-list[0].base-url", value = "https://api.deepseek.com")
@@ -105,7 +105,7 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.model-list[1].provider", value = "anthropic")
 @Property(name = "janus.model-list[1].api-key-env", value = "ANTHROPIC_API_KEY")
 @Property(name = "janus.model-list[1].base-url", value = "https://api.anthropic.com")
-// --- OpenAI (GPT-6 Luna — cost-sensitive tier of the 5.6 family) -----------
+// --- OpenAI (GPT-6 Luna — cost-sensitive tier of the GPT-6 family) ----------
 @Property(name = "janus.model-list[2].name", value = "gpt-6-luna")
 @Property(name = "janus.model-list[2].provider", value = "openai")
 @Property(name = "janus.model-list[2].api-key-env", value = "OPENAI_API_KEY")
@@ -207,7 +207,7 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.model-list[14].provider", value = "xai")
 @Property(name = "janus.model-list[14].api-key-env", value = "XAI_API_KEY")
 @Property(name = "janus.model-list[14].base-url", value = "https://api.x.ai")
-// DeepSeek V4 Flash Vision (experimental) — OpenAI-compatible, same key/base as Flash.
+// Retired DeepSeek vision alias — still served by V4.1-Flash (compatibility check).
 @Property(name = "janus.model-list[15].name", value = "deepseek-v4-flash-vision-exp")
 @Property(name = "janus.model-list[15].provider", value = "deepseek")
 @Property(name = "janus.model-list[15].api-key-env", value = "DEEPSEEK_API_KEY")
@@ -243,10 +243,10 @@ import tools.jackson.databind.JsonNode;
 // X-Janus-Cost-Cache-Read-Micro-Usd; spend-settle adds that header to the
 // tokens_in × input + tokens_out × output pin. Long-context knobs on Grok:
 // whole request at the higher tier once prompt ≥ 200k (docs.x.ai).
-@Property(name = "janus.pricing.models[0].name", value = "deepseek-v4-flash")
-@Property(name = "janus.pricing.models[0].input-per-1k", value = "0.00044")
-@Property(name = "janus.pricing.models[0].output-per-1k", value = "0.00132")
-@Property(name = "janus.pricing.models[0].cache-read-per-1k", value = "0.000014")
+@Property(name = "janus.pricing.models[0].name", value = "deepseek-flash")
+@Property(name = "janus.pricing.models[0].input-per-1k", value = "0.0003")
+@Property(name = "janus.pricing.models[0].output-per-1k", value = "0.0012")
+@Property(name = "janus.pricing.models[0].cache-read-per-1k", value = "0.000006")
 @Property(name = "janus.pricing.models[0].default-max-tokens", value = "4096")
 @Property(name = "janus.pricing.models[1].name", value = "deepseek-v4-pro")
 @Property(name = "janus.pricing.models[1].input-per-1k", value = "0.00132")
@@ -289,26 +289,35 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.pricing.models[6].output-per-1k", value = "0.0005")
 @Property(name = "janus.pricing.models[6].cache-read-per-1k", value = "0.00001")
 @Property(name = "janus.pricing.models[6].cache-creation-per-1k", value = "0.000125")
+@Property(name = "janus.pricing.models[6].cache-creation-12h-per-1k", value = "0.00025")
 @Property(name = "janus.pricing.models[6].web-search-per-1k", value = "10.0")
-@Property(name = "janus.pricing.models[6].long-context-threshold", value = "272000")
+@Property(name = "janus.pricing.models[6].long-context-threshold", value = "272001")
 @Property(name = "janus.pricing.models[6].long-input-per-1k", value = "0.0002")
 @Property(name = "janus.pricing.models[6].long-output-per-1k", value = "0.00075")
+@Property(name = "janus.pricing.models[6].long-cache-read-per-1k", value = "0.00002")
+@Property(name = "janus.pricing.models[6].long-cache-creation-per-1k", value = "0.00025")
+@Property(name = "janus.pricing.models[6].long-cache-creation-12h-per-1k", value = "0.0005")
 @Property(name = "janus.pricing.models[6].default-max-tokens", value = "4096")
 @Property(name = "janus.pricing.models[7].name", value = "gpt-6-astra")
 @Property(name = "janus.pricing.models[7].input-per-1k", value = "0.010")
 @Property(name = "janus.pricing.models[7].output-per-1k", value = "0.050")
 @Property(name = "janus.pricing.models[7].cache-read-per-1k", value = "0.001")
 @Property(name = "janus.pricing.models[7].cache-creation-per-1k", value = "0.0125")
+@Property(name = "janus.pricing.models[7].cache-creation-12h-per-1k", value = "0.025")
 @Property(name = "janus.pricing.models[7].web-search-per-1k", value = "10.0")
-@Property(name = "janus.pricing.models[7].long-context-threshold", value = "272000")
+@Property(name = "janus.pricing.models[7].long-context-threshold", value = "272001")
 @Property(name = "janus.pricing.models[7].long-input-per-1k", value = "0.020")
 @Property(name = "janus.pricing.models[7].long-output-per-1k", value = "0.075")
+@Property(name = "janus.pricing.models[7].long-cache-read-per-1k", value = "0.002")
+@Property(name = "janus.pricing.models[7].long-cache-creation-per-1k", value = "0.025")
+@Property(name = "janus.pricing.models[7].long-cache-creation-12h-per-1k", value = "0.050")
 @Property(name = "janus.pricing.models[7].default-max-tokens", value = "4096")
 @Property(name = "janus.pricing.models[8].name", value = "openai/gpt-6-luna")
 @Property(name = "janus.pricing.models[8].input-per-1k", value = "0.0001")
 @Property(name = "janus.pricing.models[8].output-per-1k", value = "0.0005")
 @Property(name = "janus.pricing.models[8].cache-read-per-1k", value = "0.00001")
 @Property(name = "janus.pricing.models[8].cache-creation-per-1k", value = "0.000125")
+@Property(name = "janus.pricing.models[8].cache-creation-12h-per-1k", value = "0.00025")
 @Property(name = "janus.pricing.models[8].default-max-tokens", value = "4096")
 @Property(name = "janus.pricing.models[9].name", value = "moonshotai/kimi-k3")
 @Property(name = "janus.pricing.models[9].input-per-1k", value = "0.003")
@@ -333,9 +342,9 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.pricing.models[12].web-search-per-1k", value = "10.0")
 @Property(name = "janus.pricing.models[12].default-max-tokens", value = "4096")
 @Property(name = "janus.pricing.models[13].name", value = "deepseek-v4-flash-vision-exp")
-@Property(name = "janus.pricing.models[13].input-per-1k", value = "0.00044")
-@Property(name = "janus.pricing.models[13].output-per-1k", value = "0.00132")
-@Property(name = "janus.pricing.models[13].cache-read-per-1k", value = "0.000014")
+@Property(name = "janus.pricing.models[13].input-per-1k", value = "0.0003")
+@Property(name = "janus.pricing.models[13].output-per-1k", value = "0.0012")
+@Property(name = "janus.pricing.models[13].cache-read-per-1k", value = "0.000006")
 @Property(name = "janus.pricing.models[13].default-max-tokens", value = "4096")
 // Parity/new-frontier providers — approximate public list prices (no live spend
 // assertions cover these ids; rows exist so spend metrics stay meaningful).
@@ -359,16 +368,42 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.pricing.models[18].input-per-1k", value = "0.0014")
 @Property(name = "janus.pricing.models[18].output-per-1k", value = "0.0044")
 @Property(name = "janus.pricing.models[18].default-max-tokens", value = "4096")
+// New current-generation tiers: Fable 5.1 and GPT-6.1 Sol.
+@Property(name = "janus.model-list[23].name", value = "claude-fable-5-1")
+@Property(name = "janus.model-list[23].provider", value = "anthropic")
+@Property(name = "janus.model-list[23].api-key-env", value = "ANTHROPIC_API_KEY")
+@Property(name = "janus.model-list[23].base-url", value = "https://api.anthropic.com")
+@Property(name = "janus.model-list[24].name", value = "gpt-6.1-sol")
+@Property(name = "janus.model-list[24].provider", value = "openai")
+@Property(name = "janus.model-list[24].api-key-env", value = "OPENAI_API_KEY")
+@Property(name = "janus.model-list[24].base-url", value = "https://api.openai.com")
+@Property(name = "janus.pricing.models[19].name", value = "claude-fable-5-1")
+@Property(name = "janus.pricing.models[19].input-per-1k", value = "0.010")
+@Property(name = "janus.pricing.models[19].output-per-1k", value = "0.050")
+@Property(name = "janus.pricing.models[19].cache-read-per-1k", value = "0.00025")
+@Property(name = "janus.pricing.models[19].cache-creation-per-1k", value = "0.0125")
+@Property(name = "janus.pricing.models[19].web-search-per-1k", value = "10.0")
+@Property(name = "janus.pricing.models[19].default-max-tokens", value = "4096")
+@Property(name = "janus.pricing.models[20].name", value = "gpt-6.1-sol")
+@Property(name = "janus.pricing.models[20].input-per-1k", value = "0.002")
+@Property(name = "janus.pricing.models[20].output-per-1k", value = "0.010")
+@Property(name = "janus.pricing.models[20].cache-read-per-1k", value = "0.0001")
+@Property(name = "janus.pricing.models[20].cache-creation-per-1k", value = "0.0025")
+@Property(name = "janus.pricing.models[20].cache-creation-12h-per-1k", value = "0.005")
+@Property(name = "janus.pricing.models[20].long-context-threshold", value = "272001")
+@Property(name = "janus.pricing.models[20].long-input-per-1k", value = "0.004")
+@Property(name = "janus.pricing.models[20].long-output-per-1k", value = "0.015")
+@Property(name = "janus.pricing.models[20].long-cache-read-per-1k", value = "0.0002")
+@Property(name = "janus.pricing.models[20].long-cache-creation-per-1k", value = "0.005")
+@Property(name = "janus.pricing.models[20].long-cache-creation-12h-per-1k", value = "0.010")
+@Property(name = "janus.pricing.models[20].default-max-tokens", value = "4096")
 // Light routing (one retry only — live network; enough for dead→secondary failover)
 @Property(name = "janus.router.max-retries", value = "1")
 @Property(name = "janus.router.allowed-fails", value = "1")
 class LiveProviderIT {
 
-    /**
-     * DeepSeek current flagship API id ({@code deepseek-v4-flash}). Flash is newer than
-     * Pro at the time of this suite — primary live path, not a "cheap default" tier.
-     */
-    private static final String DEEPSEEK = "deepseek-v4-flash";
+    /** DeepSeek current flagship API id (V4.1-Flash-1017). */
+    private static final String DEEPSEEK = "deepseek-flash";
     /** Official Anthropic Sonnet 5 API id. */
     private static final String CLAUDE = "claude-sonnet-5-5";
     /** GPT-6 Luna — cost tier of the current OpenAI flagship family. */
@@ -461,12 +496,9 @@ class LiveProviderIT {
      */
     private static final String HTTPS_IMAGE_URL_XAI =
             "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/1f40c.png";
-    /**
-     * Prior DeepSeek tier ({@code deepseek-v4-pro}). Still covered for multi-id
-     * routing; not "flagship over Flash" — Flash is current.
-     */
+    /** DeepSeek Pro tier ({@code deepseek-v4-pro}); covered for multi-id routing. */
     private static final String DEEPSEEK_PRO = "deepseek-v4-pro";
-    /** DeepSeek V4 Flash Vision (experimental). Images billed as input tokens. */
+    /** Retired DeepSeek vision alias, still accepted and served by V4.1-Flash. */
     private static final String DEEPSEEK_VISION = "deepseek-v4-flash-vision-exp";
 
     /** 1×1 red PNG — self-contained; no external image host. */
@@ -492,6 +524,8 @@ class LiveProviderIT {
                     + "KKKKACiiigD/2Q==";
 
     private static final String OPENAI_ASTRA = "gpt-6-astra";
+    private static final String OPENAI_SOL = "gpt-6.1-sol";
+    private static final String CLAUDE_FABLE = "claude-fable-5-1";
     private static final String CLAUDE_OPUS = "claude-opus-5-5";
     /** Anthropic — Haiku 5.5 (the haiku tier of the live suite). */
     private static final String CLAUDE_HAIKU = "claude-haiku-5-5";
@@ -527,10 +561,12 @@ class LiveProviderIT {
             models.add(CLAUDE);
             models.add(CLAUDE_OPUS);
             models.add(CLAUDE_HAIKU);
+            models.add(CLAUDE_FABLE);
         }
         if (LiveProviderSupport.envSet("OPENAI_API_KEY")) {
             models.add(OPENAI);
             models.add(OPENAI_ASTRA);
+            models.add(OPENAI_SOL);
         }
         if (LiveProviderSupport.envSet("XAI_API_KEY")) {
             models.add(GROK);
@@ -622,6 +658,36 @@ class LiveProviderIT {
     void openai_openaiFace_stream() throws Exception {
         assumeProviderKey("OPENAI_API_KEY");
         String sse = openaiStream(server, keyFor(OPENAI), streamChatBody(OPENAI));
+        assertTrue(sse.contains("data:"), sse);
+        assertTrue(sse.contains("[DONE]"), sse);
+    }
+
+    @Test
+    void openaiSol_openaiFace_nonStream() {
+        assumeProviderKey("OPENAI_API_KEY");
+        JsonNode res = openaiChat(client, keyFor(OPENAI_SOL), plainChatBody(OPENAI_SOL, 512, null));
+        assertNonEmptyAssistantContent(res);
+    }
+
+    @Test
+    void openaiSol_openaiFace_stream() throws Exception {
+        assumeProviderKey("OPENAI_API_KEY");
+        String sse = openaiStream(server, keyFor(OPENAI_SOL), streamChatBody(OPENAI_SOL, 512, null));
+        assertTrue(sse.contains("data:"), sse);
+        assertTrue(sse.contains("[DONE]"), sse);
+    }
+
+    @Test
+    void anthropicFable51_openaiFace_nonStream() {
+        assumeProviderKey("ANTHROPIC_API_KEY");
+        JsonNode res = openaiChat(client, keyFor(CLAUDE_FABLE), plainChatBody(CLAUDE_FABLE, 512, null));
+        assertNonEmptyAssistantContent(res);
+    }
+
+    @Test
+    void anthropicFable51_openaiFace_stream() throws Exception {
+        assumeProviderKey("ANTHROPIC_API_KEY");
+        String sse = openaiStream(server, keyFor(CLAUDE_FABLE), streamChatBody(CLAUDE_FABLE, 512, null));
         assertTrue(sse.contains("data:"), sse);
         assertTrue(sse.contains("[DONE]"), sse);
     }
@@ -1480,14 +1546,14 @@ class LiveProviderIT {
 
     @Test
     void deepseekPro_openaiFace_nonStream() {
-        // Prior DeepSeek tier — still a real API id; Flash remains the primary flagship.
+        // DeepSeek Pro tier — still a real API id; Flash remains the primary flagship.
         assumeProviderKey("DEEPSEEK_API_KEY");
         JsonNode res = openaiChat(client, keyFor(DEEPSEEK_PRO), plainChatBody(DEEPSEEK_PRO));
         assertNonEmptyAssistantContent(res);
     }
 
     @Test
-    void openaiSol_openaiFace_nonStream() {
+    void openaiAstra_openaiFace_nonStream() {
         assumeProviderKey("OPENAI_API_KEY");
         JsonNode res = openaiChat(client, keyFor(OPENAI_ASTRA), plainChatBody(OPENAI_ASTRA));
         assertNonEmptyAssistantContent(res);
@@ -2530,7 +2596,7 @@ class LiveProviderIT {
     }
 
     /**
-     * Spend settle: response {@code usage} × live pricing rows for deepseek-v4-flash
+     * Spend settle: response {@code usage} × live pricing rows for deepseek-flash
      * must match Prometheus {@code janus_key_cost_micro_usd_total} (and token counters)
      * for that key_id after one successful chat.
      */

@@ -3,6 +3,7 @@ package io.amscotti.janus.store;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Instant;
@@ -393,6 +394,16 @@ class PgSpendLedgerTest {
         // and the ledger is still usable afterwards — the cap guard never wedged.
         SpendLedger.ReserveResult allowed = ledger.reserve("k1", 100, 1_000, 0.8, 0);
         assertInstanceOf(SpendLedger.ReserveResult.Allowed.class, allowed, "the ledger recovers after the clamp");
+    }
+
+    @Test
+    void nonFiniteSoftFractionIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> ledger.reserve("k1", 300, 1_000, Double.NaN, 0));
+        assertThrows(
+                IllegalArgumentException.class, () -> ledger.reserve("k1", 300, 1_000, Double.POSITIVE_INFINITY, 0));
+        assertThrows(
+                IllegalArgumentException.class, () -> ledger.reserve("k1", 300, 1_000, Double.NEGATIVE_INFINITY, 0));
+        assertEquals(0, ledger.pending("k1"), "no transaction/pending row may remain after validation");
     }
 
     @Test

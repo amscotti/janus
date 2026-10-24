@@ -135,6 +135,34 @@ class CostCalculatorTest {
     }
 
     @Test
+    void twelveHourCacheWritesUseTheExtendedCreationRate() {
+        // GPT-6.1 Sol official rates: $2 input, $0.10 cache read, $2.50 30m write,
+        // $5.00 12h write, $10 output per 1M (USD-per-1K here). 1,000 ordinary +
+        // 4,000 cache-read + 3,000 30m writes + 4,000 12h writes =
+        // 2,000 + 400 + 7,500 + 20,000 = 29,900 micro-USD.
+        PricingRate sol = new PricingRate(0.002, 0.010, 0.0001, 0.0025, 4096, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.005, 0.0);
+        Usage usage = new Usage(1_000, 0, 12_000, 7_000L, 4_000L, null, 4_000L);
+        assertEquals(29_900L, CostCalculator.costMicroUsd(usage, sol));
+        CostBreakdown split = CostCalculator.breakdown(usage, sol, 0);
+        assertEquals(27_500L, split.cacheCreationMicroUsd());
+        assertEquals(29_900L, split.totalMicroUsd());
+    }
+
+    @Test
+    void longContextTierCarriesTheExtendedCacheWriteRate() {
+        PricingRate tiered = new PricingRate(
+                0.002, 0.010, 0.0001, 0.0025, 4096, 0.0, 272001, 0.004, 0.015, 0.0002, 0.005, 0.005, 0.010);
+        assertEquals(0.005, tiered.forPromptTokens(272000).cacheCreation12hPer1K());
+        assertEquals(0.010, tiered.forPromptTokens(272001).cacheCreation12hPer1K());
+    }
+
+    @Test
+    void promptEstimateCoversTheExtendedCacheWriteRate() {
+        PricingRate sol = new PricingRate(0.002, 0.010, 0.0001, 0.0025, 4096, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.005, 0.0);
+        assertEquals(5_000_000L, CostCalculator.estimatePromptMicroUsd(1_000_000, sol));
+    }
+
+    @Test
     void cacheTokensCostAtTheirOwnRatesWhenPresent() {
         PricingRate rate = new PricingRate(0.14, 0.28, 0.07, 0.09, 4096);
         // Usage(cacheCreation=100, cacheRead=200): 1000×0.14 + 1000×0.28 + 200×0.07 +

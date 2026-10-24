@@ -15,7 +15,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * so {@code promptTokens} is <b>regular</b> input on both faces).
  * {@code reasoningTokens} is optional display/accounting from OpenAI
  * {@code completion_tokens_details.reasoning_tokens} (typically already inside
- * {@code completionTokens} for pricing). Cache/reasoning fields are
+ * {@code completionTokens} for pricing). {@code cacheCreation12hInputTokens} is the
+ * GPT-5.6+ 12-hour write subset of {@code cacheCreationInputTokens}; the remainder is
+ * the default 30-minute write class. Cache/reasoning fields are
  * {@code @JsonInclude(NON_NULL)} so canonical JSON stays byte-identical when absent
  * (pinned by the model tests).
  *
@@ -35,7 +37,26 @@ public record Usage(
         long totalTokens,
         Long cacheCreationInputTokens,
         Long cacheReadInputTokens,
-        Long reasoningTokens) {
+        Long reasoningTokens,
+        Long cacheCreation12hInputTokens) {
+
+    /** Compatibility form at the pre-12-hour-cache arity. */
+    public Usage(
+            long promptTokens,
+            long completionTokens,
+            long totalTokens,
+            Long cacheCreationInputTokens,
+            Long cacheReadInputTokens,
+            Long reasoningTokens) {
+        this(
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                cacheCreationInputTokens,
+                cacheReadInputTokens,
+                reasoningTokens,
+                null);
+    }
 
     /** Convenience form without cache / reasoning tokens. */
     public Usage(long promptTokens, long completionTokens, long totalTokens) {
@@ -50,6 +71,17 @@ public record Usage(
             Long cacheCreationInputTokens,
             Long cacheReadInputTokens) {
         this(promptTokens, completionTokens, totalTokens, cacheCreationInputTokens, cacheReadInputTokens, null);
+    }
+
+    public Usage {
+        if (cacheCreation12hInputTokens != null) {
+            long aggregate = cacheCreationInputTokens == null ? 0L : cacheCreationInputTokens;
+            if (cacheCreation12hInputTokens < 0 || cacheCreation12hInputTokens > aggregate) {
+                throw new IllegalArgumentException(
+                        "cacheCreation12hInputTokens must be in [0, cacheCreationInputTokens] (got "
+                                + cacheCreation12hInputTokens + " of " + aggregate + ")");
+            }
+        }
     }
 
     /**

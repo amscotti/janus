@@ -379,13 +379,14 @@ final class LiveProviderSupport {
     }
 
     /**
-     * Expected micro-USD for the live IT pricing rows on {@code deepseek-v4-flash}
-     * (peak Aug 2026: {@code $0.44 / $1.32 per 1M} → {@code 0.00044 / 0.00132}
-     * per 1K) — matches {@link io.amscotti.janus.store.CostCalculator#costMicroUsd}.
+     * Expected micro-USD for the live IT pricing rows on {@code deepseek-flash}
+     * (V4.1-Flash peak Oct 2026: {@code $0.30 / $1.20 per 1M} →
+     * {@code 0.0003 / 0.0012} per 1K) — matches
+     * {@link io.amscotti.janus.store.CostCalculator#costMicroUsd}.
      */
     static long expectedMicroUsdDeepseekFlash(long promptTokens, long completionTokens) {
         double micro =
-                promptTokens * 0.00044 * 1_000_000.0 / 1_000.0 + completionTokens * 0.00132 * 1_000_000.0 / 1_000.0;
+                promptTokens * 0.0003 * 1_000_000.0 / 1_000.0 + completionTokens * 0.0012 * 1_000_000.0 / 1_000.0;
         return (long) Math.floor(micro + 0.5);
     }
 

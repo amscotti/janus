@@ -6,7 +6,7 @@
 # runs the exact command lines from the README (build → configure → JVM run →
 # /health → /key/generate → chat non-stream → chat stream → /key/list →
 # /metrics), with ONE harness-only difference: JANUS_CONFIG points at
-# scripts/smoke/readme/config.walkthrough.toml, which routes the deepseek-v4-flash
+# scripts/smoke/readme/config.walkthrough.toml, which routes the deepseek-flash
 # alias to the committed fake upstream (scripts/smoke/store/fake_upstream.py,
 # reused read-only — the /golden corpus, pinned usage 14/12), so the
 # whole sequence runs fully offline. No real provider keys, no network.
@@ -95,7 +95,7 @@ GATE_START="$(date +%s%N)"
   printf -- '- **Java:** %s\n' "$(java -version 2>&1 | head -1)"
   printf -- '- **Gradle:** %s\n' "$(./gradlew --version 2>/dev/null | awk '/^Gradle/{print $2}')"
   printf -- '- **Master key:** distinctive per-run value (ON — never logged)\n'
-  printf -- '- **Config under test:** `scripts/smoke/readme/config.walkthrough.toml` (auth ON; deepseek-v4-flash → fake :%s)\n' "$FAKE_PORT"
+  printf -- '- **Config under test:** `scripts/smoke/readme/config.walkthrough.toml` (auth ON; deepseek-flash → fake :%s)\n' "$FAKE_PORT"
   printf -- '- **Fake upstream:** `scripts/smoke/store/fake_upstream.py` (read-only; golden 14/12 corpus, committed fixtures)\n'
   printf -- '- **Fresh-machine caveat:** native/Docker legs are verified separately and cited by number in the README, not re-run here; for a clone-on-a-clean-box proof, re-run this script there.\n\n'
   printf '## Steps (README Quickstart, verbatim)\n\n'
@@ -145,7 +145,7 @@ step 4 "health — \`curl -s http://127.0.0.1:8080/health\` (README Quickstart �
 log "step 5/9 — README Quickstart §5: POST /key/generate (master key)"
 JANUS_KEY="$(curl -s -X POST http://127.0.0.1:$GATEWAY_PORT/key/generate \
   -H "x-api-key: $JANUS_MASTER_KEY" -H 'Content-Type: application/json' \
-  -d '{"name":"quickstart","models":["deepseek-v4-flash"]}' \
+  -d '{"name":"quickstart","models":["deepseek-flash"]}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
 case "$JANUS_KEY" in
   sk-janus-*) : ;;
@@ -157,7 +157,7 @@ step 5 "admin key — \`POST /key/generate\` with the master key (README Quickst
 log "step 6/9 — README Quickstart §6: chat round-trip (non-streaming)"
 curl -s "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
   -H "x-api-key: $JANUS_KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}' > "$RUN_DIR/chat.nonstream.json"
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hello"}]}' > "$RUN_DIR/chat.nonstream.json"
 grep -q "The weather in Paris is 18 degrees with light rain." "$RUN_DIR/chat.nonstream.json" \
   || fail 6 "chat non-stream — \`curl … /v1/chat/completions\`" "$RUN_DIR/chat.nonstream.json" "golden content missing from response"
 step 6 "chat round-trip — non-streaming (README Quickstart §6)" "$RUN_DIR/chat.nonstream.json"
@@ -166,7 +166,7 @@ step 6 "chat round-trip — non-streaming (README Quickstart §6)" "$RUN_DIR/cha
 log "step 7/9 — README Quickstart §7: chat round-trip (streaming)"
 curl -sN "http://127.0.0.1:$GATEWAY_PORT/v1/chat/completions" \
   -H "x-api-key: $JANUS_KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}' > "$RUN_DIR/chat.stream.sse"
+  -d '{"model":"deepseek-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}' > "$RUN_DIR/chat.stream.sse"
 grep -q 'data: \[DONE\]' "$RUN_DIR/chat.stream.sse" || fail 7 "chat stream — \`curl -sN …\`" "$RUN_DIR/chat.stream.sse" "no data: [DONE] terminator"
 grep -q '"usage"' "$RUN_DIR/chat.stream.sse" || fail 7 "chat stream — \`curl -sN …\`" "$RUN_DIR/chat.stream.sse" "no terminal usage frame (include_usage)"
 step 7 "chat round-trip — streaming SSE + terminal usage frame (README Quickstart §7)" <(grep -E 'data: .*"content"|data: \[DONE\]|"usage"' "$RUN_DIR/chat.stream.sse" | head -8)
@@ -182,7 +182,11 @@ step 8 "key list — \`GET /key/list\` redacted (no full key; README Quickstart 
 
 # ---------------------------------------------------------------- step 9: metrics
 log "step 9/9 — README Quickstart §9: /metrics shows janus_requests_total"
-curl -s "http://127.0.0.1:$GATEWAY_PORT/metrics" | grep janus_requests_total > "$RUN_DIR/metrics.janus_requests_total.txt"
+# Capture the whole scrape first: an early-exiting consumer (grep -m/awk exit)
+# closes the pipe mid-body and curl reports exit 23 (write error), which
+# `set -o pipefail` turns into a false gate failure.
+curl -s "http://127.0.0.1:$GATEWAY_PORT/metrics" > "$RUN_DIR/metrics.txt"
+grep janus_requests_total "$RUN_DIR/metrics.txt" > "$RUN_DIR/metrics.janus_requests_total.txt"
 grep -q 'status="2xx"' "$RUN_DIR/metrics.janus_requests_total.txt" \
   || fail 9 "metrics — \`curl -s http://127.0.0.1:8080/metrics | grep janus_requests_total\`" "$RUN_DIR/metrics.janus_requests_total.txt" "no 2xx sample"
 step 9 "metrics — \`/metrics\` shows \`janus_requests_total\` (README Quickstart §9)" "$RUN_DIR/metrics.janus_requests_total.txt"
@@ -190,7 +194,7 @@ step 9 "metrics — \`/metrics\` shows \`janus_requests_total\` (README Quicksta
 # ---------------------------------------------------------------- wrap-up
 # Exact-cost spot check (recorded, not a gate): 2 chats × golden 14/12 ×
 # DeepSeek 0.14/0.28 per 1K = 2 × 5320 micro-USD = 10640.0.
-COST="$(curl -s "http://127.0.0.1:$GATEWAY_PORT/metrics" | awk '/^janus_cost_micro_usd_total /{print $2; exit}')"
+COST="$(awk '/^janus_cost_micro_usd_total /{print $2; exit}' "$RUN_DIR/metrics.txt")"
 {
   printf '## Wrap-up\n\n'
   printf -- '- **Exact-cost spot check:** `janus_cost_micro_usd_total %s` (expected `10640.0` = 2 chats × 5320 micro-USD, golden 14/12 × DeepSeek table) — recorded, not a gate\n' "${COST:-n/a}"

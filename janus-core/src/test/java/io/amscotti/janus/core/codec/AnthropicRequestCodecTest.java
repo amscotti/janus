@@ -1376,19 +1376,20 @@ class AnthropicRequestCodecTest {
 
     @Test
     void claudeCodeAdaptiveThinkingAndOutputConfigRoundTrip() throws Exception {
-        // Claude Code 2.1.x: thinking.type=adaptive + display (unknown to Anthropic)
-        // + sibling output_config.effort. Encode must emit adaptive thinking without
-        // display, and keep output_config.effort.
-        ChatRequest request = codec.decodeRequest("{\"model\":\"claude-sonnet-5\",\"max_tokens\":64,\"stream\":true,"
+        // Claude Code 2.1.x: thinking.type=adaptive + display + sibling
+        // output_config.effort. Current Anthropic APIs accept display on adaptive
+        // thinking, so both the display intent and effort survive the round trip.
+        ChatRequest request = codec.decodeRequest("{\"model\":\"claude-sonnet-5-5\",\"max_tokens\":64,\"stream\":true,"
                 + "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
                 + "\"thinking\":{\"type\":\"adaptive\",\"display\":\"omitted\"},"
                 + "\"output_config\":{\"effort\":\"high\"}}");
         assertEquals("adaptive", request.reasoning().get("type"));
+        assertEquals("omitted", request.reasoning().get("display"));
         assertEquals("high", request.reasoning().get("effort"));
         String json = codec.encodeRequest(request);
         JsonNode node = mapper.readTree(json);
         assertEquals("adaptive", node.get("thinking").get("type").asString(), json);
-        assertFalse(node.get("thinking").has("display"), json);
+        assertEquals("omitted", node.get("thinking").get("display").asString(), json);
         assertEquals("high", node.get("output_config").get("effort").asString(), json);
     }
 

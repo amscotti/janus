@@ -1524,10 +1524,18 @@ public final class AnthropicMessageCodec {
                 || "enabled".equals(type)
                 || "disabled".equals(type)
                 || "between_tools".equals(type)) {
-            // Claude Code sends {type:"adaptive", display:"omitted"}. Real Anthropic
-            // rejects unknown thinking fields — emit type only. between_tools is
-            // the lowest thinking setting on Claude Sonnet 5.5+.
-            return Map.of("type", type);
+            // display is legal on adaptive/enabled thinking (Claude Code sends
+            // {type:"adaptive", display:"omitted"}); preserve the client's intent.
+            // disabled/between_tools accept only their type discriminator.
+            Map<String, Object> shaped = new LinkedHashMap<>();
+            shaped.put("type", type);
+            Object display = reasoning.get("display");
+            if (("adaptive".equals(type) || "enabled".equals(type))
+                    && display instanceof String text
+                    && !text.isBlank()) {
+                shaped.put("display", text);
+            }
+            return shaped;
         }
         Object effort = reasoning.get("effort");
         if (effort instanceof String spelling) {

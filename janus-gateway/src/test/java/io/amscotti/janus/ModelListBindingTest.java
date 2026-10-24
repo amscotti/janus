@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.amscotti.janus.store.PriceTable;
 import io.amscotti.janus.store.PricingRate;
 import io.micronaut.context.ApplicationContext;
 import io.micronaut.context.env.Environment;
@@ -294,10 +295,18 @@ class ModelListBindingTest {
             assertEquals("deepseek-v4-pro", second.name());
             assertEquals(0.07, second.cacheReadPer1k().doubleValue());
             assertEquals(0.09, second.cacheCreationPer1k().doubleValue());
+            assertEquals(
+                    0.11,
+                    second.cacheCreation12hPer1k().doubleValue(),
+                    "cache-creation-12h-per-1k binds cacheCreation12hPer1k");
             assertEquals(8192, second.defaultMaxTokens().intValue());
             assertEquals(200000, second.longContextThreshold().intValue());
             assertEquals(0.28, second.longInputPer1k().doubleValue());
             assertEquals(0.56, second.longOutputPer1k().doubleValue());
+            assertEquals(
+                    0.22,
+                    second.longCacheCreation12hPer1k().doubleValue(),
+                    "long-cache-creation-12h-per-1k binds longCacheCreation12hPer1k");
 
             PricingRate tiered = new PricingRate(
                     second.inputPer1k(),
@@ -314,6 +323,41 @@ class ModelListBindingTest {
             assertEquals(second.inputPer1k(), tiered.forPromptTokens(199_999).inputPer1K());
             assertEquals(0.28, tiered.forPromptTokens(200_000).inputPer1K());
             assertEquals(0.56, tiered.forPromptTokens(200_000).outputPer1K());
+        }
+    }
+
+    @Test
+    void nonFinitePricingRatesFailBootAfterTomlBinding() throws IOException {
+        assertPricingBootRejected("input-per-1k = nan");
+        assertPricingBootRejected("cache-creation-12h-per-1k = inf");
+        assertPricingBootRejected("long-input-per-1k = -inf");
+    }
+
+    private static void assertPricingBootRejected(String pricingLine) throws IOException {
+        String toml = """
+                [janus]
+                name = "janus"
+                version = "0.2.0"
+
+                [janus.pricing]
+                [[janus.pricing.models]]
+                name = "bad-rate"
+                %s
+                """.formatted(pricingLine);
+        try (ApplicationContext context = ApplicationContext.builder(Environment.TEST)
+                .propertySources(PropertySource.of(
+                        "non-finite-pricing",
+                        new TomlPropertySourceLoader()
+                                .read(
+                                        "non-finite-pricing",
+                                        new java.io.ByteArrayInputStream(
+                                                toml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))))
+                .start()) {
+            BeanCreationException ex =
+                    assertThrows(BeanCreationException.class, () -> context.getBean(PriceTable.class));
+            assertTrue(
+                    ex.getCause() instanceof IllegalArgumentException,
+                    "a non-finite TOML rate must reach PricingRate validation: " + ex);
         }
     }
 

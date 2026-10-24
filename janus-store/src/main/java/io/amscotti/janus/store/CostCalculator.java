@@ -61,10 +61,27 @@ public final class CostCalculator {
                     "usage token counts must be non-negative (got prompt=" + prompt + ", completion=" + completion
                             + ", cacheRead=" + cacheRead + ", cacheCreation=" + cacheCreation + ")");
         }
+        long cacheCreation12h = cacheCreation12hTokens(usage, cacheCreation);
+        long cacheCreation30m = cacheCreation - cacheCreation12h;
+        double extendedCreationRate =
+                rate.cacheCreation12hPer1K() == 0.0 ? rate.cacheCreationPer1K() : rate.cacheCreation12hPer1K();
         return prompt * rate.inputPer1K() * MICRO_PER_USD / TOKENS_PER_K
                 + completion * rate.outputPer1K() * MICRO_PER_USD / TOKENS_PER_K
                 + cacheRead * rate.cacheReadPer1K() * MICRO_PER_USD / TOKENS_PER_K
-                + cacheCreation * rate.cacheCreationPer1K() * MICRO_PER_USD / TOKENS_PER_K;
+                + cacheCreation30m * rate.cacheCreationPer1K() * MICRO_PER_USD / TOKENS_PER_K
+                + cacheCreation12h * extendedCreationRate * MICRO_PER_USD / TOKENS_PER_K;
+    }
+
+    private static long cacheCreation12hTokens(Usage usage, long cacheCreation) {
+        if (usage.cacheCreation12hInputTokens() == null) {
+            return 0;
+        }
+        if (usage.cacheCreation12hInputTokens() < 0 || usage.cacheCreation12hInputTokens() > cacheCreation) {
+            throw new IllegalArgumentException(
+                    "cacheCreation12hInputTokens must be in [0, cacheCreationInputTokens] (got "
+                            + usage.cacheCreation12hInputTokens() + " of " + cacheCreation + ")");
+        }
+        return usage.cacheCreation12hInputTokens();
     }
 
     /**
@@ -118,10 +135,15 @@ public final class CostCalculator {
                     "usage token counts must be non-negative (got prompt=" + prompt + ", completion=" + completion
                             + ", cacheRead=" + cacheRead + ", cacheCreation=" + cacheCreation + ")");
         }
+        long cacheCreation12h = cacheCreation12hTokens(usage, cacheCreation);
+        long cacheCreation30m = cacheCreation - cacheCreation12h;
+        double extendedCreationRate =
+                rate.cacheCreation12hPer1K() == 0.0 ? rate.cacheCreationPer1K() : rate.cacheCreation12hPer1K();
         long input = roundMicro(prompt * rate.inputPer1K() * MICRO_PER_USD / TOKENS_PER_K);
         long output = roundMicro(completion * rate.outputPer1K() * MICRO_PER_USD / TOKENS_PER_K);
         long read = roundMicro(cacheRead * rate.cacheReadPer1K() * MICRO_PER_USD / TOKENS_PER_K);
-        long create = roundMicro(cacheCreation * rate.cacheCreationPer1K() * MICRO_PER_USD / TOKENS_PER_K);
+        long create = roundMicro(cacheCreation30m * rate.cacheCreationPer1K() * MICRO_PER_USD / TOKENS_PER_K
+                + cacheCreation12h * extendedCreationRate * MICRO_PER_USD / TOKENS_PER_K);
         return new CostBreakdown(input, output, read, create, search, total);
     }
 
@@ -135,12 +157,10 @@ public final class CostCalculator {
      * a single prompt-heavy request drive the hard cap arbitrarily past cap before the
      * next-request gate caught it). {@code promptTokens} is the gateway's content-length
      * heuristic ({@code Governance.estimatePromptTokens}); each prompt token is billed
-     * at exactly one of the row's three input rates, so the true per-token worst case is
-     * {@code max(inputPer1K, cacheReadPer1K, cacheCreationPer1K)} and the estimate is
-     * priced at that maximum: a cache-<em>creation</em> prompt — the most
-     * expensive Anthropic rate, 1.25× input vs 0.1× for reads — is covered up front, and
-     * {@code max(input, read)} is a strictly more accurate bound than the old
-     * {@code input + read} when a row has no creation rate. Conservative by design:
+     * at exactly one of the row's input classes, so the true per-token worst case is
+     * {@code max(inputPer1K, cacheReadPer1K, cacheCreationPer1K, cacheCreation12hPer1K)}
+     * and the estimate is priced at that maximum: a 12-hour cache write can be the
+     * priciest class (2.5× input) and is covered up front. Conservative by design:
      * {@code settle} corrects to actual at finalize, so an over-estimate merely releases
      * the difference.
      */
@@ -148,7 +168,9 @@ public final class CostCalculator {
         if (promptTokens < 0) {
             throw new IllegalArgumentException("promptTokens must be non-negative (got " + promptTokens + ")");
         }
-        double worst = Math.max(rate.inputPer1K(), Math.max(rate.cacheReadPer1K(), rate.cacheCreationPer1K()));
+        double worst = Math.max(
+                rate.inputPer1K(),
+                Math.max(rate.cacheReadPer1K(), Math.max(rate.cacheCreationPer1K(), rate.cacheCreation12hPer1K())));
         double perToken = worst * MICRO_PER_USD / TOKENS_PER_K;
         return (long) Math.floor(promptTokens * perToken + 0.5);
     }

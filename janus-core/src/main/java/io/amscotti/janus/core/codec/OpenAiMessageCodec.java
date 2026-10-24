@@ -1158,8 +1158,18 @@ public final class OpenAiMessageCodec {
         }
         Long cachedOut = cached != null && cached > 0 ? cached : null;
         Long createdOut = created != null && created > 0 ? created : null;
-        OpenAiPromptTokensDetails promptDetails =
-                cachedOut == null && createdOut == null ? null : new OpenAiPromptTokensDetails(cachedOut, createdOut);
+        OpenAiPromptTokensDetails.CacheWriteTokensDetails writeDetails = null;
+        Long created12h = usage.cacheCreation12hInputTokens();
+        if (createdOut != null) {
+            // OpenAI returns both lifetime buckets, including a zero one; the canonical
+            // stores only the 12-hour subset, so 30m = total − 12h. Absent 12h usage
+            // means every write used the default 30-minute lifetime.
+            long extended = created12h == null ? 0L : created12h;
+            writeDetails = new OpenAiPromptTokensDetails.CacheWriteTokensDetails(createdOut - extended, extended);
+        }
+        OpenAiPromptTokensDetails promptDetails = cachedOut == null && createdOut == null
+                ? null
+                : new OpenAiPromptTokensDetails(cachedOut, createdOut, writeDetails);
         return new OpenAiUsage(
                 prompt,
                 usage.completionTokens(),
@@ -1185,6 +1195,7 @@ public final class OpenAiMessageCodec {
         // beyond the real input.
         long cached = Math.min(cachedInputTokens(dto), prompt);
         long write = Math.min(cacheWriteInputTokens(dto), prompt - cached);
+        long write12h = Math.min(cacheWrite12hInputTokens(dto), write);
         long regular = prompt - cached - write;
         long total = dto.totalTokens() == null ? regular + completion + cached + write : dto.totalTokens();
         Long reasoning = null;
@@ -1195,7 +1206,14 @@ public final class OpenAiMessageCodec {
         if (cached == 0 && write == 0) {
             return new Usage(prompt, completion, total, null, null, reasoning);
         }
-        return new Usage(regular, completion, total, write > 0 ? write : null, cached > 0 ? cached : null, reasoning);
+        return new Usage(
+                regular,
+                completion,
+                total,
+                write > 0 ? write : null,
+                cached > 0 ? cached : null,
+                reasoning,
+                write12h > 0 ? write12h : null);
     }
 
     /**
@@ -1220,6 +1238,16 @@ public final class OpenAiMessageCodec {
             return 0;
         }
         return Math.max(details.cacheWriteTokens(), 0);
+    }
+
+    private static long cacheWrite12hInputTokens(OpenAiUsage dto) {
+        OpenAiPromptTokensDetails details = dto.promptTokensDetails();
+        if (details == null
+                || details.cacheWriteTokensDetails() == null
+                || details.cacheWriteTokensDetails().ttl12hTokens() == null) {
+            return 0;
+        }
+        return Math.max(details.cacheWriteTokensDetails().ttl12hTokens(), 0);
     }
 
     // ------------------------------------------------------------ shared helpers

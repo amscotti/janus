@@ -76,7 +76,7 @@ paths:
               $ref: '#/components/schemas/KeyGenerateRequest'
             example:
               name: ci
-              models: [deepseek-v4-flash]
+              models: [deepseek-flash]
               budget_usd: 5.0
               budget_duration: 2592000
               rpm: 100
@@ -230,7 +230,7 @@ components:
             Per-key model-alias scope (absent/empty = allow all).
           items:
             type: string
-            example: deepseek-v4-flash
+            example: deepseek-flash
         name:
           type: string
           nullable: true

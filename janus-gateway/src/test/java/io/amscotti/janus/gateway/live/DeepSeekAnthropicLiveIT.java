@@ -25,7 +25,7 @@ import tools.jackson.databind.JsonNode;
 /**
  * DeepSeek's Anthropic-format endpoint ({@code https://api.deepseek.com/anthropic})
  * through Janus's Anthropic adapter. Isolated from {@link LiveProviderIT} so the
- * alias {@code deepseek-v4-flash} is sent upstream unchanged (no remap) and is
+ * alias {@code deepseek-flash} is sent upstream unchanged (no remap) and is
  * not pooled with the OpenAI-compatible DeepSeek row.
  */
 @Tag("live")
@@ -37,20 +37,21 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.providers.deepseek-anthropic.wire-format", value = "anthropic")
 @Property(name = "janus.providers.deepseek-anthropic.base-url", value = "https://api.deepseek.com/anthropic")
 @Property(name = "janus.providers.deepseek-anthropic.api-key-env", value = "DEEPSEEK_API_KEY")
-@Property(name = "janus.model-list[0].name", value = "deepseek-v4-flash")
+@Property(name = "janus.model-list[0].name", value = "deepseek-flash")
 @Property(name = "janus.model-list[0].provider", value = "deepseek-anthropic")
 @Property(name = "janus.model-list[0].api-key-env", value = "DEEPSEEK_API_KEY")
 @Property(name = "janus.model-list[0].base-url", value = "https://api.deepseek.com/anthropic")
-@Property(name = "janus.pricing.models[0].name", value = "deepseek-v4-flash")
-@Property(name = "janus.pricing.models[0].input-per-1k", value = "0.00044")
-@Property(name = "janus.pricing.models[0].output-per-1k", value = "0.00132")
+@Property(name = "janus.pricing.models[0].name", value = "deepseek-flash")
+@Property(name = "janus.pricing.models[0].input-per-1k", value = "0.0003")
+@Property(name = "janus.pricing.models[0].output-per-1k", value = "0.0012")
+@Property(name = "janus.pricing.models[0].cache-read-per-1k", value = "0.000006")
 @Property(name = "janus.pricing.models[0].default-max-tokens", value = "4096")
 class DeepSeekAnthropicLiveIT {
 
-    private static final String FLASH = "deepseek-v4-flash";
+    private static final String FLASH = "deepseek-flash";
     private static final String THINKING_OFF = "\"thinking\": {\"type\": \"disabled\"}";
     /**
-     * DeepSeek V4 Flash burns completion tokens on reasoning even when thinking is
+     * DeepSeek V4.1 Flash burns completion tokens on reasoning even when thinking is
      * requested off (observed live: a thinking-disabled 32-token call finished
      * {@code length} with empty content — the whole budget went to reasoning).
      * Match the suite's reasoning-model headroom.

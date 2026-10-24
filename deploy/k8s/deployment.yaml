@@ -50,7 +50,7 @@ spec:
           # linux/amd64 + linux/arm64, published by the Docker workflow on
           # v* tags); janus:dev is the local-build/compose/harness tag.
           # IfNotPresent + pre-pull/mirror keeps air-gapped clusters honest.
-          image: ghcr.io/amscotti/janus:0.1.0
+          image: ghcr.io/amscotti/janus:0.2.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

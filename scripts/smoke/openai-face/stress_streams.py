@@ -51,20 +51,26 @@ def platform_threads(pid: int) -> int:
 def _warmup(base_url: str, model: str, streams: int) -> None:
     """Drain the streaming path once so pooled platform threads exist before sampling."""
     client = OpenAI(base_url=base_url, api_key=DUMMY_KEY, timeout=30.0, max_retries=0)
+    results: dict = {}
     threads: list[threading.Thread] = []
     for i in range(streams):
         t = threading.Thread(
-            target=lambda: list(client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": f"mode=stream warmup-{i}"}],
-                stream=True,
-)),
+            target=worker,
+            args=(client, model, i, threading.Event(), results),
             name=f"warmup-{i}",
-)
-        t.start()
+        )
         threads.append(t)
     for t in threads:
+        t.start()
+    for t in threads:
         t.join(timeout=30.0)
+    failures = [f"thread {t.name} did not finish within 30s" for t in threads if t.is_alive()]
+    for i in range(streams):
+        status, detail = results.get(i, ("fail", "no result recorded"))
+        if status != "ok":
+            failures.append(f"warmup stream {i}: {detail}")
+    if failures:
+        raise RuntimeError("warmup failed: " + "; ".join(failures))
 
 
 def worker(client: OpenAI, model: str, idx: int, started: threading.Event, results: dict) -> None:

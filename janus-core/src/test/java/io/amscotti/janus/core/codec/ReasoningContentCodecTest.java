@@ -164,6 +164,25 @@ class ReasoningContentCodecTest {
     }
 
     @Test
+    void anthropicStructuredOutputRestoresRequiredOpenAiSchemaWrapper() throws Exception {
+        ChatRequest decoded = anthropic.decodeRequest("""
+                {
+                  "model": "gpt-6-luna",
+                  "messages": [{"role": "user", "content": "hi"}],
+                  "output_config": {
+                    "format": {"type": "json_schema", "schema": {"type": "object"}}
+                  }
+                }
+                """);
+        JsonNode format = mapper.readTree(openAi.encodeRequest(decoded)).get("response_format");
+        assertEquals("json_schema", format.get("type").asString());
+        assertEquals("response", format.get("json_schema").get("name").asString());
+        assertTrue(format.get("json_schema").get("strict").asBoolean());
+        assertEquals(
+                "object", format.get("json_schema").get("schema").get("type").asString());
+    }
+
+    @Test
     void openAiReasoningContentDecodesUnsignedAndIsNotForgedOnAnthropicEncode() {
         ChatRequest decoded = openAi.decodeRequest("""
                 {

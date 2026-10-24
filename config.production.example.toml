@@ -66,7 +66,7 @@ breaker-cooldown-seconds = 30
 # Models (aliases the client sends). Same `name` twice = ordered failover pool.
 # -----------------------------------------------------------------------------
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "deepseek"
 api-key-env = "DEEPSEEK_API_KEY"
 base-url = "https://api.deepseek.com"
@@ -136,16 +136,17 @@ api-key-env = "TOGETHER_API_KEY"
 # Pricing — required for non-zero spend metrics / budget admission estimates.
 # Rates are illustrative; replace with your contracted USD per 1K tokens.
 # -----------------------------------------------------------------------------
-# Official published rates, USD-per-1M ÷ 1000 → Janus USD-per-1K (Aug 2026).
+# Official published rates, USD-per-1M ÷ 1000 → Janus USD-per-1K (Oct 2026).
 # Replace with your contracted figures. DeepSeek rows below are PEAK
-# ($0.44 / $1.32 per 1M); off-peak is half. Set require-priced = true to
-# fail boot (and 400 at request time) when a model-list alias has no row.
+# ($0.30 input / $0.006 cache hit / $1.20 output per 1M); off-peak is half.
+# Set require-priced = true to fail boot (and 400 at request time) when a
+# model-list alias has no row.
 # require-priced = false
 [[janus.pricing.models]]
-name = "deepseek-v4-flash"
-input-per-1k = 0.00044
-output-per-1k = 0.00132
-cache-read-per-1k = 0.000014
+name = "deepseek-flash"
+input-per-1k = 0.0003
+output-per-1k = 0.0012
+cache-read-per-1k = 0.000006
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
@@ -160,18 +161,21 @@ default-max-tokens = 4096
 
 [[janus.pricing.models]]
 name = "gpt-6-luna"
-# Official (Oct 2026): $0.10 in / $0.01 read / $0.125 write / $0.50 out;
-# prompts over 272K input tokens: 2x input/cache, 1.5x output.
+# Official (Oct 2026): $0.10 in / $0.01 read / $0.125 30m write / $0.25 12h
+# write / $0.50 out; prompts over 272K input tokens: 2x input/cache,
+# 1.5x output. The threshold is 272001 because 272,000 still bills short.
 input-per-1k = 0.0001
 output-per-1k = 0.0005
 cache-read-per-1k = 0.00001
 cache-creation-per-1k = 0.000125
+cache-creation-12h-per-1k = 0.00025
 web-search-per-1k = 10.0
-long-context-threshold = 272000
+long-context-threshold = 272001
 long-input-per-1k = 0.0002
 long-output-per-1k = 0.00075
 long-cache-read-per-1k = 0.00002
 long-cache-creation-per-1k = 0.00025
+long-cache-creation-12h-per-1k = 0.0005
 default-max-tokens = 4096
 
 [[janus.pricing.models]]

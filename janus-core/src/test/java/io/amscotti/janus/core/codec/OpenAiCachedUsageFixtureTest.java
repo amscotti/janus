@@ -128,7 +128,38 @@ class OpenAiCachedUsageFixtureTest {
         assertTrue(json.contains("\"prompt_tokens\":14,\"completion_tokens\":12,\"total_tokens\":26"), json);
         assertTrue(json.contains("\"cached_tokens\":3"), json);
         assertTrue(json.contains("\"cache_write_tokens\":5"), json);
+        assertTrue(json.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":5,\"ttl_12h_tokens\":0}"), json);
         assertTrue(json.contains("\"prompt_cache_hit_tokens\":3"), json);
+    }
+
+    @Test
+    void cacheWriteTtlDetailsRemainDistinctAndReemitOnTheOpenAiWire() {
+        ChatResponse response = codec.decodeResponse("""
+                {
+                  "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-6.1-sol",
+                  "choices": [{"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                  "usage": {
+                    "prompt_tokens": 12000, "completion_tokens": 0, "total_tokens": 12000,
+                    "prompt_tokens_details": {
+                      "cached_tokens": 4000,
+                      "cache_write_tokens": 7000,
+                      "cache_write_tokens_details": {"ttl_30m_tokens": 3000, "ttl_12h_tokens": 4000}
+                    }
+                  }
+                }
+                """);
+        assertEquals(new Usage(1000, 0, 12000, 7000L, 4000L, null, 4000L), response.usage());
+        String json = codec.encodeResponse(response);
+        assertTrue(json.contains("\"cache_write_tokens\":7000"), json);
+        assertTrue(
+                json.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":3000,\"ttl_12h_tokens\":4000}"),
+                json);
+
+        String responses = OpenAiResponsesCodec.create().encodeResponse(null, response);
+        assertTrue(responses.contains("\"cache_write_tokens\":7000"), responses);
+        assertTrue(
+                responses.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":3000,\"ttl_12h_tokens\":4000}"),
+                responses);
     }
 
     @Test

@@ -59,10 +59,10 @@ enabled = false
 
 [janus]
 name = "janus"
-version = "0.1.0"
+version = "0.2.0"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "deepseek"
 api-key-env = "DEEPSEEK_API_KEY"
 base-url = "https://api.deepseek.com"
@@ -109,18 +109,15 @@ base-url = "https://api.deepseek.com"
 # base-url = "https://api.deepseek.com/anthropic"
 # api-key-env = "DEEPSEEK_API_KEY"
 # [[janus.model-list]]
-# name = "deepseek-v4-flash"
+# name = "deepseek-flash"
 # provider = "deepseek-anthropic"
 # api-key-env = "DEEPSEEK_API_KEY"
 # base-url = "https://api.deepseek.com/anthropic"
 #
-# Vision (experimental): deepseek-v4-flash-vision-exp — OpenAI image_url or
-# Anthropic image blocks; same peak rates as Flash. Images billed as input.
-# [[janus.model-list]]
-# name = "deepseek-v4-flash-vision-exp"
-# provider = "deepseek"
-# api-key-env = "DEEPSEEK_API_KEY"
-# base-url = "https://api.deepseek.com"
+# Vision is native on deepseek-flash (OpenAI image_url or Anthropic image
+# blocks); images bill as input tokens, so no separate vision model row is
+# required. The retired `deepseek-v4-flash-vision-exp` alias still routes to
+# V4.1-Flash for older configs.
 #
 # Upstream timeouts — [janus.timeouts] — the four upstream deadlines that were fixed
 # fixed code constants, now operator-tunable. All keys are OPTIONAL seconds (an
@@ -174,7 +171,7 @@ base-url = "https://api.deepseek.com"
 # Resolved backend names within one alias must be unique (two deepseek entries → config
 # error); different providers per alias is the supported shape. Uncomment to try:
 # [[janus.model-list]]
-# name = "deepseek-v4-flash"
+# name = "deepseek-flash"
 # provider = "anthropic"
 # api-key-env = "ANTHROPIC_API_KEY"
 #
@@ -226,21 +223,23 @@ base-url = "https://api.deepseek.com"
 # # default; it only gates admission, settle corrects to actual). The BUDGET
 # # admission estimate also prices a prompt estimate from the request's message
 # # content (sum of chars / 4 × max(input-per-1k, cache-read-per-1k,
-# # cache-creation-per-1k) — the worst-case per-token input rate, since a prompt
-# # token bills at exactly one of the three; a cache-creation prompt is the
-# # priciest Anthropic shape) so a prompt-heavy request cannot overshoot the hard
-# # cap unguarded — still an estimate, settle corrects.
+# # cache-creation-per-1k, cache-creation-12h-per-1k) — the worst-case
+# # per-token input rate, since a prompt token bills at exactly one of the
+# # classes) so a prompt-heavy request cannot overshoot the hard cap unguarded —
+# # still an estimate, settle corrects.
 # # require-priced = true  # fail boot / 400 when a model-list alias has no row
 # # A DUPLICATE name across [[janus.pricing.models]] rows is REJECTED at boot
 # # (the table is keyed by name — a repeat would silently replace the earlier
 # # row's rates).
 # [[janus.pricing.models]]
-# name = "deepseek-v4-flash"
-# # Official DeepSeek peak (Aug 2026): $0.44 / $1.32 per 1M → USD-per-1K.
-# # Off-peak is half ($0.22 / $0.66 per 1M). Pick the band you actually run.
-# input-per-1k = 0.00044
-# output-per-1k = 0.00132
-# cache-read-per-1k = 0.000014
+# name = "deepseek-flash"
+# # Official DeepSeek V4.1-Flash peak (Oct 2026): $0.30 input /
+# # $0.006 cache hit / $1.20 output per 1M → USD-per-1K. Off-peak is half
+# # ($0.15 / $0.003 / $0.60). Pick the band you actually run.
+# # `deepseek-v4-flash` is a retired compatibility alias served by V4.1-Flash.
+# input-per-1k = 0.0003
+# output-per-1k = 0.0012
+# cache-read-per-1k = 0.000006
 # # default-max-tokens = 4096
 #
 # # xAI Grok 4.6 (official Aug 2026: $2.00 / $0.50 cached / $6.00 per 1M tokens
@@ -260,40 +259,48 @@ base-url = "https://api.deepseek.com"
 # #
 # # OpenAI GPT-6 (official Oct 2026; USD-per-1M ÷ 1000). Long tier: prompts
 # # over 272K input tokens bill the whole request at 2x input/cache and
-# # 1.5x output. All three ids: 1.05M context, 128k max output.
+# # 1.5x output (threshold 272001 because short pricing includes 272,000).
+# # cache-creation is the default 30-minute write; cache-creation-12h is the
+# # Responses-only 12-hour write. All three ids: 1.05M context, 128k max output.
 # # [[janus.pricing.models]]
-# # name = "gpt-6-astra"          # $10 in / $1 read / $12.50 write / $50 out
+# # name = "gpt-6-astra"          # $10 in / $1 read / $12.50 30m / $25 12h / $50 out
 # # input-per-1k = 0.010
 # # output-per-1k = 0.050
 # # cache-read-per-1k = 0.001
 # # cache-creation-per-1k = 0.0125
-# # long-context-threshold = 272000
+# # cache-creation-12h-per-1k = 0.025
+# # long-context-threshold = 272001
 # # long-input-per-1k = 0.020
 # # long-output-per-1k = 0.075
 # # long-cache-read-per-1k = 0.002
 # # long-cache-creation-per-1k = 0.025
+# # long-cache-creation-12h-per-1k = 0.050
 # # [[janus.pricing.models]]
-# # name = "gpt-6.1-sol"          # $2 in / $0.10 read / $2.50 write / $10 out
+# # name = "gpt-6.1-sol"          # $2 in / $0.10 read / $2.50 30m / $5 12h / $10 out
 # # input-per-1k = 0.002
 # # output-per-1k = 0.010
 # # cache-read-per-1k = 0.0001
 # # cache-creation-per-1k = 0.0025
-# # long-context-threshold = 272000
+# # cache-creation-12h-per-1k = 0.005
+# # long-context-threshold = 272001
 # # long-input-per-1k = 0.004
 # # long-output-per-1k = 0.015
 # # long-cache-read-per-1k = 0.0002
 # # long-cache-creation-per-1k = 0.005
+# # long-cache-creation-12h-per-1k = 0.010
 # # [[janus.pricing.models]]
-# # name = "gpt-6-luna"           # $0.10 in / $0.01 read / $0.125 write / $0.50 out
+# # name = "gpt-6-luna"           # $0.10 in / $0.01 read / $0.125 30m / $0.25 12h / $0.50 out
 # # input-per-1k = 0.0001
 # # output-per-1k = 0.0005
 # # cache-read-per-1k = 0.00001
 # # cache-creation-per-1k = 0.000125
-# # long-context-threshold = 272000
+# # cache-creation-12h-per-1k = 0.00025
+# # long-context-threshold = 272001
 # # long-input-per-1k = 0.0002
 # # long-output-per-1k = 0.00075
 # # long-cache-read-per-1k = 0.00002
 # # long-cache-creation-per-1k = 0.00025
+# # long-cache-creation-12h-per-1k = 0.0005
 # #
 # # Anthropic Claude 5.5 / Fable 5.1 (official Oct 2026). cache-creation is
 # # the 5-minute write rate; 1-hour writes bill higher upstream (Fable 5.1

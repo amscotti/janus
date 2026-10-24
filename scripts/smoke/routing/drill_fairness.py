@@ -44,6 +44,13 @@ def _warmup(streams: int) -> None:
         t.start()
     for t in threads:
         t.join(timeout=60.0)
+    failures = [f"thread {t.name} did not finish within 60s" for t in threads if t.is_alive()]
+    for idx in range(streams):
+        status, detail = results.get(idx, ("fail", "no result recorded"))
+        if status != "ok":
+            failures.append(f"warmup stream {idx}: {detail}")
+    if failures:
+        raise RuntimeError("warmup failed: " + "; ".join(failures))
 
 
 def _worker(idx: int, results: dict) -> None:

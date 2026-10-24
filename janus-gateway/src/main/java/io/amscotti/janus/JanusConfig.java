@@ -544,6 +544,9 @@ public record JanusConfig(
          * @param longOutputPer1k long-tier output rate; null ⇒ 0
          * @param longCacheReadPer1k long-tier cache-read rate; null ⇒ 0
          * @param longCacheCreationPer1k long-tier cache-creation rate; null ⇒ 0
+         * @param cacheCreation12hPer1k GPT-5.6+ 12-hour cache-creation rate; null ⇒
+         *     fall back to {@code cache-creation-per-1k}
+         * @param longCacheCreation12hPer1k long-tier 12-hour cache-creation rate; null ⇒ 0
          */
         public record PricingModel(
                 String name,
@@ -557,7 +560,9 @@ public record JanusConfig(
                 @Nullable Double longInputPer1k,
                 @Nullable Double longOutputPer1k,
                 @Nullable Double longCacheReadPer1k,
-                @Nullable Double longCacheCreationPer1k) {
+                @Nullable Double longCacheCreationPer1k,
+                @Nullable Double cacheCreation12hPer1k,
+                @Nullable Double longCacheCreation12hPer1k) {
 
             /** Pre-long-context / pre-search arity used by existing tests. */
             public PricingModel(
@@ -574,6 +579,8 @@ public record JanusConfig(
                         cacheReadPer1k,
                         cacheCreationPer1k,
                         defaultMaxTokens,
+                        null,
+                        null,
                         null,
                         null,
                         null,

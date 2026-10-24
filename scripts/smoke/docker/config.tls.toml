@@ -27,7 +27,7 @@ enabled = false
 auth = "off"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "openai-compatible"
 base-url = "https://api.deepseek.com"
 # NO api-key-env: the probe needs the dispatch to reach the TLS handshake.

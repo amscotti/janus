@@ -74,7 +74,7 @@ api-key-env = "OPENAI_API_KEY"
 base-url = "https://api.openai.com"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "deepseek"
 api-key-env = "DEEPSEEK_API_KEY"
 base-url = "https://api.deepseek.com"
@@ -105,7 +105,8 @@ wire-format = "openai-compatible"
 base-url = "https://api.x.ai"
 api-key-env = "XAI_API_KEY"
 
-# Official USD-per-1M ÷ 1000 → Janus USD-per-1K (Aug 2026).
+# Official USD-per-1M ÷ 1000 → Janus USD-per-1K (Aug 2026; DeepSeek Flash
+# refreshed to V4.1 rates in Oct 2026).
 [janus.pricing]
 [[janus.pricing.models]]
 name = "claude-sonnet-5"
@@ -153,9 +154,10 @@ output-per-1k = 0.03
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
-name = "deepseek-v4-flash"
-input-per-1k = 0.00014
-output-per-1k = 0.00028
+name = "deepseek-flash"
+input-per-1k = 0.0003
+output-per-1k = 0.0012
+cache-read-per-1k = 0.000006
 default-max-tokens = 4096
 
 [[janus.pricing.models]]

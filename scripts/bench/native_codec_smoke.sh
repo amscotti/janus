@@ -139,7 +139,7 @@ version = "1.0.0"
 auth = "off"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "openai-compatible"
 base-url = "http://127.0.0.1:$FAKE_PORT"
 EOF
@@ -172,7 +172,7 @@ else
   [ "$JANUS_OK" = 1 ] || die "native binary did not reach /health (see $RUN_DIR/native-smoke.janus.log)"
 fi
 
-# Boot-misconfig tripwire: /v1/models must list deepseek-v4-flash EXACTLY ONCE — a config
+# Boot-misconfig tripwire: /v1/models must list deepseek-flash EXACTLY ONCE — a config
 # that fails to apply (e.g. a wrong config channel) would boot the packaged empty
 # model list and fail here instead of silently passing a wrong-config boot.
 wait_models_once() {
@@ -180,7 +180,7 @@ wait_models_once() {
   for i in $(seq 1 "$((bound * 10))"); do
     local models count
     models="$(curl -sf "http://127.0.0.1:$port/v1/models" 2>/dev/null || true)"
-    count="$(printf '%s' "$models" | grep -o '"deepseek-v4-flash"' | wc -l | tr -d ' ')"
+    count="$(printf '%s' "$models" | grep -o '"deepseek-flash"' | wc -l | tr -d ' ')"
     if [[ "$count" == "1" ]]; then
       return 0
     fi
@@ -188,23 +188,32 @@ wait_models_once() {
   done
   return 1
 }
-wait_models_once "$PORT" || die "boot-misconfig tripwire: /v1/models must list deepseek-v4-flash exactly once (config did not apply)"
+wait_models_once "$PORT" || die "boot-misconfig tripwire: /v1/models must list deepseek-flash exactly once (config did not apply)"
 
 # ---------------------------------------------------------------- non-stream chat
 log "POST /v1/chat/completions (non-stream)"
 NONSTREAM="$RUN_DIR/native-smoke.nonstream.json"
 curl -s "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
   > "$NONSTREAM"
 grep -q "The weather in Paris is 18 degrees with light rain." "$NONSTREAM" \
   || die "non-stream response lacks the golden content (decode/encode path broken)"
 grep -q '"usage"' "$NONSTREAM" || die "non-stream response lacks a usage object"
 
+# Chunked-response regression: the Netty ReferenceCountUtil native registration
+# surfaced through non-8-byte response paths (SSE and /metrics), not /health.
+log "GET /metrics (chunked native response path)"
+METRICS="$RUN_DIR/native-smoke.metrics.txt"
+curl -sf "http://127.0.0.1:$PORT/metrics" > "$METRICS" \
+  || die "/metrics failed in the native binary"
+grep -q 'janus_requests_total' "$METRICS" \
+  || die "/metrics lacks janus_requests_total (chunked response path broken)"
+
 # ---------------------------------------------------------------- stream chat
 log "POST /v1/chat/completions (stream, include_usage)"
 STREAM="$RUN_DIR/native-smoke.stream.sse"
 curl -sN "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
+  -d '{"model":"deepseek-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
   > "$STREAM"
 grep -q 'data: \[DONE\]' "$STREAM" || die "stream lacks the [DONE] terminator"
 grep -q '"usage"' "$STREAM" || die "stream lacks the terminal usage frame (include_usage)"
@@ -215,7 +224,7 @@ grep -q '"usage"' "$STREAM" || die "stream lacks the terminal usage frame (inclu
 log "POST /v1/messages (non-stream, Anthropic face)"
 AMSG="$RUN_DIR/native-smoke.messages.json"
 curl -s "http://127.0.0.1:$PORT/v1/messages" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","max_tokens":64,"messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
+  -d '{"model":"deepseek-flash","max_tokens":64,"messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
   > "$AMSG"
 grep -q "The weather in Paris is 18 degrees with light rain." "$AMSG" \
   || die "Anthropic-face non-stream lacks the golden content (Anthropic codec path broken)"
@@ -224,7 +233,7 @@ grep -q '"usage"' "$AMSG" || die "Anthropic-face non-stream lacks a usage object
 log "POST /v1/messages (stream, Anthropic face)"
 ASTREAM="$RUN_DIR/native-smoke.messages.sse"
 curl -sN "http://127.0.0.1:$PORT/v1/messages" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
+  -d '{"model":"deepseek-flash","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"What is the weather in Paris?"}]}' \
   > "$ASTREAM"
 grep -q 'message_stop' "$ASTREAM" || die "Anthropic-face stream lacks message_stop"
 grep -q 'content_block_delta\|text_delta\|"type":"content_block' "$ASTREAM" \

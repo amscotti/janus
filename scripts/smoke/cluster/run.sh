@@ -295,7 +295,7 @@ else
   else
     LIVE_KEY="$(curl -sf -X POST "${LB}/key/generate" \
       -H "x-api-key: $MASTER_KEY" -H 'Content-Type: application/json' \
-      -d '{"name":"cluster-agents","models":["claude-sonnet-5","gpt-5.6-luna","gpt-5.6","deepseek-v4-flash"],"budget_usd":5.0}' \
+      -d '{"name":"cluster-agents","models":["claude-sonnet-5-5","gpt-6-luna","gpt-6-astra","deepseek-flash"],"budget_usd":5.0}' \
       | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
     WANT_CLAUDE=0
     WANT_CODEX=0

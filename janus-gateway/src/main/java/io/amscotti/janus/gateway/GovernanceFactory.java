@@ -88,7 +88,9 @@ class GovernanceFactory {
                             model.longInputPer1k() == null ? 0.0 : model.longInputPer1k(),
                             model.longOutputPer1k() == null ? 0.0 : model.longOutputPer1k(),
                             model.longCacheReadPer1k() == null ? 0.0 : model.longCacheReadPer1k(),
-                            model.longCacheCreationPer1k() == null ? 0.0 : model.longCacheCreationPer1k()));
+                            model.longCacheCreationPer1k() == null ? 0.0 : model.longCacheCreationPer1k(),
+                            model.cacheCreation12hPer1k() == null ? 0.0 : model.cacheCreation12hPer1k(),
+                            model.longCacheCreation12hPer1k() == null ? 0.0 : model.longCacheCreation12hPer1k()));
         }
         PriceTable table = PriceTable.of(rates, requirePriced);
         if (requirePriced && config.modelList() != null) {

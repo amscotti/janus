@@ -164,7 +164,7 @@ export JAVA_HOME="${JAVA_HOME:-$(mise where java 2>/dev/null)}"
 
 # 2. Configure: the repo's config.toml needs a real provider key (DEEPSEEK_API_KEY).
 #    For a zero-network try-out, point JANUS_CONFIG at the walkthrough config, which
-#    routes the deepseek-v4-flash alias to a local fake upstream — no keys needed:
+#    routes the deepseek-flash alias to a local fake upstream — no keys needed:
 #      export JANUS_CONFIG="$(pwd)/scripts/smoke/readme/config.walkthrough.toml"
 export JANUS_MASTER_KEY="$(openssl rand -hex 24)"          # admin API auth (see Governance)
 export JANUS_CONFIG="${JANUS_CONFIG:-$(pwd)/config.toml}"   # config file for the gateway
@@ -184,18 +184,18 @@ curl -s http://127.0.0.1:8080/health
 #    returned exactly once)
 JANUS_KEY="$(curl -s -X POST http://127.0.0.1:8080/key/generate \
   -H "x-api-key: $JANUS_MASTER_KEY" -H 'Content-Type: application/json' \
-  -d '{"name":"quickstart","models":["deepseek-v4-flash"]}' \
+  -d '{"name":"quickstart","models":["deepseek-flash"]}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')"
 
 # 6. First chat — OpenAI face, non-streaming
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H "x-api-key: $JANUS_KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hello"}]}'
 
 # 7. Streaming (SSE) — include_usage so the terminal frame carries token counts
 curl -sN http://127.0.0.1:8080/v1/chat/completions \
   -H "x-api-key: $JANUS_KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"deepseek-v4-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"deepseek-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hello"}]}'
 # data: {...}  data: {...}...  data: [DONE]
 
 # 8. Admin: redacted key list (no full key, no hash, no salt)
@@ -251,7 +251,7 @@ Micronaut binds kebab-case TOML keys to record components (underscores silently 
 | `[janus.router]` | routing + resilience | `strategy`, `latency-alpha`, `weights`, `max-retries`, `backoff-base-ms`, `backoff-max-ms`, `jitter`, `allowed-fails`, `cooldown-time`, `breaker-failure-threshold`, `breaker-window-seconds`, `breaker-cooldown-seconds` |
 | `[janus.timeouts]` | upstream deadlines (absent = code defaults: 10 s connect / 60 s header / 300 s body-read / 60 s stream-idle) | `connect-timeout-seconds`, `header-timeout-seconds`, `body-read-timeout-seconds`, `stream-idle-timeout-seconds` — the same four keys override per `[[janus.model-list]]` entry (highest) and per `[janus.providers.<name>]` block; the stream-idle watchdog resolves per dispatch by the serving provider |
 | `[janus.keys]` | governance — **auth on by default**; missing master key fails fast | `auth` (`on` \| `off`), `master-key-env` (env var NAME) |
-| `[[janus.pricing.models]]` | per-alias USD-per-1K pricing | `name`, `input-per-1k`, `output-per-1k`, `cache-read-per-1k`, `cache-creation-per-1k`, `default-max-tokens`, `long-context-threshold`, `long-input-per-1k`, `long-output-per-1k` |
+| `[[janus.pricing.models]]` | per-alias USD-per-1K pricing | `name`, `input-per-1k`, `output-per-1k`, `cache-read-per-1k`, `cache-creation-per-1k`, `cache-creation-12h-per-1k`, `web-search-per-1k`, `default-max-tokens`, `long-context-threshold`, `long-input-per-1k`, `long-output-per-1k`, `long-cache-read-per-1k`, `long-cache-creation-per-1k`, `long-cache-creation-12h-per-1k` |
 | `[janus.limits]` | limiter variant + soft tier | `window` (`fixed` \| `sliding`), `soft-cap-fraction`, `notifier-webhook-url`, `ledger-retention` |
 | `[janus.store]` | optional backend (absent = in-memory) | `type` (`memory` \| `postgres`), `jdbc-url-env`, `user-env`, `password-env`, `max-pool-size`, `retention` |
 

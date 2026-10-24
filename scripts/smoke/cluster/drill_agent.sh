@@ -19,16 +19,16 @@ if [[ "$WANT_CLAUDE" == "1" ]]; then
   if ! command -v claude >/dev/null; then
     log "claude CLI not on PATH — SKIP"
   else
-    log "Claude Code read-only repo scan through $LB (Anthropic face, claude-sonnet-5)"
+    log "Claude Code read-only repo scan through $LB (Anthropic face, claude-sonnet-5-5)"
     GIT_BEFORE="$(git -C "${REPO:-.}" status --porcelain)"
     SYS_PROMPT='This workspace is READ-ONLY. You are only looking up information to produce an overview. Do not create, edit, delete, rename, or run any command that could change files, git state, or the environment. Do not use Write, Edit, or Bash. Use Read, Grep, and Glob only. Open a handful of files (README, a docs page, a module), then stop.'
     USER_PROMPT='Scan this repository (read-only) and write a short overview: what Janus is, the Gradle modules, the HTTP faces, and how configuration works. Cite a few file paths you actually opened. Do not suggest edits.'
     if ANTHROPIC_BASE_URL="$LB" \
       ANTHROPIC_API_KEY="$KEY" \
       ANTHROPIC_AUTH_TOKEN="$KEY" \
-      ANTHROPIC_MODEL=claude-sonnet-5 \
+      ANTHROPIC_MODEL=claude-sonnet-5-5 \
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-      claude --bare --model claude-sonnet-5 \
+      claude --bare --model claude-sonnet-5-5 \
         --permission-mode auto \
         --tools Read,Grep,Glob \
         --disallowed-tools Bash,Edit,Write \
@@ -91,9 +91,9 @@ if [[ "$WANT_CODEX" == "1" ]]; then
     mkdir -p "$CODEX_HOME"
     # Codex always offers hosted web_search. Janus serves that only toward
     # an Anthropic-format upstream — so the cluster points Codex at
-    # claude-sonnet-5 (Responses face, cross-format).
+    # claude-sonnet-5-5 (Responses face, cross-format).
     cat > "$CODEX_HOME/config.toml" <<EOF
-model = "claude-sonnet-5"
+model = "claude-sonnet-5-5"
 model_provider = "janus"
 [model_providers.janus]
 name = "janus"
@@ -101,7 +101,7 @@ base_url = "${LB}/v1"
 env_key = "JANUS_VIRTUAL_KEY"
 wire_api = "responses"
 EOF
-    log "Codex exec through $LB (Responses face → claude-sonnet-5)"
+    log "Codex exec through $LB (Responses face → claude-sonnet-5-5)"
     if CODEX_HOME="$CODEX_HOME" JANUS_VIRTUAL_KEY="$KEY" \
       codex exec --skip-git-repo-check \
         "Reply with the single word pong and nothing else. Do not use tools." \

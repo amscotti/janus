@@ -375,31 +375,34 @@ into the image build as the `GRADLE_DIST_SHA256` build-arg.
  `janus-jvm-jar`, smoked via `/health`), a GraalVM **native** compile with the
  **Gradle JVM pinned to 6 GB** (`NATIVE_IMAGE_MEM`, matching the
  `deploy/Dockerfile` build-arg — native-image is memory-hungry), offline smokes
- of the native binary, and Actions artifact `janus-native-*`. A `live-provider`
+ of the native binary (codec, SSE, `/metrics`), the native PostgreSQL
+ boot/JDBC/CallRecord drill, and Actions artifact `janus-native-*`. A `live-provider`
  job runs `:janus-gateway:liveTest` (green-by-skip without repo secrets; see
  `scripts/live-provider/README.md`).
-- **`docker.yml`** — push to `main`/`v*` tags: builds the linux/amd64 image with
- BuildKit cache, no registry publish.
-- **`release.yml`** — push a tag matching `v*` (e.g. `v0.1.0`): full build +
+- **`docker.yml`** — push to `main`/`v*` tags: main builds the linux/amd64 image
+ with BuildKit cache and no registry publish. Tag pushes run the full release
+ gate + native PostgreSQL drill, boot-smoke each architecture, and only then
+ publish the verified GHCR tags.
+- **`release.yml`** — push a tag matching `v*` (e.g. `v0.2.0`): full build +
  smokes, then a **GitHub Release** with:
  - `janus-<version>.jar` (JVM fat jar)
  - `janus-<version>-linux-amd64` (native binary)
+ - `janus-<version>-macos-arm64` (native binary)
  - `SHA256SUMS`
 
 **How to cut a release**
 
-The tag (minus the leading `v`) must equal `gradle.properties`' `version` **and**
-the packaged `[janus] version` in
-`janus-gateway/src/main/resources/application.toml` — release assets are named
-from the tag while the build bakes the `gradle.properties` version into the
-artifacts, so `release.yml` fails early on a mismatch instead of shipping
-`janus-<tag>.*` assets that report the old version.
+The tag (minus the leading `v`) must equal all three version sources:
+`gradle.properties`, `config.toml`, and the packaged `[janus] version` in
+`janus-gateway/src/main/resources/application.toml`. `scripts/verify-release-version.sh`
+enforces this in both Release and Docker before builds/publication, so a mismatch
+cannot ship assets that report the old version.
 
 ```bash
-# 1) bump BOTH gradle.properties (version=…) and application.toml ([janus] version)
-# 2) commit, then tag with the same number:
-git tag -a v0.1.0 -m "Janus 0.1.0"
-git push origin v0.1.0
+# 1) bump gradle.properties, config.toml, and application.toml to the same version
+# 2) update CHANGELOG.md and commit, then tag with the same number:
+git tag -a v0.2.0 -m "Janus 0.2.0"
+git push origin v0.2.0
 # → Actions "Release" workflow publishes the GitHub Release + assets
 ```
 

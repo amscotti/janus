@@ -26,6 +26,9 @@ package io.amscotti.janus.store;
  * @param longOutputPer1K long-tier output rate
  * @param longCacheReadPer1K long-tier cache-read rate
  * @param longCacheCreationPer1K long-tier cache-creation rate
+ * @param cacheCreation12hPer1K GPT-5.6+ 12-hour cache-creation rate; 0 falls back to
+ *     {@code cacheCreationPer1K} when pricing a 12-hour write
+ * @param longCacheCreation12hPer1K long-tier 12-hour cache-creation rate
  */
 public record PricingRate(
         double inputPer1K,
@@ -38,7 +41,38 @@ public record PricingRate(
         double longInputPer1K,
         double longOutputPer1K,
         double longCacheReadPer1K,
-        double longCacheCreationPer1K) {
+        double longCacheCreationPer1K,
+        double cacheCreation12hPer1K,
+        double longCacheCreation12hPer1K) {
+
+    /** Compatibility form before the GPT-5.6 12-hour cache-write rate. */
+    public PricingRate(
+            double inputPer1K,
+            double outputPer1K,
+            double cacheReadPer1K,
+            double cacheCreationPer1K,
+            int defaultMaxTokens,
+            double webSearchPer1K,
+            int longContextThreshold,
+            double longInputPer1K,
+            double longOutputPer1K,
+            double longCacheReadPer1K,
+            double longCacheCreationPer1K) {
+        this(
+                inputPer1K,
+                outputPer1K,
+                cacheReadPer1K,
+                cacheCreationPer1K,
+                defaultMaxTokens,
+                webSearchPer1K,
+                longContextThreshold,
+                longInputPer1K,
+                longOutputPer1K,
+                longCacheReadPer1K,
+                longCacheCreationPer1K,
+                0.0,
+                0.0);
+    }
 
     /** Compatibility form with per-search pricing and no long-context tier. */
     public PricingRate(
@@ -56,6 +90,8 @@ public record PricingRate(
                 defaultMaxTokens,
                 webSearchPer1K,
                 0,
+                0.0,
+                0.0,
                 0.0,
                 0.0,
                 0.0,
@@ -98,7 +134,9 @@ public record PricingRate(
                 || invalidRate(longInputPer1K)
                 || invalidRate(longOutputPer1K)
                 || invalidRate(longCacheReadPer1K)
-                || invalidRate(longCacheCreationPer1K)) {
+                || invalidRate(longCacheCreationPer1K)
+                || invalidRate(cacheCreation12hPer1K)
+                || invalidRate(longCacheCreation12hPer1K)) {
             throw new IllegalArgumentException(
                     "rates, default-max-tokens and long-context knobs must be finite and non-negative (got input="
                             + inputPer1K
@@ -114,13 +152,18 @@ public record PricingRate(
                             + webSearchPer1K
                             + ", longContextThreshold="
                             + longContextThreshold
+                            + ", cacheCreation12h="
+                            + cacheCreation12hPer1K
+                            + ", longCacheCreation12h="
+                            + longCacheCreation12hPer1K
                             + ")");
         }
         if (longContextThreshold > 0
                 && longInputPer1K == 0.0
                 && longOutputPer1K == 0.0
                 && longCacheReadPer1K == 0.0
-                && longCacheCreationPer1K == 0.0) {
+                && longCacheCreationPer1K == 0.0
+                && longCacheCreation12hPer1K == 0.0) {
             throw new IllegalArgumentException(
                     "long-context-threshold is set but every long-* rate is 0 — set long-input-per-1k /"
                             + " long-output-per-1k (and cache rates if needed)");
@@ -147,6 +190,13 @@ public record PricingRate(
                 longCacheReadPer1K,
                 longCacheCreationPer1K,
                 defaultMaxTokens,
-                webSearchPer1K);
+                webSearchPer1K,
+                0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                longCacheCreation12hPer1K,
+                0.0);
     }
 }

@@ -299,7 +299,7 @@ else
     -v "$HARNESS_DIR/config.tls.toml:/etc/janus/config.toml:ro" \
     "$IMAGE_TAG" >/dev/null 2>&1 && sleep 2 && \
     curl -s -X POST http://127.0.0.1:18090/v1/chat/completions -H 'Content-Type: application/json' \
-    -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"w51-tls-probe"}]}' || true)"
+    -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"w51-tls-probe"}]}' || true)"
   docker rm -f janus-tlsprobe >/dev/null 2>&1 || true
   grep -q 'authentication_error' <<< "$TLS_PROBE_OUT" \
     || { printf 'TLS probe 3/3 FAILED — expected the upstream 401 authentication_error envelope, got: %s\n' "$TLS_PROBE_OUT" >&2; die "TLS probe FAILED — certificate-path failure in the container?"; }

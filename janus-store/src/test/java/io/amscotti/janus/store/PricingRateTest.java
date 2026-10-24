@@ -2,6 +2,8 @@ package io.amscotti.janus.store;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.util.List;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -22,6 +24,12 @@ class PricingRateTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 200_000, Double.NaN, 0.02, 0.0, 0.0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 0, 0.0, 0.0, 0.0, 0.0, Double.NaN, 0.0));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, Double.NaN));
     }
 
     @Test
@@ -31,6 +39,27 @@ class PricingRateTest {
                 IllegalArgumentException.class,
                 () -> new PricingRate(
                         0.01, 0.02, 0.0, 0.0, 4096, 0.0, 200_000, 0.02, Double.POSITIVE_INFINITY, 0.0, 0.0));
+    }
+
+    @Test
+    void everyRateFieldRejectsEveryNonFiniteValue() {
+        List<Function<Double, PricingRate>> factories = List.of(
+                v -> new PricingRate(v, 0.02, 0.0, 0.0, 4096),
+                v -> new PricingRate(0.01, v, 0.0, 0.0, 4096),
+                v -> new PricingRate(0.01, 0.02, v, 0.0, 4096),
+                v -> new PricingRate(0.01, 0.02, 0.0, v, 4096),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, v),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 200_000, v, 0.02, 0.0, 0.0),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 200_000, 0.02, v, 0.0, 0.0),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 200_000, 0.02, 0.03, v, 0.0),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 200_000, 0.02, 0.03, 0.0, v),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 0, 0.0, 0.0, 0.0, 0.0, v, 0.0),
+                v -> new PricingRate(0.01, 0.02, 0.0, 0.0, 4096, 0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, v));
+        for (Double invalid : List.of(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY)) {
+            for (Function<Double, PricingRate> factory : factories) {
+                assertThrows(IllegalArgumentException.class, () -> factory.apply(invalid), "value=" + invalid);
+            }
+        }
     }
 
     @Test

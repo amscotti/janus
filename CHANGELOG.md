@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Current-model compatibility refresh (Oct 2026): OpenAI GPT-6 and Anthropic
-Claude 5.5 / Fable 5.1.
+## [0.2.0] — 2026-10-24
+
+Current-model compatibility refresh: OpenAI GPT-6, Anthropic Claude 5.5 /
+Fable 5.1, and DeepSeek V4.1-Flash.
 
 ### Added
 
@@ -17,14 +19,37 @@ Claude 5.5 / Fable 5.1.
   `ChatBackend` gain an optional `countTokens` capability). Free and
   unmetered (no governance spend), virtual-key auth + per-key scope still
   apply; providers without an upstream endpoint get a typed `400`.
-- **Current model lineup in examples** — `config.toml` /
-  `config.production.example.toml` pricing rows for `gpt-6-astra`,
-  `gpt-6.1-sol`, `gpt-6-luna` (272K long-context tier) and `claude-fable-5-1`,
-  `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` (100K tier on
-  Haiku) at official published rates.
+- **Current model lineup** — examples and live coverage for `deepseek-flash`
+  (V4.1-Flash text + vision), `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`,
+  `claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, and
+  `claude-haiku-5-5` at official published rates.
+- **GPT-6 cache lifetimes** — canonical usage retains the 12-hour cache-write
+  subset separately from the 30-minute class, and pricing supports
+  `cache-creation-12h-per-1k` / `long-cache-creation-12h-per-1k`. OpenAI Chat
+  and Responses usage re-emits `cache_write_tokens_details`.
 
 ### Fixed
 
+- **DeepSeek V4.1 refresh** — production, Kubernetes, live-provider, and
+  operator examples now use `deepseek-flash` (V4.1-Flash-1017) with current
+  peak rates ($0.30 input / $0.006 cache hit / $1.20 output per 1M).
+  Retired `deepseek-v4-flash` / vision-exp ids are documented as compatibility
+  aliases. Native vision is attributed to Flash instead of the retired
+  experimental row.
+- **Anthropic → OpenAI structured outputs** — importing Anthropic
+  `output_config.format` now restores the schema `name` (stable `response`)
+  and `strict: true` required by OpenAI, instead of emitting a request OpenAI
+  rejects.
+- **Exact cache-write accounting** — mixed GPT-6 30-minute/12-hour writes no
+  longer collapse onto one rate. Settle, cost headers, and pre-dispatch budget
+  estimates use the 12-hour rate where applicable; responses without a split
+  retain the previous behavior.
+- **GPT-6 long-context boundary** — examples and live pricing use
+  `long-context-threshold = 272001`; 272,000 input tokens still bill at the
+  short-context rate, matching OpenAI's inclusive boundary.
+- **Adaptive thinking display** — Anthropic `thinking.display`
+  (`summarized` / `omitted`) now survives decode → encode for adaptive/enabled
+  thinking instead of being dropped.
 - **Signed thinking round-trip** — Anthropic `thinking`/`redacted_thinking`
   blocks and `thinking_delta`/`signature_delta` stream events were dropped
   in translation, breaking tool-loop replay on legacy
@@ -33,8 +58,8 @@ Claude 5.5 / Fable 5.1.
   `Delta`), re-emit on both faces, and cross to `reasoning_content` /
   Responses `reasoning` items. Unsigned foreign reasoning text is never
   forged into a signed block.
-- **Anthropic structured outputs** — `response_format` `json_schema` now
-  maps to `output_config.format` in both directions and tool-level `strict`
+- **Anthropic structured outputs** — `response_format` `json_schema` maps to
+  `output_config.format` in both directions and tool-level `strict`
   round-trips, instead of being dropped on the Anthropic leg.
 - **Effort vocabulary** — the Anthropic encode no longer 400s on `xhigh` /
   `max` (the current five levels are `low|medium|high|xhigh|max`), and
@@ -52,16 +77,27 @@ Claude 5.5 / Fable 5.1.
   soft-fraction checks used `< 0` range tests that `NaN` slips past
   (TOML admits `nan`/`inf`): a NaN rate silently priced at $0 (budget
   bypass) and a NaN soft fraction zeroed the soft cap. All sites now
-  require finite values.
+  require finite values, with TOML-binding and PostgreSQL tests.
+- **Native Netty reflection** — registered `ReferenceCountUtil` so chunked
+  native responses (SSE and `/metrics`) do not fail at runtime.
 
 ### Changed
 
+- **Release gating** — Docker publication now requires the build, a tag-wide
+  version verification, a full Gradle test gate, and the native PostgreSQL
+  drill; each architecture is smoke-tested before its tags are pushed.
+  macOS release builds run the native codec/SSE/metrics smoke, and CI/release
+  execute the native PostgreSQL drill.
 - **Dependencies** — Micronaut platform 5.1.0 → 5.2.2 (Jackson 3.2.3,
   jackson-annotations pin 2.22), JUnit BOM 5.14.4 → 6.1.3, Testcontainers
   1.21.4 → 2.0.5 (renamed artifacts `testcontainers-postgresql` /
   `testcontainers-junit-jupiter`, `org.testcontainers.postgresql` package),
   HikariCP 6.3.3 → 7.1.0, PostgreSQL driver 42.7.14, ArchUnit 1.5.1,
   Spotless 8.10.4, JaCoCo 0.8.15.
+- **Smoke harnesses** — warmup batches now fail on request errors, missing
+  results, or timed-out threads instead of silently sampling a cold baseline;
+  the README walkthrough captures `/metrics` before grepping it, so `pipefail`
+  no longer reports curl's early-close exit 23 after a successful scrape.
 
 ## [0.1.0] — 2026-08-30
 

@@ -1,7 +1,7 @@
 # README-walkthrough config (scripts/smoke/readme/ only; root config.toml
 # untouched). This is the config the README Quickstart walkthrough runs
 # (run_readme_walkthrough.sh sets JANUS_CONFIG to this file): auth is ON
-# ([janus.keys] master-key-env), and the deepseek-v4-flash alias is routed to the
+# ([janus.keys] master-key-env), and the deepseek-flash alias is routed to the
 # committed fake upstream (scripts/smoke/store/fake_upstream.py, golden 14/12
 # corpus — fully offline, no provider keys). Port is pinned to the README's
 # default (8080) so the quickstart curl commands run verbatim.
@@ -26,13 +26,15 @@ enabled = false
 master-key-env = "JANUS_MASTER_KEY"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "openai-compatible"
 base-url = "http://127.0.0.1:9877" # the committed fake upstream (golden 14/12)
 
 [janus.pricing]
+# Deliberately fixture rates, not vendor prices: the fake corpus reports 14/12
+# tokens so the walkthrough's exact-cost check stays the documented 5320 µUSD.
 [[janus.pricing.models]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 input-per-1k = 0.14
 output-per-1k = 0.28
 default-max-tokens = 4096

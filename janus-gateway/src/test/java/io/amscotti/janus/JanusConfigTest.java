@@ -19,7 +19,7 @@ class JanusConfigTest {
     @Test
     void loadsTomlConfiguration() {
         assertEquals("janus", config.name());
-        assertEquals("0.1.0", config.version());
+        assertEquals("0.2.0", config.version());
     }
 
     /**
@@ -195,6 +195,18 @@ class JanusConfigTest {
      * {@code retention}/{@code max-pool-size} precedent). Null (absent key) is the
      * factory-default case; positive values bind.
      */
+    @Test
+    void softCapFractionNonFiniteRejectedAtBinding() {
+        assertThrows(
+                IllegalArgumentException.class, () -> new JanusConfig.LimitsConfig("fixed", Double.NaN, null, 1000));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new JanusConfig.LimitsConfig("fixed", Double.POSITIVE_INFINITY, null, 1000));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new JanusConfig.LimitsConfig("fixed", Double.NEGATIVE_INFINITY, null, 1000));
+    }
+
     @Test
     void ledgerRetentionOutOfRangeRejectedAtBinding() {
         IllegalArgumentException ex = assertThrows(

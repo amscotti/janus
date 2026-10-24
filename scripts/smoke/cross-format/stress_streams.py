@@ -71,6 +71,18 @@ def _warmup(streams: int) -> None:
         t.start()
     for t in threads:
         t.join(timeout=30.0)
+    _require_clean_warmup(results, threads, streams)
+
+
+def _require_clean_warmup(results: dict, threads: list[threading.Thread], expected: int) -> None:
+    """Warmup requests must succeed and terminate before steady-state sampling."""
+    failures = [f"thread {t.name} did not finish within 30s" for t in threads if t.is_alive()]
+    for idx in range(expected):
+        status, detail = results.get(idx, ("fail", "no result recorded"))
+        if status != "ok":
+            failures.append(f"warmup stream {idx}: {detail}")
+    if failures:
+        raise RuntimeError("warmup failed: " + "; ".join(failures))
 
 
 def _openai_worker(idx: int, results: dict) -> None:

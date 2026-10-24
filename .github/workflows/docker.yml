@@ -1,18 +1,16 @@
 # =============================================================================
 # Docker image workflow.
 #
-# Two jobs:
-#   build  — on push to main + v* tags: build the multi-stage image (builder:
-#            GraalVM CE 25.0.2 → runtime: distroless base:nonroot) on the amd64
-#            runner with BuildKit cache and boot-smoke it (/health). Never pushes.
-#   publish — on v* tags ONLY: build linux/amd64 (ubuntu-latest) and
-#            linux/arm64 (ubuntu-24.04-arm — a NATIVE arm64 runner, no QEMU)
-#            and push both to GHCR, then merge them into one multi-arch
-#            manifest (:<version>, :<major>.<minor>, :latest). Each arch
-#            compiles natively on its own runner, so the QEMU 5-15x penalty
-#            never applies. NOTE: ubuntu-24.04-arm hosted runners are available
-#            to public repositories; on private repos the arm64 job stays
-#            queued until the plan provides them.
+# Jobs:
+#   build          — on push to main + v* tags: build the amd64 image with
+#                    BuildKit cache and boot-smoke it (/health). Never pushes.
+#   verify-release — on v* tags ONLY: verify the tag matches all version
+#                    sources, run the full Gradle gate, and execute the native
+#                    PostgreSQL drill before any architecture can publish.
+#   publish-*      — on v* tags ONLY after build + verify-release: build one
+#                    native architecture (amd64 or arm64, no QEMU), boot-smoke
+#                    that exact image, then push its tags to GHCR.
+#   publish-manifest — merge the two verified architecture manifests.
 #
 # scaffold precedent: like the native CI job, this workflow cannot actually run
 # until pushed to GitHub — the native startup target bullet "CI pipeline green end-to-end"
@@ -101,9 +99,40 @@ jobs:
           docker logs janus-smoke 2>&1 | tail -40
           exit 1
 
+  verify-release:
+    name: Release gate (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (digest-pinned)
+      - name: Pin Gradle distribution digest
+        run: |
+          test -x scripts/pin-gradle-digest.sh
+          scripts/pin-gradle-digest.sh
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@5298d94fb55a4f185c602eeac5de1b553882abe2 # v1.6.4 (digest-pinned)
+        with:
+          java-version: '25'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'gradle'
+          native-image-job-reports: 'true'
+      - name: Grant wrapper permissions
+        run: chmod +x gradlew
+      - name: Verify tag matches every version source
+        run: |
+          test -x scripts/verify-release-version.sh
+          scripts/verify-release-version.sh "${GITHUB_REF_NAME}"
+      - name: Full build + native PostgreSQL release drill
+        # The drill runs the full Gradle gate, nativeCompile, the two-node
+        # Postgres contract, and the native Postgres boot/record assertion.
+        run: bash scripts/smoke/store/run.sh --skip-regression
+
   publish-amd64:
     name: Publish linux/amd64 to GHCR (tags only)
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, verify-release]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -138,7 +167,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0 (digest-pinned)
         with:
           images: ${{ env.IMAGE }}
-          # v0.1.0 → :0.1.0-amd64, :0.1-amd64, :latest-amd64 — the arch-suffixed
+          # v0.2.0 → :0.2.0-amd64, :0.2-amd64, :latest-amd64 — the arch-suffixed
           # tags are merged into the plain tags by publish-manifest below.
           tags: |
             type=semver,pattern={{version}}
@@ -157,11 +186,41 @@ jobs:
           build-args: |
             GRADLE_DIST_SHA256=${{ env.GRADLE_DIST_SHA256 }}
           cache-from: type=gha
-          push: true
+          push: false
+          load: true
+
+      - name: Smoke linux/amd64 image before publication
+        run: |
+          docker run -d --name janus-release-smoke -p 8080:8080 \
+            --read-only --tmpfs /tmp \
+            -e MICRONAUT_CONFIG_FILES=/etc/janus/config.toml \
+            -e JANUS_MASTER_KEY=ci-release-smoke \
+            -v "$(pwd)/deploy/config/config.memory.toml:/etc/janus/config.toml:ro" \
+            "$(echo '${{ steps.meta.outputs.tags }}' | head -1)"
+          trap 'docker rm -f janus-release-smoke >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "amd64 image /health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs janus-release-smoke 2>&1 | tail -40
+          exit 1
+
+      - name: Push linux/amd64 tags after smoke
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker push "$tag"
+          done <<< "${{ steps.meta.outputs.tags }}"
 
   publish-arm64:
     name: Publish linux/arm64 to GHCR (tags only)
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, verify-release]
     runs-on: ubuntu-24.04-arm # native arm64 — no QEMU emulation penalty
     timeout-minutes: 45
     permissions:
@@ -211,7 +270,36 @@ jobs:
           build-args: |
             GRADLE_DIST_SHA256=${{ env.GRADLE_DIST_SHA256 }}
           cache-from: type=gha
-          push: true
+          push: false
+          load: true
+
+      - name: Smoke linux/arm64 image before publication
+        run: |
+          docker run -d --name janus-release-smoke -p 8080:8080 \
+            --read-only --tmpfs /tmp \
+            -e MICRONAUT_CONFIG_FILES=/etc/janus/config.toml \
+            -e JANUS_MASTER_KEY=ci-release-smoke \
+            -v "$(pwd)/deploy/config/config.memory.toml:/etc/janus/config.toml:ro" \
+            "$(echo '${{ steps.meta.outputs.tags }}' | head -1)"
+          trap 'docker rm -f janus-release-smoke >/dev/null 2>&1 || true' EXIT
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/health; then
+              echo
+              echo "arm64 image /health ok (attempt $i)"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs janus-release-smoke 2>&1 | tail -40
+          exit 1
+
+      - name: Push linux/arm64 tags after smoke
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
+            docker push "$tag"
+          done <<< "${{ steps.meta.outputs.tags }}"
 
   publish-manifest:
     name: Merge multi-arch manifest (tags only)

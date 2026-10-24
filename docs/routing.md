@@ -15,7 +15,7 @@
 ## What routing does
 
 A model alias in `[[janus.model-list]]` is a **routing key**: callers send
-`model = "deepseek-v4-flash"` and the router resolves it to one or more backends.
+`model = "deepseek-flash"` and the router resolves it to one or more backends.
 Two entries with the same `name` are **two backends in one ordered candidate list**
 for that alias (`ModelListFactory` rejects two entries for one alias whose resolved
 backend names collide — the same provider twice, or two different custom names both
@@ -82,12 +82,12 @@ root). Multi-backend aliases need no router-section change — just repeat the
 
 ```toml
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "deepseek"
 api-key-env = "DEEPSEEK_API_KEY"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "anthropic"
 api-key-env = "ANTHROPIC_API_KEY"
 

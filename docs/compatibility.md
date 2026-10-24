@@ -37,7 +37,7 @@ parallelism caps.
 | `developer` role | OpenAI wire keeps `"developer"`; Anthropic merges it into `system` |
 | Vision / image input | User-message `ContentPart`s (data URL and https) |
 | Prompt cache | OpenAI GPT-5.6+ `prompt_cache_breakpoint` object + `prompt_cache_key`/`prompt_cache_options`; Qwen OpenAI-compatible `cache_control` on content parts; Anthropic `cache_control` on content blocks (optional `ttl: "1h"`); translated both ways. Chat Completions usage re-emits `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens` |
-| Structured outputs | `response_format` ⇄ Anthropic `output_config.format` (`json_schema`; wrapper `name`/`strict` and `json_object`/`text` drop on the Anthropic leg); tool-level `strict` round-trips |
+| Structured outputs | `response_format` ⇄ Anthropic `output_config.format` (`json_schema`; wrapper `name`/`strict` and `json_object`/`text` drop on the Anthropic leg; the reverse leg synthesizes name `response` + `strict:true` because Anthropic carries only the schema); tool-level `strict` round-trips |
 | Reasoning | Request maps (effort `low`–`max`) + signed thinking round-trip (`AssistantMessage.reasoningContents`) + `thinking_delta`/`signature_delta`/`reasoning_content` stream fragments + optional `Usage.reasoningTokens` |
 | Request size | 32MB body ceiling (`micronaut.server.max-request-size` + buffer, for 1M-context prompts); oversize → per-face `413` envelope |
 | Virtual keys | Hashed at rest; timing-safe compare |

@@ -183,6 +183,13 @@ jobs:
         # + a stream chat completion — fully offline, no provider keys.
         run: scripts/bench/native_codec_smoke.sh
 
+      - name: Native PostgreSQL drill (image + JDBC + CallRecord)
+        # nativeCompile alone cannot prove the image ships a working JDBC driver,
+        # embedded schema, and Postgres store. This offline drill boots the native
+        # binary against a throwaway Postgres and asserts health, a keyed round-trip,
+        # exact spend, and a persisted call record (no provider keys/network).
+        run: bash scripts/smoke/store/run.sh --skip-regression
+
       - name: Upload native binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 (digest-pinned)
         with:

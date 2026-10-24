@@ -22,13 +22,13 @@ export JANUS_MASTER_KEY="$(openssl rand -hex 24)"
 curl -X POST http://127.0.0.1:8080/key/generate \
  -H "x-api-key: $JANUS_MASTER_KEY" \
  -H 'Content-Type: application/json' \
- -d '{"name":"ci","models":["deepseek-v4-flash"],"budget_usd":5.00,"rpm":100,"tpm":100000}'
+ -d '{"name":"ci","models":["deepseek-flash"],"budget_usd":5.00,"rpm":100,"tpm":100000}'
 # → {"key":"sk-janus-<prefix>-<secret>","key_id":"…","name":"ci",…} (shown ONCE)
 
 # 4. Use the virtual key on the model routes (Bearer or x-api-key; both faces' SDKs).
 curl http://127.0.0.1:8080/v1/chat/completions \
  -H "x-api-key: sk-janus-<prefix>-<secret>" -H 'Content-Type: application/json' \
- -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}'
+ -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 **Auth posture (hardened): ON with a key, or explicitly OFF.** With `auth = "on"`
@@ -81,7 +81,7 @@ collides with the lifetime row, so the bound makes the alias unreachable).
  403 matches a more informative envelope. Both faces carry the same wire types
  (`ErrorMapper` / `AnthropicErrorMapper`).
 - **Scopes.** The `models` list on generate scopes the key **by model alias** — a key
- scoped to `["deepseek-v4-flash"]` calling any other alias → `403 permission_error`. A
+ scoped to `["deepseek-flash"]` calling any other alias → `403 permission_error`. A
  key whose scope is the empty/absent list is allow-all. Scope checks run post-auth in
  the controllers, on the streaming and non-streaming branches alike.
 - **Revocation is immediate.** A revoked key's full string stops authenticating on the
@@ -135,14 +135,22 @@ USD per 1,000 tokens. Kebab-case element keys ONLY. Example rows:
 
 | model | input-per-1k | output-per-1k | cache-read-per-1k | cache-creation-per-1k | default-max-tokens |
 |---|---|---|---|---|---|
-| `deepseek-v4-flash` | 0.00044 | 0.00132 | 0.000014 | 0 (omitted) | 4096 |
+| `deepseek-flash` | 0.0003 | 0.0012 | 0.000006 | 0 (omitted) | 4096 |
 | `grok-4.6` | 0.002 | 0.006 | 0.0005 | 0 (omitted) | 4096 |
 
 Vendors publish USD **per 1M** tokens. Janus stores **USD per 1K**, so divide the
-published figure by 1,000 (`$0.44/1M` → `0.00044`). DeepSeek V4 Flash peak is
-`$0.44 / $1.32` per 1M (Aug 2026; off-peak is half). xAI publishes Grok 4.6 at
-`$2.00 / $0.50` cached / `$6.00` per 1M below 200k prompt. GPT-5.6 is `$4 / $20`
-per 1M with a 272k long-context doubling.
+published figure by 1,000 (`$0.30/1M` → `0.0003`). DeepSeek V4.1-Flash peak is
+`$0.30` cache-miss input / `$0.006` cache hit / `$1.20` output per 1M (Oct 2026;
+off-peak is half). xAI publishes Grok 4.6 at `$2.00 / $0.50` cached / `$6.00`
+per 1M below 200k prompt. GPT-6 prices the whole request at the long tier over
+272K input tokens (threshold `272001`); its 30-minute and 12-hour cache writes
+have separate rates.
+
+GPT-5.6+ Responses requests may mix 30-minute and 12-hour cache writes.
+`cache-creation-per-1k` prices the 30-minute class and
+`cache-creation-12h-per-1k` the 12-hour class; the matching long-tier keys are
+`long-cache-creation-per-1k` / `long-cache-creation-12h-per-1k`. When the
+12-hour rate is omitted it falls back to the 30-minute rate.
 
 Set `[janus.pricing] require-priced = true` to fail boot when a model-list alias
 has no row, and to 400 a request for an unpriced alias instead of metering at $0.
@@ -160,8 +168,8 @@ model alias or prompt text.
 the **prompt** reaches a threshold — commonly 200k tokens — and apply that higher
 rate to the **whole request**, not just the tokens past the floor. Set
 `long-context-threshold` plus `long-input-per-1k` / `long-output-per-1k` (and
-optional `long-cache-read-per-1k` / `long-cache-creation-per-1k`) on the same
-row. Threshold `0` or omitted disables the feature. Preflight uses the prompt
+optional `long-cache-read-per-1k` / `long-cache-creation-per-1k` /
+`long-cache-creation-12h-per-1k`) on the same row. Threshold `0` or omitted disables the feature. Preflight uses the prompt
 estimate to pick a tier; settle re-resolves from actual `usage.prompt_tokens`.
 A threshold with every `long-*` rate at 0 is a boot error.
 
@@ -191,11 +199,12 @@ long-cache-read-per-1k = 0.001 # $1 / 1M
  pre-dispatch estimates price tokens only (the search count is unknowable upfront).
 - **Accounting is exact integer micro-USD** (1 USD = 1,000,000 micro-USD; the
  `Pricing.total_micro_usd` rationale): `cost = (prompt × inputPer1K + completion ×
- outputPer1K + cacheRead × cacheReadPer1K + cacheCreation × cacheCreationPer1K) ×
- 1,000,000 / 1,000`, rounded half-up at the half-micro boundary — long arithmetic,
- no BigDecimal, native-image clean. Example: usage `14` prompt / `12` completion
- at 0.14 / 0.28 per 1K = `0.00196 + 0.00336 = 0.00532` USD = **5320 micro-USD
- exactly**, which is what `/metrics` scrapes.
+ outputPer1K + cacheRead × cacheReadPer1K + cacheCreation30m × cacheCreationPer1K +
+ cacheCreation12h × cacheCreation12hPer1K) × 1,000,000 / 1,000`, rounded half-up
+ at the half-micro boundary — long arithmetic, no BigDecimal, native-image clean.
+ Example: the smoke fixture's `14` prompt / `12` completion at 0.14 / 0.28 per 1K
+ = `0.00196 + 0.00336 = 0.00532` USD = **5320 micro-USD exactly**, which is what
+ `/metrics` scrapes.
 - Float USD is display-only; the ledger stores micro-USD integers. Unknown models
  meter at **zero rate** and log once (never fail the request).
 - `default-max-tokens` is the TPM-estimate / budget-reserve fallback when a request
@@ -211,14 +220,15 @@ lifetime keys have a single window-0 entry; see "Reset windows" below):
 - **Reserve (pre-dispatch).** `total = settled + pending + estimate`; the estimate
  prices **both sides**: an output reserve (`estimateTokens × outputPer1K`) **plus**
  a prompt estimate derived from the request's message content (sum of UTF-16 chars
- / 4 × `max(inputPer1K, cacheReadPer1K, cacheCreationPer1K)` — a prompt token bills
- at exactly one of the three rates, so the max is the worst case; a cache-creation
- prompt is the most expensive Anthropic rate, 1.25× input). Pricing the prompt up
- front means a prompt-heavy request cannot drive spend arbitrarily past the cap
- before the next request is denied. It is a heuristic, not a bound — a pathological
- chars-per-token ratio can still overshoot once; `settle` corrects the reservation
- to actual. If `total ≥ cap` → `429 rate_limit_error` with **no `Retry-After`** — a
- budget does not refill on a timer — and the request never reaches the upstream.
+ / 4 × `max(inputPer1K, cacheReadPer1K, cacheCreationPer1K,
+ cacheCreation12hPer1K)` — a prompt token bills at exactly one of the input classes,
+ so the max is the worst case; a 12-hour GPT cache write (2.5× input) is covered).
+ Pricing the prompt up front means a prompt-heavy request cannot drive spend
+ arbitrarily past the cap before the next request is denied. It is a heuristic,
+ not a bound — a pathological chars-per-token ratio can still overshoot once;
+ `settle` corrects the reservation to actual. If `total ≥ cap` →
+ `429 rate_limit_error` with **no `Retry-After`** — a budget does not refill on a
+ timer — and the request never reaches the upstream.
 - **Settle (post-dispatch).** the reservation is corrected to the actual micro-USD
  cost (a large reservation that settles far below releases the difference) and the
  spend entry is recorded.
@@ -368,10 +378,10 @@ master-key-env = "JANUS_MASTER_KEY" # env var NAME, NEVER the value
 # [janus.pricing] — per-alias USD-per-1K rows
 [janus.pricing]
 [[janus.pricing.models]]
-name = "deepseek-v4-flash"
-input-per-1k = 0.00044 # $0.44 / 1M (peak)
-output-per-1k = 0.00132 # $1.32 / 1M (peak)
-# cache-read-per-1k = 0.0000028 # DeepSeek cache-hit input; omit for zero
+name = "deepseek-flash"
+input-per-1k = 0.0003 # $0.30 / 1M (peak)
+output-per-1k = 0.0012 # $1.20 / 1M (peak)
+cache-read-per-1k = 0.000006 # $0.006 / 1M cache hit; omit for zero
 # default-max-tokens = 4096 # TPM/budget estimate fallback when max_tokens is absent
 # long-context-threshold = 200000
 # long-input-per-1k = 0.004

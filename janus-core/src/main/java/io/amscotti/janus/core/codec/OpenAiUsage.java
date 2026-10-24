@@ -20,7 +20,8 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * pricing still uses the prompt + completion rates (no double bill).
  *
  * <p>Unknown members of {@code usage} and of {@code prompt_tokens_details} /
- * {@code completion_tokens_details} are silently dropped (documented scope).
+ * {@code completion_tokens_details} are silently dropped (documented scope);
+ * the known GPT-5.6+ {@code cache_write_tokens_details} lifetime split is retained.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record OpenAiUsage(

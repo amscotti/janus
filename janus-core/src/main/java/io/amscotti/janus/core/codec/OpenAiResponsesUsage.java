@@ -1,6 +1,7 @@
 package io.amscotti.janus.core.codec;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * The Responses API usage object: token counts with the <b>full</b> input on the left
@@ -19,9 +20,24 @@ public record OpenAiResponsesUsage(
         @JsonInclude(JsonInclude.Include.NON_NULL) InputTokensDetails input_tokens_details,
         @JsonInclude(JsonInclude.Include.NON_NULL) OutputTokensDetails output_tokens_details) {
 
-    /** {@code input_tokens_details.cached_tokens} — canonical cache-read split. */
+    /** {@code input_tokens_details} — canonical cache-read/write split. */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record InputTokensDetails(long cached_tokens) {}
+    public record InputTokensDetails(
+            long cached_tokens,
+            @JsonInclude(JsonInclude.Include.NON_NULL) Long cache_write_tokens,
+            @JsonInclude(JsonInclude.Include.NON_NULL) CacheWriteTokensDetails cache_write_tokens_details) {
+
+        /** Compatibility form carrying only cache-read tokens. */
+        public InputTokensDetails(long cached_tokens) {
+            this(cached_tokens, null, null);
+        }
+    }
+
+    /** OpenAI's cache-write lifetime breakdown. */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record CacheWriteTokensDetails(
+            @JsonProperty("ttl_30m_tokens") Long ttl30mTokens,
+            @JsonProperty("ttl_12h_tokens") Long ttl12hTokens) {}
 
     /** {@code output_tokens_details.reasoning_tokens} — canonical reasoning usage. */
     @JsonInclude(JsonInclude.Include.NON_NULL)

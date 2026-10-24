@@ -36,11 +36,12 @@ export JANUS_LIVE=1
 ```
 
 One opt-in only (`JANUS_LIVE=1`). Additional frontier models (`deepseek-v4-pro`,
-`gpt-6-astra`, `claude-opus-5-5`) run in the same suite; they skip only when that
-provider's key is unset — there is no second spend tier.
+`gpt-6.1-sol`, `gpt-6-astra`, `claude-fable-5-1`, `claude-opus-5-5`) run in the
+same suite; they skip only when that provider's key is unset — there is no second
+spend tier.
 
-Note: **DeepSeek's current flagship is `deepseek-v4-flash`** (newer than Pro).
-`deepseek-v4-pro` remains in the suite as a second DeepSeek id, not as "newer than Flash."
+Note: **DeepSeek's current flagship is `deepseek-flash`** (V4.1-Flash-1017).
+`deepseek-v4-pro` remains in the suite as the Pro-tier id.
 
 ### Coverage
 
@@ -67,9 +68,9 @@ Note: **DeepSeek's current flagship is `deepseek-v4-flash`** (newer than Pro).
 | Responses cross-format matrix | `/v1/responses` → **OpenAI** (non-stream, stream w/ usage-on-completed, reasoning_effort), **Anthropic** (non-stream + stream — effort→thinking live; **web_search** hosted tool with `web_search_call` items back), **xAI** (reasoning low), **OpenRouter** (kimi-k3); "vice versa": Anthropic face `/v1/messages` → gpt-6-astra |
 | Agent loop | Multi-tool two-cycle history (DeepSeek: tools → results → tools again) |
 | Stream settle | `stream_options.include_usage` terminal usage; **client abort** after first `data:` frame |
-| Multimodal / vision | OpenAI-face `image_url` data-URL → Luna, Grok, Claude, Kimi K3, DeepSeek vision-exp; Anthropic-face `image` block → Claude and vision-exp; HTTPS image URLs (Luna + Claude on a W3C JPEG; Grok on a jsDelivr-hosted image — Wikimedia began 429-rate-limiting xAI's crawler and each provider's crawler has a different allowlist) |
+| Multimodal / vision | OpenAI-face `image_url` data-URL → Luna, Grok, Claude, Kimi K3, DeepSeek Flash; Anthropic-face `image` block → Claude and DeepSeek Flash; HTTPS image URLs (Luna + Claude on a W3C JPEG; Grok on a jsDelivr-hosted image — Wikimedia began 429-rate-limiting xAI's crawler and each provider's crawler has a different allowlist) |
 | Failover | Dead primary (`127.0.0.1:1`) → live DeepSeek secondary |
-| Extra frontier ids | `deepseek-v4-pro` (older DeepSeek tier), `gpt-6-astra`, `claude-opus-5-5`, `grok-4.5` (same `JANUS_LIVE` gate) |
+| Extra frontier ids | `deepseek-v4-pro` (Pro tier), `gpt-6.1-sol`, `gpt-6-astra`, `claude-fable-5-1`, `claude-opus-5-5`, `grok-4.5` (same `JANUS_LIVE` gate) |
 
 Source: `janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProviderIT.java`
 
@@ -77,14 +78,16 @@ Source: `janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProvider
 
 | Provider | Model id | Notes |
 |----------|----------|--------|
-| DeepSeek | `deepseek-v4-flash` | **current DeepSeek flagship** (primary live path; newer than Pro) |
-| DeepSeek | `deepseek-v4-pro` | prior DeepSeek tier (still exercised for coverage) |
-| DeepSeek | `deepseek-v4-flash-vision-exp` | vision (experimental); OpenAI `image_url` + Anthropic `image` |
-| DeepSeek Anthropic API | `deepseek-v4-flash` via `https://api.deepseek.com/anthropic` | `DeepSeekAnthropicLiveIT` — Anthropic adapter, same API key |
+| DeepSeek | `deepseek-flash` | **current DeepSeek flagship** (V4.1-Flash; text + native vision) |
+| DeepSeek | `deepseek-v4-pro` | Pro tier (still exercised for coverage) |
+| DeepSeek | `deepseek-v4-flash-vision-exp` | retired compatibility alias, served by V4.1-Flash; kept as a compatibility check |
+| DeepSeek Anthropic API | `deepseek-flash` via `https://api.deepseek.com/anthropic` | `DeepSeekAnthropicLiveIT` — Anthropic adapter, same API key |
 | Anthropic | `claude-sonnet-5-5` | Sonnet 5.5 |
+| Anthropic | `claude-fable-5-1` | Fable 5.1 frontier tier |
 | Anthropic | `claude-opus-5-5` | flagship |
 | Anthropic | `claude-haiku-5-5` | Haiku 5.5 |
 | OpenAI | `gpt-6-luna` | cost tier |
+| OpenAI | `gpt-6.1-sol` | mid tier |
 | OpenAI | `gpt-6-astra` | flagship |
 | xAI | `grok-4.6` | **current flagship** (reasoning defaults to `high`; live cases pin `low`) |
 | xAI | `grok-4.5` | prior flagship |
@@ -99,8 +102,8 @@ Source: `janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProvider
 | Google Gemini | `gemini-3.7-flash` | direct OpenAI-compat (`GEMINI_API_KEY`, base `https://generativelanguage.googleapis.com/v1beta/openai`); thinking model — 512-token headroom |
 | OpenRouter | `z-ai/glm-5.3` | GLM 5.3 (reasoning mandatory upstream — no effort pin; 512-token headroom) |
 | Together | `openai/gpt-oss-20b` | serverless id (`TOGETHER_API_KEY`; skips when unset) |
-| DeepSeek | `deepseek-v4-flash` | current flagship; primary live path |
-| DeepSeek | `deepseek-v4-pro` | prior tier; live failover alias (dead + live) |
+| DeepSeek | `deepseek-flash` | current flagship; primary live path |
+| DeepSeek | `deepseek-v4-pro` | Pro tier; live failover alias (dead + live) |
 
 Secrets / env: also `META_API_KEY` for Muse Spark (passed through by the `liveTest` Gradle task).
 

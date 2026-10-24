@@ -14,6 +14,13 @@ import java.util.Map;
  */
 public final class ResponseFormats {
 
+    /**
+     * Anthropic's structured-output format has no schema name. The OpenAI Chat /
+     * Responses wrappers require one, so a cross-format import gets this stable name
+     * and strict enforcement (Anthropic's format is schema-enforced too).
+     */
+    static final String DEFAULT_SCHEMA_NAME = "response";
+
     private ResponseFormats() {}
 
     /** Responses {@code text.format} (or already-chat-shaped) → Chat Completions object. */
@@ -82,7 +89,9 @@ public final class ResponseFormats {
     /**
      * Anthropic {@code output_config.format} → Chat Completions {@code response_format}
      * (nested {@code json_schema} wrapper), or {@code null} when the Anthropic format
-     * is not a schema-bearing {@code json_schema} object.
+     * is not a schema-bearing {@code json_schema} object. OpenAI requires
+     * {@code json_schema.name}; Anthropic does not carry one, so this direction adds
+     * the stable {@value #DEFAULT_SCHEMA_NAME} name and {@code strict:true}.
      */
     public static Map<String, Object> fromAnthropic(Map<?, ?> format) {
         if (format == null
@@ -90,7 +99,16 @@ public final class ResponseFormats {
                 || !(format.get("schema") instanceof Map<?, ?>)) {
             return null;
         }
-        return toChat(format);
+        Map<String, Object> chat = toChat(format);
+        Object nested = chat.get("json_schema");
+        if (nested instanceof Map<?, ?> rawInner) {
+            Map<String, Object> inner = new LinkedHashMap<>();
+            rawInner.forEach((key, value) -> inner.put(String.valueOf(key), value));
+            inner.putIfAbsent("name", DEFAULT_SCHEMA_NAME);
+            inner.putIfAbsent("strict", true);
+            chat.put("json_schema", inner);
+        }
+        return chat;
     }
 
     private static Map<String, Object> copy(Map<?, ?> format) {

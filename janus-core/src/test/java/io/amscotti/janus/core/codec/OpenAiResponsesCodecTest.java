@@ -650,7 +650,8 @@ class OpenAiResponsesCodecTest {
                 response(ChatResponse.STOP_REASON_STOP, new Usage(7, 5, 17, 2L, 3L), new AssistantMessage("x", null)));
         assertTrue(
                 json.contains("\"usage\":{\"input_tokens\":12,\"output_tokens\":5,\"total_tokens\":17,"
-                        + "\"input_tokens_details\":{\"cached_tokens\":3}}"),
+                        + "\"input_tokens_details\":{\"cached_tokens\":3,\"cache_write_tokens\":2,"
+                        + "\"cache_write_tokens_details\":{\"ttl_30m_tokens\":2,\"ttl_12h_tokens\":0}}}"),
                 json);
     }
 

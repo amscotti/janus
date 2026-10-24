@@ -291,6 +291,12 @@
     "allRecordComponents": true
   },
   {
+    "name": "io.amscotti.janus.core.codec.OpenAiPromptTokensDetails$CacheWriteTokensDetails",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
     "name": "io.amscotti.janus.core.codec.OpenAiResponseMessage",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
@@ -376,6 +382,12 @@
   },
   {
     "name": "io.amscotti.janus.core.codec.OpenAiResponsesUsage",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.OpenAiResponsesUsage$CacheWriteTokensDetails",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allRecordComponents": true

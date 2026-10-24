@@ -1,10 +1,10 @@
 # =============================================================================
 # Release workflow — tag-driven GitHub Release with JVM fat jar + native binaries.
 #
-# Trigger: push a tag matching v* (e.g. v0.1.0).
-# Version contract: the tag (minus the leading v) must equal gradle.properties
-# `version` and the packaged [janus] version — release assets are named from the
-# tag, so a mismatch fails the workflow before anything is built/staged.
+# Trigger: push a tag matching v* (e.g. v0.2.0).
+# Version contract: the tag (minus the leading v) must equal gradle.properties,
+# the packaged [janus] version, and config.toml's [janus] version — enforced by
+# scripts/verify-release-version.sh before anything is built/staged.
 #
 # Jobs:
 #   build-linux  (ubuntu-latest):  full build+test gate, fat jar + native binary
@@ -69,30 +69,10 @@ jobs:
       - name: Version from tag
         id: ver
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          # v1.0.0 → 1.0.0 (keep full tag for release name)
-          VERSION="${TAG#v}"
-          # The assets staged below are named from the tag, but the build bakes
-          # gradle.properties' version into the artifacts (janus-<version>.jar,
-          # native binary manifest) and the packaged [janus] version rides along
-          # in application.toml. Re-tagging without bumping them would ship
-          # janus-<tag>.* assets that still report the old version — so fail
-          # HERE, before the build/native-compile spend, unless the tag matches
-          # the build's version.
-          BUILD_VERSION="$(sed -n 's/^[[:space:]]*version[[:space:]]*=//p' gradle.properties | tr -d '[:space:]')"
-          PACKAGED_VERSION="$(awk '/^\[janus\]/{f=1} f && $1=="version"{gsub(/[ "]/, "", $3); print $3; exit}' \
-            janus-gateway/src/main/resources/application.toml)"
-          echo "tag=${TAG} version=${VERSION} gradle.properties=${BUILD_VERSION} packaged=[${PACKAGED_VERSION}]"
-          if [ -z "$BUILD_VERSION" ] || [ "$VERSION" != "$BUILD_VERSION" ]; then
-            echo "::error::tag ${TAG} (${VERSION}) does not match gradle.properties version (${BUILD_VERSION:-unset}) — bump gradle.properties and re-tag"
-            exit 1
-          fi
-          if [ "$VERSION" != "$PACKAGED_VERSION" ]; then
-            echo "::error::tag ${TAG} (${VERSION}) does not match the packaged [janus] version in janus-gateway/src/main/resources/application.toml (${PACKAGED_VERSION:-unset}) — bump both and re-tag"
-            exit 1
-          fi
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          test -x scripts/verify-release-version.sh
+          scripts/verify-release-version.sh "${GITHUB_REF_NAME}"
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and test
         run: ./gradlew build --no-daemon --stacktrace
@@ -158,6 +138,11 @@ jobs:
 
       - name: Smoke native binary (codec path)
         run: scripts/bench/native_codec_smoke.sh
+
+      - name: Native PostgreSQL drill (image + JDBC + CallRecord)
+        # Release assets must not ship a native image whose JDBC/Postgres path
+        # only compiled but never booted. Offline fake upstream + throwaway PG.
+        run: bash scripts/smoke/store/run.sh --skip-regression
 
       - name: Stage release assets
         env:
@@ -228,6 +213,12 @@ jobs:
           done
           echo "native health check failed"
           exit 1
+
+      - name: Smoke native binary (codec path + metrics)
+        # /health cannot detect the Netty chunked-response reflection failure that
+        # 39b9133 fixed. Exercise request decode/encode, SSE, and /metrics on the
+        # exact macOS binary before it is staged.
+        run: scripts/bench/native_codec_smoke.sh
 
       - name: Stage release assets
         run: |

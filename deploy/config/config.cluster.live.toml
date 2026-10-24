@@ -81,25 +81,25 @@ base-url = "https://generativelanguage.googleapis.com/v1beta/openai"
 api-key-env = "GEMINI_API_KEY"
 
 [[janus.model-list]]
-name = "deepseek-v4-flash"
+name = "deepseek-flash"
 provider = "deepseek"
 api-key-env = "DEEPSEEK_API_KEY"
 base-url = "https://api.deepseek.com"
 
 [[janus.model-list]]
-name = "claude-sonnet-5"
+name = "claude-sonnet-5-5"
 provider = "anthropic"
 api-key-env = "ANTHROPIC_API_KEY"
 base-url = "https://api.anthropic.com"
 
 [[janus.model-list]]
-name = "gpt-5.6-luna"
+name = "gpt-6-luna"
 provider = "openai"
 api-key-env = "OPENAI_API_KEY"
 base-url = "https://api.openai.com"
 
 [[janus.model-list]]
-name = "gpt-5.6"
+name = "gpt-6-astra"
 provider = "openai"
 api-key-env = "OPENAI_API_KEY"
 base-url = "https://api.openai.com"
@@ -172,42 +172,50 @@ base-url = "https://openrouter.ai/api"
 
 [janus.pricing]
 [[janus.pricing.models]]
-name = "deepseek-v4-flash"
-input-per-1k = 0.00044
-output-per-1k = 0.00132
-cache-read-per-1k = 0.000014
+name = "deepseek-flash"
+input-per-1k = 0.0003
+output-per-1k = 0.0012
+cache-read-per-1k = 0.000006
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
-name = "claude-sonnet-5"
+name = "claude-sonnet-5-5"
 input-per-1k = 0.002
 output-per-1k = 0.01
-cache-read-per-1k = 0.0002
+cache-read-per-1k = 0.0001
 cache-creation-per-1k = 0.0025
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
-name = "gpt-5.6-luna"
-input-per-1k = 0.0002
-output-per-1k = 0.0012
-cache-read-per-1k = 0.00002
-cache-creation-per-1k = 0.00025
+name = "gpt-6-luna"
+input-per-1k = 0.0001
+output-per-1k = 0.0005
+cache-read-per-1k = 0.00001
+cache-creation-per-1k = 0.000125
+cache-creation-12h-per-1k = 0.00025
 web-search-per-1k = 10.0
-long-context-threshold = 272000
-long-input-per-1k = 0.0004
-long-output-per-1k = 0.0018
+long-context-threshold = 272001
+long-input-per-1k = 0.0002
+long-output-per-1k = 0.00075
+long-cache-read-per-1k = 0.00002
+long-cache-creation-per-1k = 0.00025
+long-cache-creation-12h-per-1k = 0.0005
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
-name = "gpt-5.6"
-input-per-1k = 0.004
-output-per-1k = 0.02
-cache-read-per-1k = 0.0004
-cache-creation-per-1k = 0.005
+name = "gpt-6-astra"
+input-per-1k = 0.010
+output-per-1k = 0.050
+cache-read-per-1k = 0.001
+cache-creation-per-1k = 0.0125
+cache-creation-12h-per-1k = 0.025
 web-search-per-1k = 10.0
-long-context-threshold = 272000
-long-input-per-1k = 0.008
-long-output-per-1k = 0.03
+long-context-threshold = 272001
+long-input-per-1k = 0.020
+long-output-per-1k = 0.075
+long-cache-read-per-1k = 0.002
+long-cache-creation-per-1k = 0.025
+long-cache-creation-12h-per-1k = 0.050
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
@@ -219,9 +227,9 @@ default-max-tokens = 4096
 
 [[janus.pricing.models]]
 name = "deepseek-v4-flash-vision-exp"
-input-per-1k = 0.00044
-output-per-1k = 0.00132
-cache-read-per-1k = 0.000014
+input-per-1k = 0.0003
+output-per-1k = 0.0012
+cache-read-per-1k = 0.000006
 default-max-tokens = 4096
 
 [[janus.pricing.models]]
