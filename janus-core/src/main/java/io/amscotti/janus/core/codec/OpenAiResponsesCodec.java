@@ -742,11 +742,12 @@ public final class OpenAiResponsesCodec {
         // input (the same restore the chat encode's invariant performs).
         long written = usage.cacheCreationInputTokens() == null ? 0L : usage.cacheCreationInputTokens();
         long input = usage.promptTokens() + cached + written;
-        long written12h = usage.cacheCreation12hInputTokens() == null ? 0L : usage.cacheCreation12hInputTokens();
-        // OpenAI returns both lifetime buckets, including a zero one; the canonical
-        // stores only the 12-hour subset, so 30m = total − 12h.
-        OpenAiResponsesUsage.CacheWriteTokensDetails writeDetails =
-                written > 0 ? new OpenAiResponsesUsage.CacheWriteTokensDetails(written - written12h, written12h) : null;
+        Long written12h = usage.cacheCreation12hInputTokens();
+        // Emit lifetime details only when the upstream actually supplied a split;
+        // an Anthropic-sourced canonical has no OpenAI lifetime to report.
+        OpenAiResponsesUsage.CacheWriteTokensDetails writeDetails = written > 0 && written12h != null
+                ? new OpenAiResponsesUsage.CacheWriteTokensDetails(written - written12h, written12h)
+                : null;
         OpenAiResponsesUsage.InputTokensDetails inputDetails = cached > 0 || written > 0
                 ? new OpenAiResponsesUsage.InputTokensDetails(cached, written > 0 ? written : null, writeDetails)
                 : null;

@@ -80,7 +80,7 @@ Source: `janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProvider
 |----------|----------|--------|
 | DeepSeek | `deepseek-flash` | **current DeepSeek flagship** (V4.1-Flash; text + native vision) |
 | DeepSeek | `deepseek-v4-pro` | Pro tier (still exercised for coverage) |
-| DeepSeek | `deepseek-v4-flash-vision-exp` | retired compatibility alias, served by V4.1-Flash; kept as a compatibility check |
+| DeepSeek | `deepseek-v4-flash-vision-exp` | retired compatibility alias retained separately; native-vision coverage uses `deepseek-flash` |
 | DeepSeek Anthropic API | `deepseek-flash` via `https://api.deepseek.com/anthropic` | `DeepSeekAnthropicLiveIT` — Anthropic adapter, same API key |
 | Anthropic | `claude-sonnet-5-5` | Sonnet 5.5 |
 | Anthropic | `claude-fable-5-1` | Fable 5.1 frontier tier |

@@ -17,7 +17,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * {@code completion_tokens_details.reasoning_tokens} (typically already inside
  * {@code completionTokens} for pricing). {@code cacheCreation12hInputTokens} is the
  * GPT-5.6+ 12-hour write subset of {@code cacheCreationInputTokens}; the remainder is
- * the default 30-minute write class. Cache/reasoning fields are
+ * the default 30-minute write class. It is null when the lifetime split is unknown
+ * (for example Anthropic 5-minute/1-hour writes), and zero when an upstream explicitly
+ * reports that every write used the 30-minute class. Cache/reasoning fields are
  * {@code @JsonInclude(NON_NULL)} so canonical JSON stays byte-identical when absent
  * (pinned by the model tests).
  *

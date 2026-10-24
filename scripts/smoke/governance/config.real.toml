@@ -13,13 +13,14 @@
 # enabled = true
 # sensitive = true
 # [[janus.model-list]]
-# name = "deepseek-v4-flash"
+# name = "deepseek-flash"
 # provider = "deepseek"
 # api-key-env = "DEEPSEEK_API_KEY"
 # base-url = "https://api.deepseek.com"
 # [janus.pricing]
 # [[janus.pricing.models]]
-# name = "deepseek-v4-flash"
-# input-per-1k = 0.00014   # official $0.14/1M — the fake-leg 5320 µUSD pin uses 0.14/0.28
-# output-per-1k = 0.00028
+# name = "deepseek-flash"
+# input-per-1k = 0.0003   # official V4.1-Flash peak $0.30/1M (Oct 2026)
+# output-per-1k = 0.0012  # $1.20/1M; cache-read = 0.000006 ($0.006/1M)
+# cache-read-per-1k = 0.000006
 # default-max-tokens = 4096

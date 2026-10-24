@@ -579,7 +579,7 @@ else
   fi
   if [[ -n "${DEEPSEEK_API_KEY:-}" ]]; then
     log "smoke (ao, real DeepSeek) — Anthropic SDK → Janus → real DeepSeek"
-    if "$PY" "$SMOKE_DIR/smoke_anthropic.py" --base-url "$BASE_URL" --check real-happy --real \
+    if "$PY" "$SMOKE_DIR/smoke_anthropic.py" --base-url "$BASE_URL" --model deepseek-flash --check real-happy --real \
         >> "$RUN_DIR/smoke-real.log" 2>&1; then
       sed 's/^/    /' "$RUN_DIR/smoke-real.log" >> "$RESULTS"
       echo "- **Anthropic SDK → real DeepSeek (ao, stream + non-stream): PASS**" >> "$RESULTS"

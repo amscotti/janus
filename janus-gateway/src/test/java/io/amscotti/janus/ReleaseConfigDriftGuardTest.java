@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -52,6 +53,48 @@ class ReleaseConfigDriftGuardTest {
         String clusterLive = Files.readString(root.resolve("deploy/config/config.cluster.live.toml"));
         assertTrue(clusterLive.contains("name = \"deepseek-flash\""), clusterLive);
         assertTrue(clusterLive.contains("long-context-threshold = 272001"), clusterLive);
+    }
+
+    @Test
+    void realUpstreamSmokeConfigsUseCurrentDeepSeekAliasAndRates() throws Exception {
+        Path root = findRepoRoot();
+        for (String relative : List.of(
+                "scripts/smoke/openai-face/config.real.toml",
+                "scripts/smoke/cross-format/config.real.toml",
+                "scripts/smoke/governance/config.real.toml")) {
+            String real = Files.readString(root.resolve(relative));
+            assertTrue(real.contains("name = \"deepseek-flash\""), relative);
+            assertFalse(real.contains("name = \"deepseek-v4-flash\""), relative);
+            assertTrue(real.contains("input-per-1k = 0.0003"), relative);
+            assertTrue(real.contains("output-per-1k = 0.0012"), relative);
+            assertTrue(real.contains("cache-read-per-1k = 0.000006"), relative);
+            assertFalse(real.contains("input-per-1k = 0.00014"), relative);
+        }
+
+        String openAiReal = Files.readString(root.resolve("scripts/smoke/openai-face/config.real.toml"));
+        assertTrue(openAiReal.contains("name = \"deepseek-v4-pro\""), openAiReal);
+        assertTrue(openAiReal.contains("input-per-1k = 0.00132"), openAiReal);
+        assertTrue(openAiReal.contains("output-per-1k = 0.00396"), openAiReal);
+        assertTrue(openAiReal.contains("cache-read-per-1k = 0.000044"), openAiReal);
+
+        String live = Files.readString(
+                root.resolve("janus-gateway/src/test/java/io/amscotti/janus/gateway/live/LiveProviderIT.java"));
+        assertTrue(
+                live.contains("janus.pricing.models[1].cache-read-per-1k\", value = \"0.000044\""),
+                "live Pro cache reads must use the official Pro rate");
+        assertTrue(
+                live.contains("private static final String DEEPSEEK_VISION = DEEPSEEK;"),
+                "live vision must exercise native deepseek-flash, not only the retired alias");
+
+        String clusterDrill = Files.readString(root.resolve("scripts/smoke/cluster/drill_live.py"));
+        assertTrue(
+                clusterDrill.contains("\"vision\": \"deepseek-flash\""),
+                "cluster live vision must exercise native deepseek-flash");
+
+        String openAiRunner = Files.readString(root.resolve("scripts/smoke/openai-face/run.sh"));
+        assertTrue(openAiRunner.contains("--model deepseek-flash"), openAiRunner);
+        String crossRunner = Files.readString(root.resolve("scripts/smoke/cross-format/run.sh"));
+        assertTrue(crossRunner.contains("--model deepseek-flash"), crossRunner);
     }
 
     @Test

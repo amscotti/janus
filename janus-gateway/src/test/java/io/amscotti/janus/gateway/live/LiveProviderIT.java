@@ -207,7 +207,8 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.model-list[14].provider", value = "xai")
 @Property(name = "janus.model-list[14].api-key-env", value = "XAI_API_KEY")
 @Property(name = "janus.model-list[14].base-url", value = "https://api.x.ai")
-// Retired DeepSeek vision alias — still served by V4.1-Flash (compatibility check).
+// Retired DeepSeek vision alias retained as compatibility configuration;
+// the live native-vision cases below use DEEPSEEK (= deepseek-flash).
 @Property(name = "janus.model-list[15].name", value = "deepseek-v4-flash-vision-exp")
 @Property(name = "janus.model-list[15].provider", value = "deepseek")
 @Property(name = "janus.model-list[15].api-key-env", value = "DEEPSEEK_API_KEY")
@@ -238,8 +239,8 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.providers.deepseek-secondary.wire-format", value = "openai-compatible")
 @Property(name = "janus.providers.deepseek-secondary.base-url", value = "https://api.deepseek.com")
 @Property(name = "janus.providers.deepseek-secondary.api-key-env", value = "DEEPSEEK_API_KEY")
-// Live price table: official USD-per-1M ÷ 1000 → Janus USD-per-1K (Aug 2026).
-// Cache-read is on flash/grok so implicit-cache live pins can see
+// Live price table: official USD-per-1M ÷ 1000 → Janus USD-per-1K (Oct 2026).
+// Cache-read is on flash/pro/grok so implicit-cache live pins can see
 // X-Janus-Cost-Cache-Read-Micro-Usd; spend-settle adds that header to the
 // tokens_in × input + tokens_out × output pin. Long-context knobs on Grok:
 // whole request at the higher tier once prompt ≥ 200k (docs.x.ai).
@@ -251,6 +252,7 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.pricing.models[1].name", value = "deepseek-v4-pro")
 @Property(name = "janus.pricing.models[1].input-per-1k", value = "0.00132")
 @Property(name = "janus.pricing.models[1].output-per-1k", value = "0.00396")
+@Property(name = "janus.pricing.models[1].cache-read-per-1k", value = "0.000044")
 @Property(name = "janus.pricing.models[1].default-max-tokens", value = "4096")
 @Property(name = "janus.pricing.models[2].name", value = "grok-4.6")
 @Property(name = "janus.pricing.models[2].input-per-1k", value = "0.002")
@@ -498,8 +500,10 @@ class LiveProviderIT {
             "https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/72x72/1f40c.png";
     /** DeepSeek Pro tier ({@code deepseek-v4-pro}); covered for multi-id routing. */
     private static final String DEEPSEEK_PRO = "deepseek-v4-pro";
-    /** Retired DeepSeek vision alias, still accepted and served by V4.1-Flash. */
-    private static final String DEEPSEEK_VISION = "deepseek-v4-flash-vision-exp";
+    /** Native vision on the current DeepSeek Flash id. */
+    private static final String DEEPSEEK_VISION = DEEPSEEK;
+    /** Retired vision alias retained only as a compatibility configuration. */
+    private static final String DEEPSEEK_LEGACY_VISION = "deepseek-v4-flash-vision-exp";
 
     /** 1×1 red PNG — self-contained; no external image host. */
     private static final String TINY_PNG_B64 =
@@ -555,7 +559,7 @@ class LiveProviderIT {
         if (LiveProviderSupport.envSet("DEEPSEEK_API_KEY")) {
             models.add(DEEPSEEK);
             models.add(DEEPSEEK_PRO);
-            models.add(DEEPSEEK_VISION);
+            models.add(DEEPSEEK_LEGACY_VISION);
         }
         if (LiveProviderSupport.envSet("ANTHROPIC_API_KEY")) {
             models.add(CLAUDE);

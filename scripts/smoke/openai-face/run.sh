@@ -402,7 +402,7 @@ else
   boot_janus_jvm "$REAL_CONFIG"
   log "smoke (real-happy) vs real DeepSeek"
   if "$PY" "$SMOKE_DIR/smoke_sdk.py" --base-url "$BASE_URL" --check real-happy \
-      --models deepseek-v4-flash,deepseek-v4-pro --real >> "$RUN_DIR/smoke-real.log" 2>&1; then
+      --model deepseek-flash --models deepseek-flash,deepseek-v4-pro --real >> "$RUN_DIR/smoke-real.log" 2>&1; then
     sed 's/^/    /' "$RUN_DIR/smoke-real.log" >> "$RESULTS"
     echo "- **Real-upstream chat (non-stream + stream) + \`models.list\`: PASS**" >> "$RESULTS"
     LEG_REAL+=("chat:PASS")
@@ -419,7 +419,7 @@ else
   kill_janus_jvm
   export JANUS_SMOKE_BAD_KEY="sk-janus-smoke-invalid-$(date +%s)"
   boot_janus_jvm "$BAD_CONFIG"
-  if "$PY" "$SMOKE_DIR/smoke_sdk.py" --base-url "$BASE_URL" --check bad-key >> "$RUN_DIR/smoke-badkey.log" 2>&1; then
+  if "$PY" "$SMOKE_DIR/smoke_sdk.py" --base-url "$BASE_URL" --model deepseek-flash --check bad-key >> "$RUN_DIR/smoke-badkey.log" 2>&1; then
     sed 's/^/    /' "$RUN_DIR/smoke-badkey.log" >> "$RESULTS"
     echo "- **Bad-key → 401 \`authentication_error\`: PASS**" >> "$RESULTS"
     LEG_REAL+=("badkey:PASS")

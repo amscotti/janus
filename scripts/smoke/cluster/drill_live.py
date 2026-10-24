@@ -22,7 +22,7 @@ MODELS = {
     "sonnet": "claude-sonnet-5-5",
     "luna": "gpt-6-luna",
     "pro": "deepseek-v4-pro",
-    "vision": "deepseek-v4-flash-vision-exp",
+    "vision": "deepseek-flash",
     "grok": "grok-4.6",
     "kimi": "moonshotai/kimi-k3",
     "minimax": "minimax/minimax-m3",
@@ -76,7 +76,7 @@ def main() -> int:
     args = parser.parse_args()
     lb = args.lb.rstrip("/")
     wanted = [m.strip() for m in args.models.split(",") if m.strip()]
-    aliases = [MODELS[k] for k in wanted]
+    aliases = list(dict.fromkeys(MODELS[k] for k in wanted))
 
     status, _, _ = http_text(f"{lb}/health/readiness", timeout=5.0)
     assert status == 200, f"LB /health/readiness → {status}"
@@ -283,7 +283,7 @@ def main() -> int:
 )
         text = (((payload or {}).get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         assert status == 200 and text.strip(), f"vision openai-face: {status} ({payload})"
-        log("PASS OpenAI face vision → deepseek-v4-flash-vision-exp")
+        log("PASS OpenAI face vision → deepseek-flash")
 
         status, _, payload = http_json(
             "POST",
@@ -315,7 +315,7 @@ def main() -> int:
         blocks = (payload or {}).get("content") or []
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
         assert status == 200 and text.strip(), f"vision anthropic-face: {status} ({payload})"
-        log("PASS Anthropic face vision → deepseek-v4-flash-vision-exp")
+        log("PASS Anthropic face vision → deepseek-flash")
 
     def openai_chat(alias: str, extra: dict | None, max_tokens: int, label: str) -> None:
         body = {

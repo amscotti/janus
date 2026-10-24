@@ -128,7 +128,9 @@ class OpenAiCachedUsageFixtureTest {
         assertTrue(json.contains("\"prompt_tokens\":14,\"completion_tokens\":12,\"total_tokens\":26"), json);
         assertTrue(json.contains("\"cached_tokens\":3"), json);
         assertTrue(json.contains("\"cache_write_tokens\":5"), json);
-        assertTrue(json.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":5,\"ttl_12h_tokens\":0}"), json);
+        assertFalse(
+                json.contains("cache_write_tokens_details"),
+                "an unknown upstream TTL must not be relabeled as a 30-minute write: " + json);
         assertTrue(json.contains("\"prompt_cache_hit_tokens\":3"), json);
     }
 
@@ -159,6 +161,31 @@ class OpenAiCachedUsageFixtureTest {
         assertTrue(responses.contains("\"cache_write_tokens\":7000"), responses);
         assertTrue(
                 responses.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":3000,\"ttl_12h_tokens\":4000}"),
+                responses);
+    }
+
+    @Test
+    void explicitZero12hLifetimeIsRetainedAsAKnownSplit() {
+        ChatResponse response = codec.decodeResponse("""
+                {
+                  "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-6.1-sol",
+                  "choices": [{"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                  "usage": {
+                    "prompt_tokens": 100, "completion_tokens": 0, "total_tokens": 100,
+                    "prompt_tokens_details": {
+                      "cached_tokens": 0,
+                      "cache_write_tokens": 40,
+                      "cache_write_tokens_details": {"ttl_30m_tokens": 40, "ttl_12h_tokens": 0}
+                    }
+                  }
+                }
+                """);
+        assertEquals(new Usage(60, 0, 100, 40L, null, null, 0L), response.usage());
+        String json = codec.encodeResponse(response);
+        assertTrue(json.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":40,\"ttl_12h_tokens\":0}"), json);
+        String responses = OpenAiResponsesCodec.create().encodeResponse(null, response);
+        assertTrue(
+                responses.contains("\"cache_write_tokens_details\":{\"ttl_30m_tokens\":40,\"ttl_12h_tokens\":0}"),
                 responses);
     }
 

@@ -30,12 +30,13 @@ Fable 5.1, and DeepSeek V4.1-Flash.
 
 ### Fixed
 
-- **DeepSeek V4.1 refresh** — production, Kubernetes, live-provider, and
-  operator examples now use `deepseek-flash` (V4.1-Flash-1017) with current
-  peak rates ($0.30 input / $0.006 cache hit / $1.20 output per 1M).
-  Retired `deepseek-v4-flash` / vision-exp ids are documented as compatibility
-  aliases. Native vision is attributed to Flash instead of the retired
-  experimental row.
+- **DeepSeek V4.1 refresh** — production, Kubernetes, live-provider,
+  real-upstream smoke, and operator examples now use `deepseek-flash`
+  (V4.1-Flash-1017) with current peak rates ($0.30 input / $0.006 cache hit /
+  $1.20 output per 1M), and Pro cache reads use $0.044 per 1M. Retired
+  `deepseek-v4-flash` / vision-exp ids are documented as compatibility aliases.
+  Native vision is attributed to Flash instead of the retired experimental row,
+  and live vision coverage targets the current `deepseek-flash` id directly.
 - **Anthropic → OpenAI structured outputs** — importing Anthropic
   `output_config.format` now restores the schema `name` (stable `response`)
   and `strict: true` required by OpenAI, instead of emitting a request OpenAI
@@ -43,7 +44,9 @@ Fable 5.1, and DeepSeek V4.1-Flash.
 - **Exact cache-write accounting** — mixed GPT-6 30-minute/12-hour writes no
   longer collapse onto one rate. Settle, cost headers, and pre-dispatch budget
   estimates use the 12-hour rate where applicable; responses without a split
-  retain the previous behavior.
+  retain the previous behavior. TTL details are emitted only for a known
+  OpenAI split (including an explicit zero 12-hour bucket); unknown or
+  Anthropic 5-minute/1-hour lifetimes are never mislabeled as 30-minute writes.
 - **GPT-6 long-context boundary** — examples and live pricing use
   `long-context-threshold = 272001`; 272,000 input tokens still bill at the
   short-context rate, matching OpenAI's inclusive boundary.
