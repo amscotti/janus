@@ -59,14 +59,16 @@ class HttpSupportTest {
     }
 
     @Test
-    void interruptedBodyReadIsNonRetryableAndRestoresInterrupt() {
+    void interruptedBodyReadIsNonRetryableAndRestoresInterrupt() throws Exception {
         // coverage: the readBody interrupt branch (caller interrupted mid-read) is a
         // local interrupt, not an upstream fault — non-retryable like the adapters'
-        // send, with the interrupt restored.
+        // send, with the interrupt restored. The reader must still be blocked when
+        // join() runs: an already-complete reader lets Thread.join return without
+        // observing the interrupt, making an empty ByteArrayInputStream racy.
+        PipedInputStream stalled = new PipedInputStream(new java.io.PipedOutputStream());
         Thread.currentThread().interrupt();
-        ProviderException e = assertThrows(
-                ProviderException.class,
-                () -> HttpSupport.readBody(new ByteArrayInputStream(new byte[0]), Duration.ofSeconds(5)));
+        ProviderException e =
+                assertThrows(ProviderException.class, () -> HttpSupport.readBody(stalled, Duration.ofSeconds(5)));
         assertEquals(ProviderException.TYPE_UPSTREAM_4XX, e.type());
         assertFalse(e.retryable());
         assertTrue(Thread.interrupted(), "the interrupt must be restored for the caller");
