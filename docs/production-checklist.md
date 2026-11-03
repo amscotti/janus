@@ -72,3 +72,22 @@ export JANUS_LIVE=1
 - [ ] Docker Compose or k8s manifests under `deploy/` reviewed for your registry/secrets
 - [ ] Resource limits: native RSS ~75–150 MiB class; heap bound if using native `-R:MaxHeapSize`
 - [ ] TLS terminated at ingress or Compose TLS profile as needed
+
+## System One decisions (`POST /v1/systemone`)
+
+- [ ] Every decision alias has a `[[janus.decision-model-list]]` row and,
+      under `require-priced = true`, a `[[janus.pricing.models]]` row.
+- [ ] `vision = true` is set only on image-capable models; TypeSafe image/Box
+      traffic uses `assets` + the `TypeSafe-Danger-Zone-Images` header.
+- [ ] Decision provider env vars (`TYPESAFE_API_KEY`, `CLOUDFLARE_API_TOKEN`,
+      `OPENAI_API_KEY`, …) are in the deployment secret and mounted.
+- [ ] Cold local Ollama aliases set `header-timeout-seconds` explicitly and
+      are excluded from latency SLOs.
+- [ ] The decision config passes a boot probe (a bad provider/base URL/
+      `wire-format`/pricing row refuses the node).
+- [ ] `scripts/smoke/decisions/run.sh` (and `--native` for a release) is green.
+- [ ] Dashboards/alerts include `face="systemone"` 5xx and the decision
+      provider from the call ledger; decision providers do not emit the chat
+      health/breaker gauges.
+- [ ] Decision aliases are absent from `GET /v1/models` by design; clients set
+      `model` explicitly.

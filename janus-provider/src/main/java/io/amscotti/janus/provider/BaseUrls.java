@@ -55,6 +55,12 @@ final class BaseUrls {
             throw new IllegalArgumentException("baseUrl must resolve to a non-empty URL");
         }
         URI uri = URI.create(normalized); // fail fast on malformed URLs
+        if (uri.getRawQuery() != null || uri.getRawFragment() != null) {
+            // The adapters append their versioned path by string concatenation; a
+            // query/fragment would swallow it (the request would silently go to the
+            // host root). Reject at boot, not on the first call.
+            throw new IllegalArgumentException("baseUrl must not carry a query or fragment, got: " + normalized);
+        }
         String scheme = uri.getScheme();
         if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
             throw new IllegalArgumentException(

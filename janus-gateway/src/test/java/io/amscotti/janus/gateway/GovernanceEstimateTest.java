@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.amscotti.janus.core.model.AssistantMessage;
 import io.amscotti.janus.core.model.ChatRequest;
+import io.amscotti.janus.core.model.DecisionQuestion;
+import io.amscotti.janus.core.model.DecisionRequest;
 import io.amscotti.janus.core.model.Message;
 import io.amscotti.janus.core.model.SystemMessage;
 import io.amscotti.janus.core.model.ToolMessage;
@@ -197,6 +199,60 @@ class GovernanceEstimateTest {
                 new io.amscotti.janus.core.model.Usage(0, 0, 0, 10L, null), sonnet);
         assertEquals(37_500L, fullyCreated, "10 × 3.75 × 1000 = 37_500 micro-USD");
         assertTrue(estimate >= fullyCreated, "the admission estimate covers the cache-creation path");
+    }
+
+    @Test
+    void decisionEstimateSumsStateQuestionsAndImages() {
+        DecisionRequest request = new DecisionRequest(
+                "d3",
+                "12345678901234567890",
+                List.of("aGVsbG8="),
+                Map.of("q", new DecisionQuestion.NoulQuestion("12345678", Map.of("true", "yes!", "false", "no!!!"))),
+                Map.of(),
+                Map.of());
+        // The estimate is the compact serialized request (state/questions/criteria,
+        // JSON structure included) / 4, plus 1024 per image. Pinned so a return to
+        // the content-only sum (which missed JSON structure and extras) fails.
+        assertEquals(37 + 1024, Governance.estimateDecisionTokens(request));
+        assertEquals(0, Governance.estimateDecisionTokens(null));
+    }
+
+    @Test
+    void decisionEstimateWalksStructuredStateTreesAndScoreLevels() {
+        // A structured state (array of strings/maps/numbers/booleans) and a score
+        // question exercise plainLength's recursion (map keys + leaves, non-string
+        // leaves via String.valueOf) and the level-list branch.
+        DecisionRequest request = new DecisionRequest(
+                "d3",
+                List.of("ab", Map.of("k", "v"), 42, true),
+                null,
+                Map.of("q", new DecisionQuestion.ScoreQuestion("1234", List.of("lvl-a", "lvl-b"))),
+                Map.of(),
+                Map.of());
+        // 132 serialized bytes / 4 = 33. Structured state and score levels are
+        // serialized, not walked as a content-length sum.
+        assertEquals(33, Governance.estimateDecisionTokens(request));
+    }
+
+    @Test
+    void decisionEstimateChargesTypeSafeAssetsAsImagesNotBase64Text() {
+        DecisionRequest request = new DecisionRequest(
+                "jev-latest",
+                Map.of("photo", "p1"),
+                null,
+                Map.of("locate", new DecisionQuestion.BoxQuestion("Find the mug.")),
+                Map.of(
+                        "assets",
+                        Map.of(
+                                "p1",
+                                Map.of(
+                                        "type", "image",
+                                        "format", "png",
+                                        "data_base64", "a".repeat(20_000)))),
+                Map.of());
+        long estimate = Governance.estimateDecisionTokens(request);
+        assertTrue(estimate >= 1024, "each asset is charged the 1024-token image estimate: " + estimate);
+        assertTrue(estimate < 1100, "the 20k base64 payload must not be priced as text: " + estimate);
     }
 
     private static ChatRequest request(Integer maxTokens) {

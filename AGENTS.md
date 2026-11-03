@@ -51,6 +51,10 @@ providers, models, or policies.
   teams/orgs, and `/v1/embeddings` are out unless an explicit product-scope
   decision says otherwise. `/v1/responses` is a stateless face
   ([`docs/responses.md`](./docs/responses.md)); stored retrieval is deferred.
+  System One decision models (`/v1/systemone`,
+  [`docs/system-one.md`](./docs/system-one.md)) are in scope by explicit
+  product decision — decision models only, no classifier/reranker APIs and
+  no chat-model emulation of decisions.
 - **Conventional commits.** `feat:`, `fix:`, `test:`, `docs:`, `chore:`,
   `refactor:`. `main` is the only long-lived branch.
 - **`./gradlew build` is the gate.** Spotless (Palantir), `-Xlint:all

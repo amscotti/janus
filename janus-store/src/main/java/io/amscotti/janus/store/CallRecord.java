@@ -75,6 +75,8 @@ public record CallRecord(
     public CallRecord {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(status, "status");
+        model = sanitizeModel(model);
+        provider = sanitizeModel(provider);
         if (promptTokens < 0 || completionTokens < 0 || totalTokens < 0 || costMicroUsd < 0 || durationMillis < 0) {
             throw new IllegalArgumentException("tokens/cost/duration must be non-negative (got prompt=" + promptTokens
                     + ", completion=" + completionTokens + ", total=" + totalTokens + ", cost=" + costMicroUsd
@@ -133,5 +135,21 @@ public record CallRecord(
      */
     public boolean totalTokensConsistent() {
         return totalTokens == promptTokens + completionTokens;
+    }
+
+    /** Router keys are identifiers, not content: cap and strip control chars before persistence. */
+    private static final int MAX_MODEL_CHARS = 256;
+
+    private static String sanitizeModel(String value) {
+        if (value == null) {
+            return null;
+        }
+        int limit = Math.min(value.length(), MAX_MODEL_CHARS);
+        StringBuilder sb = new StringBuilder(limit);
+        for (int i = 0; i < limit; i++) {
+            char c = value.charAt(i);
+            sb.append(c < 0x20 || c == 0x7f ? ' ' : c);
+        }
+        return value.length() <= MAX_MODEL_CHARS ? sb.toString() : sb.substring(0, MAX_MODEL_CHARS - 3) + "...";
     }
 }

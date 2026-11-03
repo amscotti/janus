@@ -46,9 +46,18 @@ class FaceTest {
     }
 
     @Test
+    void systemOneFaceMatchesExactlyLikeTheChatFaces() {
+        assertTrue(Face.SYSTEMONE.requiresVirtualKey("/v1/systemone"));
+        assertFalse(Face.SYSTEMONE.requiresVirtualKey("/v1/systemone/extra"));
+        assertTrue(Face.SYSTEMONE.gatesOnPostOnly());
+        assertEquals(Face.SYSTEMONE, Face.of("/v1/systemone").orElseThrow());
+    }
+
+    @Test
     void labelsMatchTheTier1Enumeration() {
         assertEquals("openai", Face.OPENAI.label());
         assertEquals("anthropic", Face.ANTHROPIC.label());
         assertEquals("responses", Face.RESPONSES.label());
+        assertEquals("systemone", Face.SYSTEMONE.label());
     }
 }

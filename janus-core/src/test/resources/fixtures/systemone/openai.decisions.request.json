@@ -1,0 +1,44 @@
+{
+  "model": "gpt-6-luna",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_json",
+          "data": {
+            "ticket": "My card was charged twice and the app crashes on checkout.",
+            "tier": "enterprise"
+          }
+        }
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "type": "predicate",
+      "name": "is_billing",
+      "instructions": "Is this about billing?\nTrue when: About charges\nFalse when: Not about charges"
+    },
+    {
+      "type": "choice",
+      "name": "team",
+      "instructions": "Which team should handle this?",
+      "choices": [
+        {"value": "billing", "description": "Charges and refunds"},
+        {"value": "technical", "description": "App bugs"},
+        {"value": "account", "description": "Login issues"}
+      ]
+    },
+    {
+      "type": "score",
+      "name": "urgency",
+      "instructions": "How urgent?",
+      "levels": [
+        {"label": "Can wait"},
+        {"label": "This week"},
+        {"label": "Today"}
+      ]
+    }
+  ]
+}

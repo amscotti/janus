@@ -118,6 +118,50 @@ base-url = "https://api.deepseek.com"
 # blocks); images bill as input tokens, so no separate vision model row is
 # required. The retired `deepseek-v4-flash-vision-exp` alias still routes to
 # V4.1-Flash for older configs.
+
+# Decision models (System One) — POST /v1/systemone, the Jev-shaped decisions
+# face; see docs/system-one.md. One client dialect in, two out: the generic
+# "systemone" family (TypeSafe/Jev, OpenRouter, Ollama local+cloud, Cloudflare
+# Clef, any /v1/systemone server) and "openai-decisions" (OpenAI, translated).
+# [[janus.decision-model-list]] mirrors [[janus.model-list]] (same-name rows =
+# one round-robin/failover pool. base-url/api-key-env merge entry >
+# [janus.decision-providers.<name>]; the three timeout keys also fall through
+# to [janus.timeouts]) with three decision-only keys:
+#   upstream-model — the model id sent upstream (omitted ⇒ the alias verbatim;
+#   the same model has different ids per host: clef / clef:cloud / in-path).
+#   vision = true — admit image evidence to this backend: images[] (Ollama/
+#   Clef), TypeSafe assets, or Box questions (absent/false ⇒ typed 400).
+#   Set only for image-capable models: d3, clef, gpt-6-luna.
+# TypeSafe's beta images/Box additionally require the
+# TypeSafe-Danger-Zone-Images: true request header: Janus forwards it from the
+# client and derives it from an assets/Box body. Long context forwards
+# TypeSafe-Danger-Zone-Long-Context: true. TypeSafe SDK zstd request bodies
+# and multipart image uploads are accepted (multipart file parts are inlined
+# as base64 assets before dispatch).
+# Pricing reuses [[janus.pricing.models]] by alias (input tokens only);
+# decision aliases never appear in GET /v1/models. Local quickstart: uncomment
+# the tev1 row AND the [janus.decision-providers.ollama-local] block, then
+# `ollama pull tev1:0.8b`.
+# [[janus.decision-model-list]]
+# name = "tev1:0.8b"
+# provider = "ollama-local"
+# [[janus.decision-model-list]]
+# name = "jev-latest"
+# provider = "typesafe"
+# [[janus.decision-model-list]]
+# name = "gpt-6-luna"
+# provider = "openai-decisions"
+# vision = true
+# [janus.decision-providers.ollama-local]
+# wire-format = "systemone" # required unless the provider name IS a registered adapter
+# base-url = "http://127.0.0.1:11434"
+# header-timeout-seconds = 180 # cold local model loads can outlast the 60s default
+# [janus.decision-providers.typesafe]
+# wire-format = "systemone"
+# base-url = "https://api.typesafe.ai"
+# api-key-env = "TYPESAFE_API_KEY"
+# [janus.decision-providers.openai-decisions]
+# api-key-env = "OPENAI_API_KEY" # registered name → base defaults to https://api.openai.com
 #
 # Upstream timeouts — [janus.timeouts] — the four upstream deadlines that were fixed
 # fixed code constants, now operator-tunable. All keys are OPTIONAL seconds (an
@@ -197,7 +241,7 @@ base-url = "https://api.deepseek.com"
 #
 # The master key authenticates the admin API only (/key/generate|delete|list,
 # Bearer or x-api-key); model routes (/v1/chat/completions, /v1/messages,
-# /v1/responses) require Janus-issued virtual keys (sk-janus-...), created via
+# /v1/responses, /v1/systemone) require Janus-issued virtual keys (sk-janus-...), created via
 # POST /key/generate with the master key. Per-key model scopes (the "models" list on
 # generate) are enforced against the model alias the client sends; revoked keys get
 # 403, missing/invalid/expired keys 401. Every UNLISTED path — /health, /metrics,
@@ -227,7 +271,7 @@ base-url = "https://api.deepseek.com"
 # # per-token input rate, since a prompt token bills at exactly one of the
 # # classes) so a prompt-heavy request cannot overshoot the hard cap unguarded —
 # # still an estimate, settle corrects.
-# # require-priced = true  # fail boot / 400 when a model-list alias has no row
+# # require-priced = true  # fail boot / 400 when a model-list OR decision-model-list alias has no row
 # # A DUPLICATE name across [[janus.pricing.models]] rows is REJECTED at boot
 # # (the table is keyed by name — a repeat would silently replace the earlier
 # # row's rates).
@@ -404,7 +448,8 @@ log-content = false
 # in application.toml ([endpoints.prometheus] path = "/metrics"; /prometheus 404s).
 # Series (janus_ prefix; see MetricsRecorder for the full table and the privacy
 # contract):
-# janus_requests_total Counter labels: face (openai|anthropic|responses|admin —
+# janus_requests_total Counter labels: face
+# (openai|anthropic|responses|systemone|admin —
 # admin = the /key/* operations (success
 # and failure) and master-key rejections
 # on those routes),

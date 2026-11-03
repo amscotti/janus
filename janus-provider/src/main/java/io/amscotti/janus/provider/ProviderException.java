@@ -22,6 +22,9 @@ import java.util.Objects;
  * <li>{@link #TYPE_TIMEOUT} — upstream did not answer within the request timeout.
  * <li>{@link #TYPE_BAD_UPSTREAM_PAYLOAD} — upstream sent a body/chunk that failed codec
  * parsing or SSE framing.
+ * <li>{@link #TYPE_UNSUPPORTED_REQUEST} — this backend's dialect/caps reject the request
+ * (e.g. OpenAI Decisions' 400-question cap). Retryable across candidates, never against
+ * the same backend; surfaces as a 400 once every candidate has declined.
  * </ul>
  *
  * <p>{@code retryable} is derived from the type (the adapter's best guess for the router's retry policy):
@@ -40,6 +43,7 @@ public final class ProviderException extends RuntimeException {
     public static final String TYPE_NETWORK = "network";
     public static final String TYPE_TIMEOUT = "timeout";
     public static final String TYPE_BAD_UPSTREAM_PAYLOAD = "bad_upstream_payload";
+    public static final String TYPE_UNSUPPORTED_REQUEST = "unsupported_request";
 
     private final String type;
     private final Integer statusCode;
@@ -98,7 +102,10 @@ public final class ProviderException extends RuntimeException {
 
     private static boolean isRetryable(String type) {
         return switch (type) {
-            case TYPE_RATE_LIMITED, TYPE_UPSTREAM_5XX, TYPE_NETWORK, TYPE_TIMEOUT -> true;
+            // unsupported_request is "this backend cannot serve this request" (per-backend
+            // caps/dialect limits): the router should walk to the next candidate, never
+            // hammer the same backend — the router's tried-set enforces one shot each.
+            case TYPE_RATE_LIMITED, TYPE_UPSTREAM_5XX, TYPE_NETWORK, TYPE_TIMEOUT, TYPE_UNSUPPORTED_REQUEST -> true;
             default -> false;
         };
     }

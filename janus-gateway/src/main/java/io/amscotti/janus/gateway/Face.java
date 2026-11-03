@@ -32,7 +32,11 @@ enum Face {
     ANTHROPIC("anthropic", "/v1/messages", Match.EXACT, "/v1/messages/count_tokens"),
 
     /** The OpenAI Responses face ({@code /v1/responses*}, any method). */
-    RESPONSES("responses", "/v1/responses", Match.PREFIX);
+    RESPONSES("responses", "/v1/responses", Match.PREFIX),
+
+    /** The System One decisions face ({@code POST /v1/systemone}) — decision
+     * models only (docs/system-one.md); exact + POST-gated like the chat faces. */
+    SYSTEMONE("systemone", "/v1/systemone", Match.EXACT);
 
     private enum Match {
         EXACT,

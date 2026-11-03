@@ -7,6 +7,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **System One decision models** — `POST /v1/systemone`, the Jev-shaped
+  decisions face (`choice`/`noul`/`score`/`box` questions over a `state`,
+  typed probability answers, non-streaming). One client dialect routes by
+  model id to TypeSafe (Jev), OpenRouter, Ollama local/cloud decision models
+  (`d3`, `clef`, `nimble-v3`, `tev1`), Cloudflare Clef (generic `systemone`
+  wire), and OpenAI Decisions (`gpt-6-luna`, translated). Configure via
+  `[[janus.decision-model-list]]` + `[janus.decision-providers.*]` (with
+  `upstream-model` remap and a `vision` gate for image evidence); virtual
+  keys, scopes, budgets, pricing, round-robin/failover routing, and Tier-1
+  metrics (`face="systemone"`) apply. See `docs/system-one.md`; offline gate
+  in `scripts/smoke/decisions/`.
+- **TypeSafe danger-zone support** — `TypeSafe-Danger-Zone-Images` is
+  forwarded from the client and derived from `assets`/Box bodies;
+  `TypeSafe-Danger-Zone-Long-Context` is forwarded; `assets` ride the
+  `systemone` leg; Box questions/answers are supported end to end. Image
+  evidence in any dialect (`images[]`, TypeSafe `assets`, Box) routes to
+  `vision = true` backends.
+- **Structured TypeSafe entries** — `instructions` and criteria values accept
+  strings, objects, arrays, or null on the `systemone` leg; the OpenAI leg
+  folds structure to text (documented loss). TypeSafe's single-option
+  choice/level minimums are accepted at the face; OpenAI's 2–255/2–10 caps
+  are enforced per picked backend.
+- **Cloudflare Workers AI envelope unwrap** — `/ai/run/` responses are
+  unwrapped from `{result, success, errors, messages}`; `success:false` is a
+  typed upstream failure instead of a 502 decode error on every success.
+- **TypeSafe SDK request compatibility** — `POST /v1/systemone` accepts
+  zstd-compressed bodies (the SDK default for bodies ≥ 1 KiB; decompressed
+  under the 32 MiB ceiling) and `multipart/form-data` uploads (JSON `request`
+  part + image file parts inlined into `assets` as `data_base64`/`format`).
+  Image parts nested in `state` are detected for `vision` routing.
+- **OpenRouter decision catalog** — the generic `systemone` provider routes
+  OpenRouter's decision models by `upstream-model` (Jev, Cloudflare Clef
+  variants, Liquid, Perplexity, Microsoft, Together, OpenAI Luna Decisions,
+  and others). OpenRouter's Clef facade uses `state`-array `image_url` parts.
+
+### Fixed
+
+- **Cloudflare Clef** — a successful Workers AI call no longer becomes a
+  502 because the model answer is nested under `result`.
+- **Upstream usage is validated** — non-negative integral token counts,
+  overflow-checked totals, and typed 502s for malformed/negative/out-of-range
+  usage. A bad upstream can no longer charge `Long.MAX_VALUE` micro-USD and
+  permanently exhaust a key's budget.
+- **Decisions are input-only at settle** — the OpenAI leg's cached/cache-write
+  input is folded back into the input term, output/cache are zeroed, and a
+  response without `usage` settles the pre-dispatch estimate instead of $0.
+  The call ledger's cache columns stay null, matching the docs.
+- **Decision config fails boot** — a startup probe resolves the decision
+  router and price table, so an unknown provider, blank base URL, invalid
+  `wire-format`, dead block, or missing `require-priced` decision row refuses
+  the node instead of passing `/health` and failing the first request.
+- **Config binding no longer drops invalid decision entries** — validation
+  moved out of the bound record constructors (Micronaut silently discarded a
+  map element whose constructor threw) into `DecisionModelListFactory`, with
+  messages naming the entry/key. A literal secret in `api-key-env` is no
+  longer echoed in the missing-env warning.
+- **The decision estimate prices the serialized request** — compact
+  state/questions/extras bytes ÷ 4, plus 1024 per `images[]`/`assets` entry,
+  including unmodeled extras; the old content-only sum under-gated TPM/budget
+  by ~6–20× and could estimate 0.
+- **Ledger hygiene** — client-controlled model/provider strings are capped
+  and control-stripped before persistence; `LogSafe` no longer allocates a
+  full-size builder before truncating.
+- **Codec trust boundary** — non-finite/out-of-range numbers are typed
+  errors (never re-emitted as `"Infinity"` strings); raw Jackson conversion
+  failures are typed 502s; duplicate JSON keys are rejected; `state` must be
+  string/object/array; `stream` is a typed 400; raw `images[]` must be
+  base64 (URLs/data-URLs are typed 400s); malformed OpenAI answers
+  (missing probabilities/score, non-numeric confidence) are typed 502s
+  instead of fabricated 0.0/`{}` decisions; OpenAI `input_json` accepts an
+  object or array of objects (scalar arrays become text), with depth/value/
+  byte caps; OpenAI usage preserves the wire `total_tokens`.
+- **Vision/asset routing** — `assets`/Box requests route to `vision = true`
+  backends; the client response echoes the client alias, never the
+  `upstream-model` remap; per-backend cap failures fail over to another
+  candidate instead of returning a round-robin-position-dependent 400.
+- **Router failure handling** — after every candidate has had one shot the
+  router throws the last failure instead of re-picking candidate 0; a cached
+  exception instance can no longer trigger `Self-suppression not permitted`;
+  a throwing dispatch observer is logged and dropped; a classifier `Error`
+  no longer replaces the backend failure; blank aliases are rejected at
+  construction.
+- **Base URLs with a query/fragment** are rejected at boot instead of
+  appending the versioned path into the query.
+- **Reservation release is exactly-once** (the existing guard) and usage
+  metrics are best-effort on every settled path (a throwing recorder no
+  longer turns an accounted 200 into a 500 plus a second ERROR row).
+- **Metrics privacy** — nested decision question/answer records no longer
+  print instructions/criteria/answers in `toString` when content logging is
+  off; the `face="systemone"` privacy test plants the marker in answers too.
+
+### Changed
+
+- The `face` metric label enumerations in `config.toml`,
+  `docs/governance.md`, and `docs/ops.md` now list `systemone` (five
+  values).
+- `docs/system-one.md`, the provider cookbook, config reference, production
+  example, ops runbook, production checklist, README, architecture, and
+  adding-a-provider guide now cover decision models, the TypeSafe danger
+  zone, the per-dialect image shapes, boot validation, and input-only
+  billing.
+- The production example's Jev price is the documented `$0.042/Mtok`
+  (`0.000042`/1K), not `0.0005`.
+
+### Added (tests)
+
+- Decision governance (failure status table, input-only reservation,
+  settle, exactly-once release, missing-usage estimate, input-only
+  OpenAI usage), `DecisionRouterFactory` (constructor switch,
+  ServiceLoader ↔ constructor coupling, wire-format/NAME literals,
+  ignored-strategy warning), decision-face auth (401/403 before dispatch),
+  privacy-contract cases for `face="systemone"`, 413 on the decision face,
+  vision routing (assets/Box included), documented caps (400 questions /
+  256 KiB / 2–10 levels / 2–255 choices), fixture decode in the manifest
+  guard, ArchUnit placement rules for `DecisionBackend`/`DecisionAdapter`,
+  the decision adapters' timeout constants, Cloudflare envelope unwrap,
+  TypeSafe danger-zone header forwarding/derivation, local `images[]` and
+  OpenAI `input_image` shapes, TypeSafe SDK zstd request bodies (round-trip +
+  corrupt-body 400), multipart `request`/file-part inlining (missing/orphan/
+  duplicate part typed 400s), and the codec trust-boundary regressions
+  (non-finite/overflow/duplicate keys/structured entries/Box).
+
 ## [0.2.0] — 2026-10-24
 
 Current-model compatibility refresh: OpenAI GPT-6, Anthropic Claude 5.5 /

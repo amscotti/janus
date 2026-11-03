@@ -1,0 +1,24 @@
+{
+  "model": "tev1:0.8b",
+  "state": {
+    "ticket": "My card was charged twice and the app crashes on checkout.",
+    "tier": "enterprise"
+  },
+  "questions": {
+    "is_billing": {
+      "type": "noul",
+      "instructions": "Is this about billing?",
+      "criteria": {"true": "About charges", "false": "Not about charges"}
+    },
+    "team": {
+      "type": "choice",
+      "instructions": "Which team should handle this?",
+      "criteria": {"billing": "Charges and refunds", "technical": "App bugs", "account": "Login issues"}
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "How urgent?",
+      "criteria": ["Can wait", "This week", "Today"]
+    }
+  }
+}

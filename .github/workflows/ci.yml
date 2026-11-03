@@ -183,6 +183,11 @@ jobs:
         # + a stream chat completion — fully offline, no provider keys.
         run: scripts/bench/native_codec_smoke.sh
 
+      - name: System One decisions gate (JVM + native)
+        # The decision ServiceLoader registration, reflect-configs, and the new
+        # TypeSafe danger-zone/image paths only bite in the product artifact.
+        run: bash scripts/smoke/decisions/run.sh --native
+
       - name: Native PostgreSQL drill (image + JDBC + CallRecord)
         # nativeCompile alone cannot prove the image ships a working JDBC driver,
         # embedded schema, and Postgres store. This offline drill boots the native

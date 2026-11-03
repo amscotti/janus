@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.amscotti.janus.core.codec.DecisionCodecException;
 import io.amscotti.janus.core.codec.OpenAiCodecException;
 import io.amscotti.janus.provider.ProviderException;
 import io.amscotti.janus.router.UnknownModelException;
@@ -50,6 +51,19 @@ class ErrorMapperTest {
         assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, mapping.status());
         assertEquals(ErrorMapper.TYPE_API_ERROR, mapping.envelope().type());
         assertNull(mapping.envelope().code());
+    }
+
+    @Test
+    void decisionCodecExceptionsMapLikeTheChatCodecRows() {
+        ErrorMapper.ErrorMapping bad = mapper.map(
+                new DecisionCodecException(DecisionCodecException.TYPE_INVALID_REQUEST, "questions must be non-empty"));
+        assertEquals(HttpStatus.BAD_REQUEST, bad.status());
+        assertEquals(ErrorMapper.TYPE_INVALID_REQUEST, bad.envelope().type());
+
+        ErrorMapper.ErrorMapping upstream =
+                mapper.map(new DecisionCodecException(DecisionCodecException.TYPE_API_ERROR, "bad decision payload"));
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, upstream.status());
+        assertEquals(ErrorMapper.TYPE_API_ERROR, upstream.envelope().type());
     }
 
     @Test

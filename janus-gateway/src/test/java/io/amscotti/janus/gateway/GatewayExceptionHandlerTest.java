@@ -205,6 +205,11 @@ class GatewayExceptionHandlerTest {
         assertEquals(HttpStatus.REQUEST_ENTITY_TOO_LARGE, openAi.getStatus());
         assertTrue(openAi.body().contains("\"error\":{\"message\""), openAi.body());
         assertTrue(openAi.body().contains("\"type\":\"invalid_request_error\""), openAi.body());
+        // The decision face shares the server-global ceiling (docs/compatibility).
+        HttpResponse<String> decision = handler.handle(HttpRequest.POST("/v1/systemone", "{}"), tooBig);
+        assertEquals(HttpStatus.REQUEST_ENTITY_TOO_LARGE, decision.getStatus());
+        assertTrue(decision.body().contains("\"error\":{\"message\""), decision.body());
+        assertTrue(decision.body().contains("\"type\":\"invalid_request_error\""), decision.body());
     }
 
     @Test

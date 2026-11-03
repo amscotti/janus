@@ -214,6 +214,32 @@ long-output-per-1k = 0.012
 long-cache-read-per-1k = 0.001
 
 # -----------------------------------------------------------------------------
+# System One decision models — POST /v1/systemone (docs/system-one.md).
+# Same shape as [[janus.model-list]]; secrets are env-var names only, and
+# decision aliases price through [[janus.pricing.models]] (input-only rows).
+# TypeSafe images use top-level assets + the TypeSafe-Danger-Zone-Images
+# header (Janus forwards/derives it); Ollama/Clef use vision = true + images[];
+# OpenAI uses vision = true and receives input_image data URLs.
+
+# [[janus.decision-model-list]]
+# name = "jev-latest"                 # what callers send
+# provider = "typesafe"
+# [[janus.decision-model-list]]
+# name = "gpt-6-luna"
+# provider = "openai-decisions"
+# vision = true                       # image-capable — set only for such models
+# [janus.decision-providers.typesafe]
+# wire-format = "systemone"
+# base-url = "https://api.typesafe.ai"
+# api-key-env = "TYPESAFE_API_KEY"
+# [janus.decision-providers.openai-decisions]
+# api-key-env = "OPENAI_API_KEY"      # registered name → OpenAI's default base
+# [[janus.pricing.models]]
+# name = "jev-latest"                 # $0.042/Mtok (TypeSafe list price)
+# input-per-1k = 0.000042
+# output-per-1k = 0.0
+
+# -----------------------------------------------------------------------------
 # Privacy — conversation content in logs. Keep OFF in production: prompts and
 # completions never appear in log output; metrics/call records/token counts
 # are always logged regardless. true is for local debugging only.

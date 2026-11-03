@@ -13,9 +13,9 @@ import io.amscotti.janus.core.model.Usage;
  *
  * <p><b>Tier-1 privacy contract (the Tier-1 privacy contract — blunt,
  * always on).</b> The recorded series carry <b>no user content ever</b>: labels are
- * only {@code face} ({@code openai}|{@code anthropic}|{@code responses}|{@code admin}
- * — the four values of {@link Face#label}, the last for master-key/auth rejections
- * on non-model routes such as {@code /key/*}), a coarse
+ * only {@code face} ({@code openai}|{@code anthropic}|{@code responses}|{@code
+ * systemone}|{@code admin} — the five values of {@link Face#label}, the last for
+ * master-key/auth rejections on non-model routes such as {@code /key/*}), a coarse
  * {@code status} bucket ({@code 2xx}|{@code 4xx}|{@code 5xx} — bounds cardinality),
  * and {@code key_id}; never prompt text, response text, model alias, or request id.
  * The {@code key_id} label is a <b>deliberate, documented divergence</b> from the reference implementation's
@@ -29,7 +29,7 @@ import io.amscotti.janus.core.model.Usage;
  *
  * <p><b>Where recording happens (controllers for HTTP shape, Governance for
  * usage).</b> {@link #recordRequest} is called by every face controller (after
- * dispatch, all three faces and both modes — streaming duration measured to
+ * dispatch, every face and both modes — streaming duration measured to
  * stream close via the publisher's close hook; a stream that ends with a
  * mid-stream error frame / stall records its mapped 5xx, not 200 — see the
  * publisher javadocs); {@link #recordUsage} is called by {@link Governance} at
@@ -55,10 +55,11 @@ interface MetricsRecorder {
      *
      * @param face the ingress face: {@code "openai"}, {@code "anthropic"},
      * {@code "responses"} (the {@code /v1/responses*} stateless face — {@link
-     * Face#RESPONSES}), or {@code "admin"} (master-key rejections on non-model
-     * routes and the {@code /key/*} operations themselves — success and failure
-     * alike, so the admin series is complete). Four values, one per {@link
-     * Face#label}; a dashboard builder reading this seam must chart all four
+     * Face#RESPONSES}), {@code "systemone"} (the {@code /v1/systemone} decision
+     * face — {@link Face#SYSTEMONE}), or {@code "admin"} (master-key rejections on
+     * non-model routes and the {@code /key/*} operations themselves — success and
+     * failure alike, so the admin series is complete). Five values, one per {@link
+     * Face#label}; a dashboard builder reading this seam must chart all five
      * series.
      * @param status the HTTP status the response carries (or would carry on failure)
      * @param durationMillis request latency — non-streaming: dispatch → response;

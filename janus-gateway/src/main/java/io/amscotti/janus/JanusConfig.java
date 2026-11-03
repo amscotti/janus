@@ -26,12 +26,18 @@ import java.util.Map;
  * {@code timeouts} carries the {@code [janus.timeouts]} block — the four upstream
  * deadlines (connect, header-arrival, non-stream body-read, stream-idle) the
  * {@code RouterFactory} resolves into the provider adapters' timeout constructors
- * and the face controllers' SSE watchdog.
+ * and the face controllers' SSE watchdog — and the System One decision plane has its
+ * own pair: {@code decisionModelList} carries the {@code
+ * [[janus.decision-model-list]]} array-of-tables (decision aliases + provider +
+ * upstream-model + vision + wire-format) and {@code decisionProviders} the {@code
+ * [janus.decision-providers.<name>]} blocks, both consumed by the {@code
+ * DecisionRouterFactory} (docs/system-one.md).
  *
  * <p>Nothing constructs this record manually (verified by grep — tests inject it); the
  * binding test ({@code ModelListBindingTest}) pins the shape. {@code modelList},
  * {@code providers}, {@code router}, {@code keys}, {@code pricing},
- * {@code limits} and {@code store} are null when their TOML sections are absent
+ * {@code limits}, {@code store}, {@code decisionModelList} and {@code
+ * decisionProviders} are null when their TOML sections are absent
  * ({@code @Nullable} — Micronaut otherwise fails binding on an absent property) — valid
  * boot states the factories treat as empty / defaults. {@code keys} follows the
  * {@code [janus.router]} precedent: Micronaut 5.1 nested-record binding keeps the bean
@@ -60,7 +66,25 @@ public record JanusConfig(
         @Nullable LimitsConfig limits,
         @Nullable StoreConfig store,
         @Nullable PrivacyConfig privacy,
-        @Nullable TimeoutsConfig timeouts) {
+        @Nullable TimeoutsConfig timeouts,
+        @Nullable List<DecisionModelListEntry> decisionModelList,
+        @Nullable Map<String, DecisionProviderEntry> decisionProviders) {
+
+    /** Pre-decisions arity: no decision models configured (empty decision router). */
+    public JanusConfig(
+            String name,
+            String version,
+            @Nullable List<ModelListEntry> modelList,
+            @Nullable Map<String, ProviderEntry> providers,
+            @Nullable RouterConfig router,
+            @Nullable KeysConfig keys,
+            @Nullable PricingConfig pricing,
+            @Nullable LimitsConfig limits,
+            @Nullable StoreConfig store,
+            @Nullable PrivacyConfig privacy,
+            @Nullable TimeoutsConfig timeouts) {
+        this(name, version, modelList, providers, router, keys, pricing, limits, store, privacy, timeouts, null, null);
+    }
 
     /** Pre-timeouts arity (the pre-privacy test fixtures): deadlines = defaults. */
     public JanusConfig(
@@ -129,6 +153,11 @@ public record JanusConfig(
     public static final String WIRE_FORMAT_OPENAI_COMPATIBLE = "openai-compatible";
 
     public static final String WIRE_FORMAT_ANTHROPIC = "anthropic";
+
+    /** Decision-provider wire-format values; see {@link DecisionProviderEntry}. */
+    public static final String WIRE_FORMAT_SYSTEMONE = "systemone";
+
+    public static final String WIRE_FORMAT_OPENAI_DECISIONS = "openai-decisions";
 
     /**
      * One {@code [[janus.model_list]]} entry: the model
@@ -827,6 +856,100 @@ public record JanusConfig(
                 throw new IllegalArgumentException("[janus.timeouts] stream-idle-timeout-seconds must be positive (got "
                         + streamIdleTimeoutSeconds + ")");
             }
+        }
+    }
+
+    /**
+     * One {@code [[janus.decision-model-list]]} entry: the decision-model alias
+     * callers send on the System One face (the decision router key) + the
+     * decision provider entry that serves it. The decision analogue of
+     * {@link ModelListEntry} — same kebab-case element keys, same
+     * entry &gt; provider-block &gt; {@code [janus.timeouts]} merge for
+     * {@code base-url}/{@code api-key-env} and the three adapter timeouts
+     * (decisions never stream, so there is no stream-idle key).
+     *
+     * <p><b>{@code upstreamModel} is the one deliberate deviation from chat</b>
+     * (where the client alias is sent upstream verbatim): the same decision
+     * model has different upstream ids per host (Clef is {@code clef} on
+     * Ollama Cloud, {@code clef:cloud} through a local Ollama, in-path on
+     * Cloudflare), so an entry may name the id the adapter sends; omitted ⇒
+     * the alias is sent verbatim. {@code vision} declares whether the backend
+     * accepts {@code images[]} (null/false ⇒ image requests are rejected with
+     * a typed 400 before dispatch — fail-closed, since text-only models
+     * cannot judge images).
+     *
+     * @param name decision-model alias callers use (decision router key); non-blank
+     * @param provider decision provider name; non-blank
+     * @param apiKeyEnv env var name holding the credential; null when none
+     * @param baseUrl provider base URL; null → the decision-provider block's default
+     * @param upstreamModel model id sent upstream; null → the alias verbatim
+     * @param vision whether this backend accepts image inputs; null → no
+     * @param connectTimeoutSeconds entry-level connect override; null → block, then global
+     * @param headerTimeoutSeconds entry-level header-arrival override; null → block, then global
+     * @param bodyReadTimeoutSeconds entry-level body-read override; null → block, then global
+     */
+    public record DecisionModelListEntry(
+            String name,
+            String provider,
+            @Nullable String apiKeyEnv,
+            @Nullable String baseUrl,
+            @Nullable String upstreamModel,
+            @Nullable Boolean vision,
+            @Nullable Integer connectTimeoutSeconds,
+            @Nullable Integer headerTimeoutSeconds,
+            @Nullable Integer bodyReadTimeoutSeconds) {
+
+        /** Short form: alias + provider only (upstream id = alias, text-only, default timeouts). */
+        public DecisionModelListEntry(String name, String provider) {
+            this(name, provider, null, null, null, null, null, null, null);
+        }
+
+        public DecisionModelListEntry {
+            // Deliberately no validation here: Micronaut drops a map element whose
+            // constructor throws, which would silently discard the entry (and its
+            // base-url/credential) instead of failing boot. DecisionModelListFactory
+            // validates every entry at startup with a message naming the offending key.
+        }
+
+        /** Whether image inputs may be dispatched to this entry's backend (null ⇒ no). */
+        public boolean visionEnabled() {
+            return Boolean.TRUE.equals(vision);
+        }
+
+        /** The model id the adapter sends upstream (the alias when no remap is configured). */
+        public String resolvedUpstreamModel() {
+            return upstreamModel == null ? name : upstreamModel;
+        }
+    }
+
+    /**
+     * One {@code [janus.decision-providers.<name>]} block — the decision
+     * analogue of {@link ProviderEntry}, in its own table so a name can serve
+     * chat and decisions through different providers without collision.
+     * {@code wireFormat} is {@link #WIRE_FORMAT_SYSTEMONE} or
+     * {@link #WIRE_FORMAT_OPENAI_DECISIONS} (validated by
+     * {@code DecisionModelListFactory} at boot — not in this constructor,
+     * because Micronaut drops a map element whose constructor throws);
+     * {@code baseUrl}/{@code apiKeyEnv} and the three adapter
+     * timeouts are per-provider defaults merged under matching
+     * decision-model-list entries.
+     */
+    public record DecisionProviderEntry(
+            @Nullable String wireFormat,
+            @Nullable String baseUrl,
+            @Nullable String apiKeyEnv,
+            @Nullable Integer connectTimeoutSeconds,
+            @Nullable Integer headerTimeoutSeconds,
+            @Nullable Integer bodyReadTimeoutSeconds) {
+
+        /** Short form: wire format + defaults, no timeout overrides. */
+        public DecisionProviderEntry(String wireFormat, String baseUrl, String apiKeyEnv) {
+            this(wireFormat, baseUrl, apiKeyEnv, null, null, null);
+        }
+
+        public DecisionProviderEntry {
+            // See DecisionModelListEntry: no throws in a bound map-value constructor.
+            // DecisionModelListFactory validates the wire format and timeouts at boot.
         }
     }
 }

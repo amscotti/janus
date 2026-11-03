@@ -13,7 +13,7 @@ live in [`config.toml`](../config.toml) and the topic guides under `docs/`.
 ```text
   Client (OpenAI SDK / Anthropic SDK / curl)
        │
-       │  POST /v1/chat/completions  or  POST /v1/messages  or  POST /v1/responses
+       │  POST /v1/chat/completions  or  POST /v1/messages  or  POST /v1/responses  or  POST /v1/systemone
        │  GET  /v1/models
        ▼
   ┌─────────────────────────────────────────────────────────┐
@@ -60,6 +60,7 @@ The diagram is the *logical* pipeline, not the call graph: the gateway controlle
 invoke the core codecs and the router, and the `ProviderAdapter` → `ChatBackend`
 adaptation (`ProviderAdapterChatBackend`, which lives in **janus-gateway**) is the
 gateway's job — the router never imports provider types, it sees only `ChatBackend`
+(chat) or `DecisionBackend` (decisions)
 (Module boundaries below).
 
 **Side rails (not on the happy path, always in process):**
@@ -97,8 +98,12 @@ Enforced two ways:
 | `janus-gateway` | `core` + `provider` + `router` + `store` + Micronaut/Micrometer |
 | `janus-cli` | `gateway` |
 
-Router never imports provider types: it sees only `ChatBackend`. The gateway adapts
-`ProviderAdapter` → `ChatBackend`.
+Router never imports provider types: it sees only `ChatBackend`/`DecisionBackend`.
+The gateway adapts `ProviderAdapter` → `ChatBackend` and `DecisionAdapter` →
+`DecisionBackend`. The decision plane mirrors the seam:
+`DecisionAdapter` (provider) → `DecisionBackend` (router) → `DecisionRouter`,
+with the canonical `DecisionRequest`/`DecisionResponse` in `janus-core`
+([`system-one.md`](./system-one.md)).
 
 ## Faces and codecs
 
@@ -108,6 +113,7 @@ Router never imports provider types: it sees only `ChatBackend`. The gateway ada
 | OpenAI | `POST /v1/responses` | `OpenAiResponsesCodec` | Stateless; streaming + non-streaming; `store:true` / retrieval → named 400s ([`responses.md`](./responses.md)) |
 | OpenAI | `GET /v1/models` | — | Config aliases, config order |
 | Anthropic | `POST /v1/messages` | `AnthropicMessageCodec` | Native content blocks, SSE event types, image blocks |
+| System One | `POST /v1/systemone` | `SystemOneCodec` (in) / `SystemOneCodec`, `OpenAiDecisionsCodec` (out) | Decision models only; one dialect in, two out, non-streaming ([`system-one.md`](./system-one.md)) |
 
 Cross-format: client face and upstream provider may differ (e.g. OpenAI SDK → Claude).
 Translation is always face → canonical → upstream codec.
@@ -165,7 +171,10 @@ Explicit `[janus.keys] auth = "off"` is the development/benchmark opt-out.
 > The four deadlines resolve per key with precedence **model-list entry >
 > `[janus.providers.<name>]` block > `[janus.timeouts]`** (seconds; a null
 > component at any level falls through — the `base-url`/`api-key-env` merge
-> pattern). An absent section or key ⇒ the default shown — `TimeoutContractTest`
+> pattern). Decision entries use the parallel **`[[janus.decision-model-list]]` >
+> `[janus.decision-providers.<name>]` > `[janus.timeouts]`** chain for the three
+> non-streaming deadlines (there is no stream-idle for decisions; that key is
+> ignored). An absent section or key ⇒ the default shown — `TimeoutContractTest`
 > pins the constants and ties them to the config defaults, so a default boot is
 > byte-identical and the config override path is the only way to deviate. The
 > adapter trio (connect / header / body-read) resolves statically per backend at
@@ -205,6 +214,7 @@ Artifacts: native binary, Docker/Compose, k8s, systemd — `docs/ops.md`.
 | [`benchmarks.md`](./benchmarks.md) | Load + JMH |
 | [`compatibility.md`](./compatibility.md) | HTTP surface and scope |
 | [`responses.md`](./responses.md) | Stateless Responses face |
+| [`system-one.md`](./system-one.md) | System One decision face, dialects, danger-zone images |
 | [`providers.md`](./providers.md) | Provider/model cookbook (knobs, quirks) |
 | [`production-checklist.md`](./production-checklist.md) | Day-1 production checklist |
 | [`../config.production.example.toml`](../config.production.example.toml) | Production-oriented sample config |

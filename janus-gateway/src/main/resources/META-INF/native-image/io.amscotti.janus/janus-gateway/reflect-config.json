@@ -6,6 +6,18 @@
     "allRecordComponents": true
   },
   {
+    "name": "io.amscotti.janus.JanusConfig$DecisionModelListEntry",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.JanusConfig$DecisionProviderEntry",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
     "name": "io.amscotti.janus.JanusConfig$KeysConfig",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,

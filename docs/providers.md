@@ -219,6 +219,51 @@ with the base URLs from the table above; the alias is sent upstream unchanged.
  tools array. A `json_schema` without a schema object is a typed 400 —
  never a silent drop to unconstrained output.
 
+## Decision-model providers (System One)
+
+Decision models use their own tables and SPI (`DecisionAdapter`) — see
+[`system-one.md`](./system-one.md) for the full contract and the
+`config.toml` reference for a commented example. The cookbook in one line
+each:
+
+- **TypeSafe (Jev)** — `wire-format = "systemone"`, `base-url =
+  "https://api.typesafe.ai"`, Bearer `TYPESAFE_API_KEY`; `jev-latest`
+  (alias) and `jev-1.14.0` (versioned id) send verbatim; `jev-1.14` is the
+  OpenRouter slug. Images/Box use `assets` + `TypeSafe-Danger-Zone-Images:
+  true` (Janus forwards the header and derives it from an assets/Box body);
+  long context forwards `TypeSafe-Danger-Zone-Long-Context: true`. TypeSafe
+  SDK zstd request bodies and multipart image uploads are accepted (multipart
+  file parts are inlined as base64 assets).
+- **Ollama local** — `base-url = "http://127.0.0.1:11434"`, no key; models
+  with the `decision` capability (`d3`, `clef`, `nimble-v3`, `tev1:*`).
+  `d3` and `clef` are image-capable — `vision = true` and the raw
+  `images[]` base64 array. Ollama Cloud is the same entry at
+  `https://ollama.com` with a key (hosted ids drop the `:cloud` suffix — use
+  `upstream-model`).
+- **Cloudflare Clef** — `base-url =
+  "https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/clef"`
+  (dispatched verbatim; the id rides the path), Bearer API token,
+  `vision = true`. Workers AI wraps the output in
+  `{result, success, errors, messages}`; Janus unwraps `result` and treats
+  `success:false` as a 502.
+- **OpenAI** — `wire-format = "openai-decisions"` (or the registered
+  provider name), Bearer `OPENAI_API_KEY`, base defaults to
+  `https://api.openai.com`; `gpt-6-luna` only, `vision = true`. Shared
+  `images[]` become `input_image` data URLs; TypeSafe `assets`/Box are
+  TypeSafe-only and fail over to another candidate. OpenAI's
+  question-level image instructions are not translated from TypeSafe asset
+  references.
+- **OpenRouter** — `base-url = "https://openrouter.ai/api"`, `wire-format =
+  "systemone"`; `upstream-model = "typesafe/jev-1.14"` when aliasing Jev. The
+  same Jev facade routes the rest of OpenRouter's decision catalog
+  (`cloudflare/clef*`, `liquid/d1.1`, `perplexity/pplx-decider-*`,
+  `microsoft/microsoft-decision-1`, `togethercomputer/tev1-4b-experimental`,
+  `openai/gpt-6-luna-decisions`, …) by `upstream-model`. TypeSafe models via
+  OpenRouter use `assets`; Clef/Luna-style models use a `state` array
+  `image_url` part (OpenRouter rejects top-level `images[]`/`assets` there).
+  Top-level extras ride through; nested `usage.cost` does **not** (Janus
+  prices by its own `[[janus.pricing.models]]` row).
+
 ## Multimodal / vision
 
 - User messages may carry **string** content or an **array of parts**

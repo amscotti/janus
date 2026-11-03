@@ -1,5 +1,6 @@
 package io.amscotti.janus.gateway;
 
+import io.amscotti.janus.core.codec.DecisionCodecException;
 import io.amscotti.janus.core.codec.OpenAiCodecException;
 import io.amscotti.janus.gateway.dto.OpenAiErrorEnvelope;
 import io.amscotti.janus.provider.ProviderException;
@@ -17,6 +18,8 @@ import java.util.regex.Pattern;
  * Source | HTTP | error.type | code
  * OpenAiCodecException TYPE_INVALID_REQUEST | 400 | invalid_request_error | null
  * OpenAiCodecException TYPE_API_ERROR | 500 | api_error | null
+ * DecisionCodecException TYPE_INVALID_REQUEST | 400 | invalid_request_error | null
+ * DecisionCodecException TYPE_API_ERROR | 500 | api_error | null
  * UnknownModelException | 404 | invalid_request_error | model_not_found
  * ContentLengthExceeded/BufferLengthExceeded | 413 | invalid_request_error | —
  * HttpStatusException (framework, e.g. 415) | its status | invalid_request_error | —
@@ -27,6 +30,7 @@ import java.util.regex.Pattern;
  * ProviderException TYPE_NETWORK | 502 | api_error | null
  * ProviderException TYPE_TIMEOUT | 504 | api_error | null
  * ProviderException TYPE_BAD_UPSTREAM_PAYLOAD | 502 | api_error | null
+ * ProviderException TYPE_UNSUPPORTED_REQUEST | 400 | invalid_request_error | null
  * KeyAuthException MISSING|INVALID|EXPIRED|BAD_MASTER | 401 | authentication_error | invalid_api_key
  * KeyAuthException REVOKED|SCOPE_DENIED | 403 | permission_error | forbidden
  * RateLimitExceededException RATE_LIMIT_EXCEEDED | 429 | rate_limit_error | rate_limit_exceeded
@@ -112,6 +116,15 @@ class ErrorMapper {
     ErrorMapper() {}
 
     ErrorMapping map(Throwable throwable) {
+        if (throwable instanceof DecisionCodecException codec) {
+            return switch (codec.type()) {
+                case DecisionCodecException.TYPE_INVALID_REQUEST ->
+                    mapping(HttpStatus.BAD_REQUEST, TYPE_INVALID_REQUEST, redactSecrets(codec.getMessage()), null);
+                case DecisionCodecException.TYPE_API_ERROR ->
+                    mapping(HttpStatus.INTERNAL_SERVER_ERROR, TYPE_API_ERROR, redactSecrets(codec.getMessage()), null);
+                default -> unexpected(throwable);
+            };
+        }
         if (throwable instanceof OpenAiCodecException codec) {
             return switch (codec.type()) {
                 case OpenAiCodecException.TYPE_INVALID_REQUEST ->
@@ -167,6 +180,8 @@ class ErrorMapper {
                     mapping(HttpStatus.GATEWAY_TIMEOUT, TYPE_API_ERROR, redactSecrets(provider.getMessage()), null);
                 case ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD ->
                     mapping(HttpStatus.BAD_GATEWAY, TYPE_API_ERROR, redactSecrets(provider.getMessage()), null);
+                case ProviderException.TYPE_UNSUPPORTED_REQUEST ->
+                    mapping(HttpStatus.BAD_REQUEST, TYPE_INVALID_REQUEST, redactSecrets(provider.getMessage()), null);
                 default -> unexpected(throwable);
             };
         }

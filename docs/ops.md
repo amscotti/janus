@@ -14,7 +14,7 @@
 
 Janus is a **single self-contained native executable**: one listener (8080) serves
 both the data plane (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`,
-`/v1/models`) and the admin plane (`/key/generate|delete|list`, `/health*`,
+`/v1/systemone`, `/v1/models`) and the admin plane (`/key/generate|delete|list`, `/health*`,
 `/metrics`) — there is **no** data/admin port split and no clustering port.
 Multi-node is shared Postgres (see `docs/clustering.md`).
 
@@ -33,8 +33,10 @@ Multi-node is shared Postgres (see `docs/clustering.md`).
 
 ### Blocking-pool occupation by retry backoff
 
-`POST /v1/chat/completions` and `POST /v1/messages` run on Micronaut's bounded blocking
-pool, and the router's retry loop sleeps its backoff on that same thread. With the default
+`POST /v1/chat/completions`, `POST /v1/messages`, and `POST /v1/systemone` run on
+Micronaut's bounded blocking pool, and the router's retry loop sleeps its backoff on that same thread.
+Decision retries use the shared `[janus.router]` backoff and can hold a thread for the
+per-entry header timeout (raise it for cold Ollama loads); size the pool for that. With the default
 `backoff-max-ms = 2000` and `max-retries = 2`, a slow provider can pin a blocking-pool
 thread for the full backoff window per request; a burst of such requests can exhaust the
 pool and head-of-line-block unrelated chat traffic (the admin `/key/*` endpoints are not
@@ -194,9 +196,32 @@ boot. Intranet `http://` hosts are operator-owned by design
  provider that genuinely needs longer than 300 s for a completion, or a flaky provider
  whose 429/401 error bodies stall, is a provider-side issue (the head-derived status
  and `Retry-After` still surface correctly on a stalled error body).
-- **Upstream errors but Janus is healthy** — look at
- `janus_upstream_healthy`/`janus_upstream_breaker_state` : the provider is
- unhealthy or the breaker is OPEN; check the provider's own status/keys.
+- **Decision alias 404 `model_not_found`** — the alias is not in
+ `[[janus.decision-model-list]]` (decision aliases are deliberately absent from
+ `GET /v1/models`), or a scope-denied key is hiding existence (403).
+- **Decision 400 `invalid_request_error`** — malformed state/questions, an
+ unsupported `stream`/scalar state, TypeSafe-only `assets`/Box sent to an OpenAI
+ alias after failover, a per-backend cap (400 questions / 2–10 levels), or
+ `images[]`/`assets`/Box on a backend without `vision = true`.
+- **Decision 401 from a hosted backend** — the provider credential is
+ missing/invalid: the decision entry's `api-key-env` did not resolve (a warning
+ names the entry on the first decision request), or the provider revoked it.
+ This is not the client's virtual key; check the gateway log/provider key.
+- **Decision 502/504** — upstream failure/timeout. Cloudflare's envelope is
+ unwrapped automatically; a malformed upstream answer is 502, not 500. Cold
+ Ollama loads: raise `header-timeout-seconds` on the entry/block.
+- **Decision 415 `Unsupported Media Type`** — the request used a
+ `Content-Encoding` other than identity, gzip, or zstd, or a content type other
+ than `application/json` / `multipart/form-data`. zstd and multipart are
+ accepted; a malformed multipart body (missing `request` part, missing file
+ part, orphan part, non-PNG/JPEG image) is a 400.
+- **`require-priced` refuses boot** — every chat and decision alias needs a
+ `[[janus.pricing.models]]` row; the error names the alias.
+- **Upstream errors but Janus is healthy** — for chat, look at
+ `janus_upstream_healthy`/`janus_upstream_breaker_state` (the provider is
+ unhealthy or the breaker is OPEN). Decision providers are **not** in those
+ gauges: use the `face="systemone"` 5xx series and the `calls` ledger's
+ `provider` column, and remove a permanently failing pooled entry from config.
 
 ## 7. Monitoring
 
@@ -205,7 +230,7 @@ text, no model alias, no request ids — `docs/governance.md` §privacy). Series
 
 | Series | Type | Labels |
 |---|---|---|
-| `janus_requests_total` | Counter | `face` (openai\|anthropic\|responses\|admin — the last for the `/key/*` operations and master-key rejections on those routes) × `status` (2xx\|4xx\|5xx; a stream ending with a mid-stream error frame/stall counts 5xx, never 2xx) |
+| `janus_requests_total` | Counter | `face` (openai\|anthropic\|responses\|systemone\|admin — the last for the `/key/*` operations and master-key rejections on those routes) × `status` (2xx\|4xx\|5xx; a stream ending with a mid-stream error frame/stall counts 5xx, never 2xx) |
 | `janus_request_duration_seconds` | Timer | `face` — `_bucket` histogram + count/sum/max |
 | `janus_ledger_write_seconds` | Timer | (unlabeled) — call-ledger store-write duration, `_bucket` histogram + count/sum; once per write attempt (success and contained failure alike) |
 | `janus_tokens_in_total` / `janus_tokens_out_total` | Counter | (unlabeled) |
@@ -301,6 +326,8 @@ ingress and Janus → Postgres 5432).
 kubectl create secret generic janus-secrets \
  --from-literal=JANUS_MASTER_KEY='<long-random-secret>' \
  --from-literal=DEEPSEEK_API_KEY='sk-...' \
+ --from-literal=TYPESAFE_API_KEY='...' \
+ --from-literal=CLOUDFLARE_API_TOKEN='...' \
  --from-literal=JANUS_DB_URL='jdbc:postgresql://janus-postgres:5432/janus' \
  --from-literal=JANUS_DB_USER='janus' \
  --from-literal=JANUS_DB_PASS='<db-password>'
@@ -400,6 +427,8 @@ cannot ship assets that report the old version.
 
 ```bash
 # 1) bump gradle.properties, config.toml, and application.toml to the same version
+# 1b) bump the image tag in deploy/k8s/deployment.yaml (the committed example
+#     is a pinned sample; applying it must not deploy the previous feature set)
 # 2) update CHANGELOG.md and commit, then tag with the same number:
 git tag -a v0.2.0 -m "Janus 0.2.0"
 git push origin v0.2.0

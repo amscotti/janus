@@ -299,8 +299,14 @@ abstract class ModelFaceControllerSupport {
                     httpRequest, request, response, preflight, elapsedMillis(startNanos), dispatchedProvider.get());
             // Record AFTER encodeResponse/finalize — an encode failure threw
             // above and the catch below records the error bucket once (no double
-            // 2xx+error).
-            metricsRecorder.recordRequest(face(), HttpStatus.OK.getCode(), elapsedMillis(startNanos), keyId);
+            // 2xx+error). Best-effort like recordError: a throwing recorder must not
+            // turn a fully accounted 200 into a 500 + a second ERROR ledger row
+            // (OK+ERROR for one request breaks the exactly-once pin).
+            try {
+                metricsRecorder.recordRequest(face(), HttpStatus.OK.getCode(), elapsedMillis(startNanos), keyId);
+            } catch (RuntimeException e) {
+                LOG.warn("metrics recording dropped (recorder failure): {}", e.toString());
+            }
             MutableHttpResponse<String> http = HttpResponse.ok(body).contentType(MediaType.APPLICATION_JSON);
             return withBudgetHeaders(http, finalized);
         } catch (RuntimeException | Error e) {

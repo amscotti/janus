@@ -52,10 +52,12 @@ class GovernanceFactory {
     PriceTable priceTable(JanusConfig config) {
         JanusConfig.PricingConfig pricing = config.pricing();
         boolean requirePriced = pricing != null && Boolean.TRUE.equals(pricing.requirePriced());
+        boolean anyChatModels =
+                config.modelList() != null && !config.modelList().isEmpty();
+        boolean anyDecisionModels = config.decisionModelList() != null
+                && !config.decisionModelList().isEmpty();
         if (pricing == null || pricing.models() == null || pricing.models().isEmpty()) {
-            if (requirePriced
-                    && config.modelList() != null
-                    && !config.modelList().isEmpty()) {
+            if (requirePriced && (anyChatModels || anyDecisionModels)) {
                 throw new IllegalArgumentException(
                         "[janus.pricing] require-priced = true but no [[janus.pricing.models]] rows are configured");
             }
@@ -97,6 +99,18 @@ class GovernanceFactory {
             for (JanusConfig.ModelListEntry entry : config.modelList()) {
                 if (!table.contains(entry.name())) {
                     throw new IllegalArgumentException("[janus.pricing] require-priced = true but alias \""
+                            + entry.name()
+                            + "\" has no [[janus.pricing.models]] row");
+                }
+            }
+        }
+        // Decision aliases meter through the same price table — require-priced must
+        // cover them too, or a decision-only config would boot into silent zero-rate
+        // metering (the exact state the flag exists to prevent).
+        if (requirePriced && config.decisionModelList() != null) {
+            for (JanusConfig.DecisionModelListEntry entry : config.decisionModelList()) {
+                if (!table.contains(entry.name())) {
+                    throw new IllegalArgumentException("[janus.pricing] require-priced = true but decision alias \""
                             + entry.name()
                             + "\" has no [[janus.pricing.models]] row");
                 }

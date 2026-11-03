@@ -1,5 +1,6 @@
 package io.amscotti.janus.core.codec;
 
+import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -22,6 +23,7 @@ final class JsonSupport {
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .enable(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                 .build();
     }
 

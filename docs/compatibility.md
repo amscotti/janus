@@ -13,6 +13,7 @@ port — there is no split.
 | Data | `GET /v1/models` | Configured aliases, config order; `owned_by` is the backend name |
 | Data | `GET /v1/models/{id}` | One alias; unknown id → 404 `model_not_found` |
 | Data | `POST /v1/responses` | Stateless JSON + SSE; see [`responses.md`](./responses.md) |
+| Data | `POST /v1/systemone` | System One decisions (Jev-shaped, non-streaming); see [`system-one.md`](./system-one.md) |
 | Data | `GET`/`DELETE /v1/responses/{id}` | Envelope 404 stubs (no stored retrieval) |
 | Admin | `POST /key/generate` | Master-key-authed; full `sk-janus-…` shown once |
 | Admin | `POST /key/delete` | Master-key-authed; by `key_id` or full key; idempotent |
@@ -31,11 +32,12 @@ parallelism caps.
 | OpenAI-format ingress | `ChatCompletionsController` + `OpenAiMessageCodec` |
 | Anthropic-format ingress | `MessagesController` + `AnthropicMessageCodec` |
 | Responses-format ingress | `ResponsesController` + `OpenAiResponsesCodec` |
+| System One decisions ingress | `SystemOneController` + `SystemOneCodec`; `noul`/`choice`/`score`/`box` (TypeSafe beta); zstd and multipart request bodies |
 | Cross-format translation | Canonical model in `janus-core` (system, tools, deltas, stop, usage) |
 | Streaming (SSE) | Face publishers; `stream_options.include_usage` is passed through (the Responses face forces it so `response.completed` always carries usage) |
 | Tool calls | Both directions; golden fixtures under `fixtures/matrix/` |
 | `developer` role | OpenAI wire keeps `"developer"`; Anthropic merges it into `system` |
-| Vision / image input | User-message `ContentPart`s (data URL and https) |
+| Vision / image input | Chat: user-message `ContentPart`s (data URL and https). Decisions: `images[]` (Ollama/Clef), TypeSafe `assets` + `TypeSafe-Danger-Zone-Images` (Box included), or OpenAI `input_image`; any of them requires `vision = true` |
 | Prompt cache | OpenAI GPT-5.6+ `prompt_cache_breakpoint` object + `prompt_cache_key`/`prompt_cache_options`; Qwen OpenAI-compatible `cache_control` on content parts; Anthropic `cache_control` on content blocks (optional `ttl: "1h"`); translated both ways. Chat Completions usage re-emits `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens` |
 | Structured outputs | `response_format` ⇄ Anthropic `output_config.format` (`json_schema`; wrapper `name`/`strict` and `json_object`/`text` drop on the Anthropic leg; the reverse leg synthesizes name `response` + `strict:true` because Anthropic carries only the schema); tool-level `strict` round-trips |
 | Reasoning | Request maps (effort `low`–`max`) + signed thinking round-trip (`AssistantMessage.reasoningContents`) + `thinking_delta`/`signature_delta`/`reasoning_content` stream fragments + optional `Usage.reasoningTokens` |
@@ -47,8 +49,8 @@ parallelism caps.
 | Spend headers | `X-Janus-Cost-*-Micro-Usd` on non-stream success (input/output/cache/search/total) |
 | Pricing | `[[janus.pricing.models]]` USD-per-1K → integer micro-USD |
 | Load balancing | round-robin, least-inflight, latency-based, cost-based, weighted, session-affinity |
-| Retries + fallback | Backoff + jitter; candidate list in config order |
-| Health + circuit breaker | Passive health; closed → open → half-open; streaming-safe |
+| Retries + fallback | Backoff + jitter; candidate list in config order (chat and decisions) |
+| Health + circuit breaker | Passive health; closed → open → half-open; streaming-safe. **Chat only** — the decision plane round-robins with retry/failover and no health/breaker |
 | Multi-node state | Shared Postgres (no gossip) |
 | Prometheus | Tier-1 labels only (`face`, coarse `status`, `key_id`, `provider`) |
 
@@ -58,7 +60,7 @@ parallelism caps.
   `Authorization: Bearer` or `x-api-key`. A virtual key, a wrong master key, or
   a missing credential → `401 authentication_error`.
 - **Virtual keys** (`sk-janus-…`) authenticate `/v1/chat/completions`,
-  `/v1/messages`, and `/v1/responses`. Missing / invalid / expired → `401`.
+  `/v1/messages`, `/v1/responses`, and `/v1/systemone`. Missing / invalid / expired → `401`.
   Revoked or scope-denied → `403 permission_error`.
 - **Default is auth on.** A boot with no resolvable master key fails fast.
   `[janus.keys] auth = "off"` is the explicit development/benchmark opt-out
@@ -98,3 +100,4 @@ parallelism caps.
 - Routing: [`routing.md`](./routing.md)
 - Store / multi-node: [`clustering.md`](./clustering.md)
 - Responses face: [`responses.md`](./responses.md)
+- Decision models: [`system-one.md`](./system-one.md)

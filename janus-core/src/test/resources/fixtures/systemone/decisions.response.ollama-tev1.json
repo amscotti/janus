@@ -1,0 +1,39 @@
+{
+    "model": "tev1:0.8b",
+    "answers": {
+        "is_billing": {
+            "type": "noul",
+            "noul": 0.6244281825527047
+        },
+        "team": {
+            "type": "choice",
+            "choice": "technical",
+            "probabilities": {
+                "billing": 0.18687951618347576,
+                "technical": 0.8108221401113002,
+                "account": 0.002298343705224077
+            },
+            "confidence": 0.5472016582626573
+        },
+        "urgency": {
+            "type": "score",
+            "score": 0.7792740039308146,
+            "legend": {
+                "0": "Can wait",
+                "1": "This week",
+                "2": "Today"
+            },
+            "probabilities": {
+                "0": 0.50535425846076,
+                "1": 0.2100174791476654,
+                "2": 0.2846282623915746
+            },
+            "confidence": 0.06217726222381981
+        }
+    },
+    "usage": {
+        "input_tokens": 414,
+        "output_tokens": 0
+    },
+    "prompt_eval_cached_count": 138
+}

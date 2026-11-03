@@ -215,6 +215,16 @@
     "allRecordComponents": true
   },
   {
+    "name": "io.amscotti.janus.core.codec.DecisionCodecException",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.DecisionJson",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "io.amscotti.janus.core.codec.OpenAiChatRequest",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
@@ -254,6 +264,11 @@
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.OpenAiDecisionsCodec",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
   },
   {
     "name": "io.amscotti.janus.core.codec.OpenAiDelta",
@@ -450,6 +465,11 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "io.amscotti.janus.core.codec.SystemOneCodec",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
     "name": "io.amscotti.janus.core.codec.ToolChoiceMapper",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true
@@ -496,6 +516,82 @@
   },
   {
     "name": "io.amscotti.janus.core.model.ContentPart",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionAnswer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionAnswer$BoxAnswer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionAnswer$ChoiceAnswer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionAnswer$NoulAnswer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionAnswer$RefusalAnswer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionAnswer$ScoreAnswer",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionQuestion",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionQuestion$BoxQuestion",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionQuestion$ChoiceQuestion",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionQuestion$NoulQuestion",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionQuestion$ScoreQuestion",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionRequest",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
+    "name": "io.amscotti.janus.core.model.DecisionResponse",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,
     "allRecordComponents": true

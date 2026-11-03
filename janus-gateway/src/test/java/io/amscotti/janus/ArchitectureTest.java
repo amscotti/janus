@@ -242,6 +242,24 @@ class ArchitectureTest {
             .because("ChatBackend is the router SPI; the gateway adapts ProviderAdapter");
 
     @ArchTest
+    static final ArchRule decisionBackendsAreRouterOrGateway = classes()
+            .that()
+            .implement(io.amscotti.janus.router.DecisionBackend.class)
+            .should()
+            .resideInAnyPackage(ROUTER, GATEWAY)
+            .because("DecisionBackend is the decision router SPI (the ChatBackend twin); a misplaced"
+                    + " implementation should fail with the seam named, not a generic layer message");
+
+    @ArchTest
+    static final ArchRule decisionAdaptersLiveInProvider = classes()
+            .that()
+            .implement(io.amscotti.janus.provider.DecisionAdapter.class)
+            .should()
+            .resideInAPackage(PROVIDER)
+            .because("DecisionAdapter is the provider SPI; the name-suffix rule alone would silently"
+                    + " admit a future adapter named without the suffix");
+
+    @ArchTest
     static final ArchRule codecsLiveInCore = classes()
             .that()
             .haveSimpleNameEndingWith("Codec")
@@ -325,6 +343,44 @@ class ArchitectureTest {
             .should()
             .resideInAPackage(GATEWAY)
             .because("TOML → object construction is the gateway composition root");
+
+    @ArchTest
+    static final ArchRule bootProbesLiveInGateway = classes()
+            .that()
+            .haveSimpleNameEndingWith("BootProbe")
+            .and()
+            .areTopLevelClasses()
+            .should()
+            .resideInAPackage(GATEWAY)
+            .because("startup validation probes are gateway composition concerns");
+
+    @ArchTest
+    static final ArchRule multipartParsersLiveInGateway = classes()
+            .that()
+            .haveSimpleNameEndingWith("MultipartParser")
+            .and()
+            .areTopLevelClasses()
+            .should()
+            .resideInAPackage(GATEWAY)
+            .because("raw multipart parsing is an HTTP ingress concern (gateway only)");
+
+    @ArchTest
+    static final ArchRule zstdStaysInGateway = noClasses()
+            .that()
+            .resideInAnyPackage(CORE, PROVIDER, ROUTER, STORE)
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage("io.airlift..")
+            .because("zstd request decompression is an HTTP ingress concern (gateway only)");
+
+    @ArchTest
+    static final ArchRule reactorStaysInGateway = noClasses()
+            .that()
+            .resideInAnyPackage(CORE, PROVIDER, ROUTER, STORE)
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage("reactor..")
+            .because("reactive HTTP plumbing is the gateway shell only");
 
     @ArchTest
     static final ArchRule filtersLiveInGateway = classes()

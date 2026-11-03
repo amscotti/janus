@@ -112,6 +112,9 @@ dependencies {
  implementation 'io.micronaut.toml:micronaut-toml'
  // JSON (Micronaut 5 / Jackson 3); also satisfies legacy com.fasterxml annotations on HTTP types
  implementation 'io.micronaut:micronaut-jackson-databind'
+ // Pure-Java zstd decompression for TypeSafe SDK request bodies. No JNI, no
+ // native-image reflect config (the compressor's Unsafe access is JDK-internal).
+ implementation 'io.airlift:aircompressor:2.0.3'
 
  runtimeOnly 'ch.qos.logback:logback-classic'
 

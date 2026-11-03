@@ -68,6 +68,56 @@ class GovernanceFactoryTest {
     }
 
     @Test
+    void requirePricedFailsBootWhenADecisionAliasHasNoRow() {
+        // require-priced must cover the decision plane too — a decision-only config
+        // with no pricing rows must not boot into silent zero-rate metering.
+        JanusConfig.PricingConfig requirePriced = new JanusConfig.PricingConfig(null, true);
+        JanusConfig decisionOnly = new JanusConfig(
+                "janus",
+                "0.1.0-SNAPSHOT",
+                null,
+                null,
+                null,
+                null,
+                requirePriced,
+                null,
+                null,
+                null,
+                null,
+                List.of(new JanusConfig.DecisionModelListEntry("jev-latest", "typesafe")),
+                null);
+        IllegalArgumentException noRows = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> factory.priceTable(decisionOnly));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                noRows.getMessage().contains("require-priced"), noRows.getMessage());
+
+        JanusConfig.PricingConfig priced = new JanusConfig.PricingConfig(
+                List.of(new JanusConfig.PricingConfig.PricingModel("priced", 0.14, 0.28, null, null, 4096)), true);
+        JanusConfig withMissingDecisionAlias = new JanusConfig(
+                "janus",
+                "0.1.0-SNAPSHOT",
+                null,
+                null,
+                null,
+                null,
+                priced,
+                null,
+                null,
+                null,
+                null,
+                List.of(
+                        new JanusConfig.DecisionModelListEntry("priced", "typesafe"),
+                        new JanusConfig.DecisionModelListEntry("unpriced-decision", "typesafe")),
+                null);
+        IllegalArgumentException missingAlias = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> factory.priceTable(withMissingDecisionAlias));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                missingAlias.getMessage().contains("unpriced-decision"), missingAlias.getMessage());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                missingAlias.getMessage().contains("decision alias"), missingAlias.getMessage());
+    }
+
+    @Test
     void duplicatePricingRowFailsBootInsteadOfSilentlyLastWinning() {
         // The table is keyed by name: two rows sharing one would silently last-win —
         // metering billed at whichever row the map happened to keep, and the operator

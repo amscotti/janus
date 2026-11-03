@@ -824,4 +824,69 @@ class ModelListBindingTest {
                 e.getMessage().contains("sliding") && e.getMessage().contains("postgres"),
                 "the fail-fast error names the conflict: " + e.getMessage());
     }
+
+    // ------------------------------------------------ decision-model sections
+
+    @Test
+    void bindsDecisionSections() throws IOException {
+        String toml = """
+                [janus]
+                name = "janus"
+                version = "0.1.0-SNAPSHOT"
+
+                [[janus.decision-model-list]]
+                name = "d3"
+                provider = "ollama-local"
+                vision = true
+
+                [[janus.decision-model-list]]
+                name = "clef"
+                provider = "cloudflare"
+                upstream-model = "clef"
+                api-key-env = "CF_API_TOKEN"
+                base-url = "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef"
+                header-timeout-seconds = 30
+
+                [janus.decision-providers.ollama-local]
+                wire-format = "systemone"
+                base-url = "http://127.0.0.1:11434"
+
+                [janus.decision-providers.cloudflare]
+                wire-format = "systemone"
+                """;
+        try (ApplicationContext context = ApplicationContext.builder(Environment.TEST)
+                .propertySources(PropertySource.of(
+                        "decision-models",
+                        new TomlPropertySourceLoader()
+                                .read(
+                                        "decision-models",
+                                        new java.io.ByteArrayInputStream(
+                                                toml.getBytes(java.nio.charset.StandardCharsets.UTF_8)))))
+                .start()) {
+            JanusConfig config = context.getBean(JanusConfig.class);
+            List<JanusConfig.DecisionModelListEntry> entries = config.decisionModelList();
+            assertEquals(2, entries.size(), "both [[janus.decision-model-list]] entries must bind");
+            assertEquals("d3", entries.get(0).name());
+            assertEquals("ollama-local", entries.get(0).provider());
+            assertEquals(Boolean.TRUE, entries.get(0).vision());
+            assertNull(entries.get(0).upstreamModel());
+            assertEquals("clef", entries.get(1).name());
+            assertEquals("clef", entries.get(1).upstreamModel(), "upstream-model binds upstreamModel");
+            assertEquals("CF_API_TOKEN", entries.get(1).apiKeyEnv());
+            assertEquals(30, entries.get(1).headerTimeoutSeconds().intValue());
+
+            Map<String, JanusConfig.DecisionProviderEntry> providers = config.decisionProviders();
+            assertEquals("systemone", providers.get("ollama-local").wireFormat());
+            assertEquals("http://127.0.0.1:11434", providers.get("ollama-local").baseUrl());
+        }
+    }
+
+    @Test
+    void bindsDecisionProviderEntriesWithoutSilentlyDroppingThem() {
+        // Validation lives in DecisionModelListFactory at boot, not in the bound
+        // record: a throwing map-value constructor makes Micronaut drop the whole
+        // block, which is the silent-config-loss failure this guard prevents.
+        JanusConfig.DecisionProviderEntry entry = new JanusConfig.DecisionProviderEntry("anthropic", null, null);
+        assertEquals("anthropic", entry.wireFormat());
+    }
 }

@@ -184,14 +184,12 @@ public final class PriceTable {
      * the once-logged set itself is bounded in memory.
      */
     static String sanitizeForLog(String model) {
-        StringBuilder sb = new StringBuilder(model.length());
-        for (int i = 0; i < model.length(); i++) {
+        int limit = Math.min(model.length(), MAX_MODEL_LOG_LENGTH);
+        StringBuilder sb = new StringBuilder(limit);
+        for (int i = 0; i < limit; i++) {
             char c = model.charAt(i);
             sb.append(c < 0x20 || c == 0x7f ? ' ' : c);
         }
-        if (sb.length() <= MAX_MODEL_LOG_LENGTH) {
-            return sb.toString();
-        }
-        return sb.substring(0, MAX_MODEL_LOG_LENGTH) + "...";
+        return model.length() <= MAX_MODEL_LOG_LENGTH ? sb.toString() : sb + "...";
     }
 }

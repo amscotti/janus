@@ -45,6 +45,16 @@ class CallRecordTest {
     }
 
     @Test
+    void modelAndProviderAreCappedAndControlCharactersStripped() {
+        CallRecord r = new CallRecord(
+                "r", null, "m".repeat(300) + "\n", "p\nrovider", 0, 0, 0, null, null, 0, 0, false, CallStatus.OK, 0);
+
+        assertEquals(256, r.model().length());
+        assertFalse(r.model().contains("\n"));
+        assertFalse(r.provider().contains("\n"));
+    }
+
+    @Test
     void negativeTokensCostOrDurationRejected() {
         assertThrows(
                 IllegalArgumentException.class,

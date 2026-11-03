@@ -74,6 +74,15 @@ class BaseUrlsTest {
     }
 
     @Test
+    void rejectsQueryAndFragmentSuffixes() {
+        // Adapters append their versioned path by concatenation; a query/fragment
+        // would swallow it and silently dispatch to the host root.
+        assertThrows(IllegalArgumentException.class, () -> BaseUrls.normalize("https://api.example.com?x=1"));
+        assertThrows(IllegalArgumentException.class, () -> BaseUrls.normalize("https://api.example.com#frag"));
+        assertThrows(IllegalArgumentException.class, () -> BaseUrls.normalize("https://api.example.com/v1?x=1"));
+    }
+
+    @Test
     void rejectsSchemeLessUrls() {
         // "api.deepseek.com" is a valid URI with no scheme — a bare hostname would
         // silently resolve against the process's default (SSRF-adjacent); fail fast.

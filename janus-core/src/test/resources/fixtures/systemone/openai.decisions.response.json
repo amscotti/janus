@@ -1,0 +1,36 @@
+{
+  "answers": [
+    {"type": "predicate", "name": "is_billing", "probability": 0.87},
+    {
+      "type": "choice",
+      "name": "team",
+      "choice": "technical",
+      "confidence": 0.61,
+      "probabilities": [
+        {"value": "billing", "probability": 0.2},
+        {"value": "technical", "probability": 0.77},
+        {"value": "account", "probability": 0.03}
+      ]
+    },
+    {
+      "type": "score",
+      "name": "urgency",
+      "score": 1.4,
+      "confidence": 0.3,
+      "probabilities": [
+        {"label": "Can wait", "value": 0, "probability": 0.1},
+        {"label": "This week", "value": 1, "probability": 0.4},
+        {"label": "Today", "value": 2, "probability": 0.5}
+      ]
+    },
+    {"type": "refusal", "name": "policy_ok"}
+  ],
+  "model": "gpt-6-luna",
+  "usage": {
+    "input_tokens": 500,
+    "input_tokens_details": {"cached_tokens": 100, "cache_write_tokens": 50},
+    "output_tokens": 12,
+    "output_tokens_details": {"reasoning_tokens": 4},
+    "total_tokens": 512
+  }
+}

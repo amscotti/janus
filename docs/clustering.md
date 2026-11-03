@@ -254,6 +254,7 @@ retention = 1000 # per-key call-ring retention, both impls (default 1000) — in
 | Fail-closed | A partitioned store cannot meter, so every store-touching request is denied (see the CAP table). |
 | Fixed-window math | `window_start = floorDiv(now, 60) × 60`. An RPM 429's `Retry-After` is the seconds until the next aligned window end. |
 | Metrics | Scrape every node and sum. The database is the authoritative ledger. |
+| Decision routing | Round-robin counters are **per node** (each node starts its own rotation); budgets/spend/ledger are shared through Postgres exactly like chat. There is no decision health/breaker gauge. |
 | Membership | None. Nodes do not gossip. The database is the consistency point. |
 | Caches | None. Auth, limits, and spend read the database per request. A revoke is visible on the next request on every node. |
 

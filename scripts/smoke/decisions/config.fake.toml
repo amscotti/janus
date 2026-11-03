@@ -1,0 +1,93 @@
+# decisions gate — offline fake-upstream config (NOT the repo-root config.toml).
+#
+# Boot forms:
+# JVM leg:    ./gradlew :janus-cli:run --args='--config <ABS>/scripts/smoke/decisions/config.fake.toml'
+# Native leg: MICRONAUT_CONFIG_FILES=<ABS>/.../config.fake.toml <native>/janus
+# The runner substitutes __FAKE_PORT__/__FAKE2_PORT__ with the fakes' live ports.
+#
+# One chat alias (deepseek-v4-flash -> the fake's unused chat surface is never
+# called; it exists so the chat router has its one-required alias shape) and
+# three decision aliases:
+#   jev-latest      -> systemone fake (drop-in passthrough leg)
+#   gpt-6-luna      -> openai-decisions fake (translation leg)
+#   pooled          -> flaky systemone entry + healthy systemone entry (failover leg)
+#   typesafe-vision -> systemone fake with vision=true (TypeSafe assets/Box +
+#                      local images[] legs; the fake asserts the danger-zone header)
+# Governance ON (master-key-env) so the gate drives virtual-key + budget legs.
+# jev-latest is priced at the real Jev rate; the fake reports 42 input tokens,
+# so one call costs 42 x $0.042/Mtok = 1.764 micro-USD -> 2 micro-USD settled
+# (CostCalculator per-term ceiling).
+
+[micronaut.application]
+name = "janus"
+
+[micronaut.server]
+port = 18080
+
+[endpoints.all]
+enabled = true
+sensitive = true
+
+[endpoints.stop]
+enabled = false
+
+[endpoints.refresh]
+enabled = false
+
+[[janus.model-list]]
+name = "deepseek-v4-flash"
+provider = "openai-compatible"
+base-url = "http://127.0.0.1:__FAKE_PORT__"
+
+[[janus.decision-model-list]]
+name = "jev-latest"
+provider = "fake-jev"
+
+[[janus.decision-model-list]]
+name = "gpt-6-luna"
+provider = "fake-openai"
+vision = true
+
+[[janus.decision-model-list]]
+name = "typesafe-vision"
+provider = "fake-jev"
+vision = true
+
+[[janus.decision-model-list]]
+name = "pooled"
+provider = "fake-flaky"
+upstream-model = "flaky"
+
+[[janus.decision-model-list]]
+name = "pooled"
+provider = "fake-jev"
+
+[janus.decision-providers.fake-jev]
+wire-format = "systemone"
+base-url = "http://127.0.0.1:__FAKE_PORT__"
+
+[janus.decision-providers.fake-flaky]
+wire-format = "systemone"
+base-url = "http://127.0.0.1:__FAKE2_PORT__"
+
+[janus.decision-providers.fake-openai]
+wire-format = "openai-decisions"
+base-url = "http://127.0.0.1:__FAKE_PORT__"
+
+[janus.router]
+max-retries = 2
+
+[janus.keys]
+master-key-env = "JANUS_MASTER_KEY"
+
+[janus.pricing]
+[[janus.pricing.models]]
+name = "jev-latest"
+input-per-1k = 0.000042
+output-per-1k = 0.0
+
+[[janus.pricing.models]]
+name = "deepseek-v4-flash"
+input-per-1k = 0.14
+output-per-1k = 0.28
+default-max-tokens = 4096

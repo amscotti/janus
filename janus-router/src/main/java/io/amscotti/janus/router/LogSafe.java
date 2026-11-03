@@ -18,14 +18,12 @@ final class LogSafe {
 
     /** The message/log form of {@code value}: control chars replaced, truncated. */
     static String text(String value) {
-        StringBuilder sb = new StringBuilder(value.length());
-        for (int i = 0; i < value.length(); i++) {
+        int limit = Math.min(value.length(), MAX_LENGTH);
+        StringBuilder sb = new StringBuilder(limit);
+        for (int i = 0; i < limit; i++) {
             char c = value.charAt(i);
             sb.append(c < 0x20 || c == 0x7f ? ' ' : c);
         }
-        if (sb.length() <= MAX_LENGTH) {
-            return sb.toString();
-        }
-        return sb.substring(0, MAX_LENGTH) + "...";
+        return value.length() <= MAX_LENGTH ? sb.toString() : sb + "...";
     }
 }

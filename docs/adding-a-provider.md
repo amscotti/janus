@@ -41,6 +41,7 @@ nullable `statusCode` and a `retryable` flag (the router reads it for its retry 
 | `network` | transport failure (connect refused/reset, DNS,...) | yes |
 | `timeout` | upstream did not answer within the request timeout | yes |
 | `bad_upstream_payload` | upstream body/chunk failed codec parsing or SSE framing | no |
+| `unsupported_request` | this backend's dialect/caps cannot serve the request (retry across candidates; 400 when all decline) | yes |
 
 Client-side canonical validation failures surface as the codec's exception
 (`OpenAiCodecException`/`AnthropicCodecException`) — caller bugs, not provider failures.
@@ -251,6 +252,42 @@ A provider that speaks neither wire format touches exactly these five things:
  `ModelListFactory`).
 4. `META-INF/services` registration + the SPI drift guard update (same as above).
 5. Golden fixtures + loopback tests (same as above).
+
+## Decision-model providers (`DecisionAdapter`)
+
+Decision models use a parallel, deliberately smaller SPI — no streaming, tools,
+token counting, or SSE:
+
+`io.amscotti.janus.provider.DecisionAdapter` has four members: `name()` (adapter/
+family key; the router backend name is the entry's provider name for the generic
+`systemone` family), `baseUrl()`, `auth()`, and
+`DecisionResponse decide(DecisionRequest)`. `AbstractDecisionAdapter` supplies the
+shared JDK-`HttpClient` transport, the header-arrival/body-read deadlines, bounded
+error-body reads, status→`ProviderException` mapping (including the OpenAI error
+envelope refinement), and three constructor forms. Subclasses supply only the
+dialect: `endpoint(base)`, `encode(request)`, `decode(body)`, and optionally
+`addHeaders(builder, request)` (TypeSafe's `TypeSafe-Danger-Zone-*` beta gates).
+
+The seam the router sees is `io.amscotti.janus.router.DecisionBackend`; the gateway's
+`DecisionAdapterBackend` adapts one to the other, stamps the `upstream-model` remap,
+stamps the client alias back onto the response, and carries the `vision` flag. A
+per-backend cap/dialect rejection (for example OpenAI's 400-question/2–10-level
+limits or TypeSafe-only `assets`/Box) is a retryable capability failure: the router
+walks to the next candidate and returns a typed 400 only when every candidate
+declines.
+
+Wiring a new decision dialect:
+
+1. Add the adapter class (encode/decode + endpoint/auth), extending
+   `AbstractDecisionAdapter`.
+2. Add its `META-INF/services/io.amscotti.janus.provider.DecisionAdapter` line and
+   update `DecisionAdapterSpiTest`.
+3. Add its constructor arm to `DecisionRouterFactory.createDecisionAdapter` and its
+   `wire-format` value to `DecisionModelListFactory.validateBlock`; update
+   `DecisionRouterFactoryTest`.
+4. Add core canonical types only if the dialect introduces a new primitive; decision
+   answers are sealed, so a new answer type forces every codec switch to compile.
+5. Add fixture/loopback tests and a `scripts/smoke/decisions` leg (offline).
 
 ## Testing + native-image guidance
 

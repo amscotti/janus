@@ -14,6 +14,10 @@ import io.amscotti.janus.core.model.ChatRequest;
 import io.amscotti.janus.core.model.ChatResponse;
 import io.amscotti.janus.core.model.ChatRole;
 import io.amscotti.janus.core.model.ChunkChoice;
+import io.amscotti.janus.core.model.DecisionAnswer;
+import io.amscotti.janus.core.model.DecisionQuestion;
+import io.amscotti.janus.core.model.DecisionRequest;
+import io.amscotti.janus.core.model.DecisionResponse;
 import io.amscotti.janus.core.model.Delta;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.Usage;
@@ -23,6 +27,7 @@ import io.amscotti.janus.store.CallStatus;
 import io.amscotti.janus.store.CallStore;
 import io.amscotti.janus.store.InMemoryCallStore;
 import io.amscotti.janus.store.InMemoryKeyStore;
+import io.amscotti.janus.store.InMemorySpendLedger;
 import io.amscotti.janus.store.KeyRecord;
 import io.amscotti.janus.store.KeyRecordView;
 import io.amscotti.janus.store.KeyStore;
@@ -70,7 +75,11 @@ class GovernanceWriterTest {
     void setUp() {
         callStore = new InMemoryCallStore(CLOCK, 1000);
         keyStore = new InMemoryKeyStore(CLOCK);
-        priceTable = PriceTable.of(Map.of("deepseek-v4-flash", new PricingRate(0.14, 0.28, 4096)));
+        priceTable = PriceTable.of(Map.of(
+                "deepseek-v4-flash",
+                new PricingRate(0.14, 0.28, 4096),
+                "jev-latest",
+                new PricingRate(0.14, 0.28, 4096)));
         governance = new Governance(
                 allowAllLimiter(),
                 priceTable,
@@ -856,11 +865,9 @@ class GovernanceWriterTest {
     // ------------------------- behind (the OK write is the LAST side effect, everywhere)
 
     @Test
-    void keyedFinalizeWithThrowingUsageRecorderWritesNoOkRow() {
-        // The recorder runs BEFORE the OK row (the keyed branch's order, now applied to
-        // every settle path): a throwing recordUsage propagates with the row count left
-        // to the controller's recordFailure — exactly one (ERROR) row in production,
-        // never OK+ERROR for one request — and the reservation is released.
+    void keyedFinalizeWithThrowingUsageRecorderKeepsTheSettledOkRow() {
+        // Usage metrics are Tier-1 side effects: a throwing recorder is dropped, the
+        // settled spend is not converted into a 500, and exactly one OK row remains.
         ThrowingLedger ledger = new ThrowingLedger(null);
         Governance failing = new Governance(
                 allowAllLimiter(),
@@ -876,26 +883,19 @@ class GovernanceWriterTest {
         KeyRecord key = created.record();
         Governance.Preflight preflight = enforceReserved(failing, key);
 
-        assertThrows(
-                IllegalStateException.class,
-                () -> failing.finalize(
-                        null,
-                        request("deepseek-v4-flash", false),
-                        chatResponse(new Usage(14, 12, 26)),
-                        preflight,
-                        12,
-                        null),
-                "the recorder failure is the true envelope, not swallowed after an OK row");
+        failing.finalize(
+                null, request("deepseek-v4-flash", false), chatResponse(new Usage(14, 12, 26)), preflight, 12, null);
 
-        assertEquals(0, ledger.pending(key.id()), "the reservation must not leak from the recorder failure");
-        assertTrue(callStore.recentCalls(10).isEmpty(), "no OK CallRecord before the recorder's throw");
+        assertEquals(0, ledger.pending(key.id()), "the reservation settles, it does not leak");
+        List<CallRecord> records = callStore.recentCalls(10);
+        assertEquals(1, records.size(), "exactly one OK row; the recorder failure adds no ERROR row");
+        assertEquals(CallStatus.OK, records.get(0).status());
     }
 
     @Test
-    void authOffFinalizeWithThrowingUsageRecorderWritesNoRow() {
-        // The auth-off branch follows the same order: a throwing recorder must not
-        // leave an OK row and then propagate into the controller catch (which would
-        // write a second ERROR_INTERNAL row — OK+ERROR for one request).
+    void authOffFinalizeWithThrowingUsageRecorderStillWritesTheOkRow() {
+        // Auth-off follows the same best-effort posture: recorder failures never
+        // turn a fully accounted 200 into an OK+ERROR pair.
         Governance failing = new Governance(
                 allowAllLimiter(),
                 priceTable,
@@ -906,17 +906,17 @@ class GovernanceWriterTest {
                 new ThrowingUsageRecorder(),
                 callStore);
 
-        assertThrows(
-                IllegalStateException.class,
-                () -> failing.finalize(
-                        null,
-                        request("deepseek-v4-flash", false),
-                        chatResponse(new Usage(14, 12, 26)),
-                        Governance.Preflight.NONE,
-                        12,
-                        null));
+        failing.finalize(
+                null,
+                request("deepseek-v4-flash", false),
+                chatResponse(new Usage(14, 12, 26)),
+                Governance.Preflight.NONE,
+                12,
+                null);
 
-        assertTrue(callStore.recentCalls(10).isEmpty(), "no OK row was written before the recorder threw");
+        List<CallRecord> records = callStore.recentCalls(10);
+        assertEquals(1, records.size(), "exactly one OK row");
+        assertEquals(CallStatus.OK, records.get(0).status());
     }
 
     @Test
@@ -1258,5 +1258,190 @@ class GovernanceWriterTest {
                 ChatResponse.STOP_REASON_STOP,
                 Map.of(),
                 Map.of());
+    }
+
+    // -------------------------------------------------- decision plane (System One)
+
+    private static final String DECISION_MODEL = "jev-latest";
+
+    private static DecisionRequest decisionRequest(String model) {
+        // 40 state chars + 1-char name + 1-char instructions ⇒ 42 chars ⇒ 42/4 = 10
+        // estimated tokens (the divisor GovernanceEstimateTest pins).
+        return new DecisionRequest(
+                model,
+                "x".repeat(40),
+                null,
+                Map.of("q", new DecisionQuestion.NoulQuestion("?", null)),
+                Map.of(),
+                Map.of());
+    }
+
+    @Test
+    void recordDecisionFailureMapsCoarseStatusClasses() {
+        Governance.Preflight preflight = preflight();
+        DecisionRequest request = decisionRequest(DECISION_MODEL);
+
+        governance.recordDecisionFailure(null, preflight, request, 429, 10, null);
+        governance.recordDecisionFailure(null, preflight, request, 400, 10, "typesafe");
+        governance.recordDecisionFailure(null, preflight, request, 502, 10, "typesafe");
+        governance.recordDecisionFailure(null, preflight, request, 500, 10, null);
+
+        List<CallRecord> records = callStore.recentCalls(10);
+        assertEquals(4, records.size(), "one row per failure, same table as the chat face");
+        // recentCalls is newest-first; the status table is the shared callStatusFor.
+        assertEquals(CallStatus.ERROR_INTERNAL, records.get(0).status());
+        assertEquals(CallStatus.ERROR_UPSTREAM, records.get(1).status());
+        assertEquals("typesafe", records.get(1).provider());
+        assertEquals(CallStatus.ERROR_CLIENT, records.get(2).status());
+        assertEquals(CallStatus.ERROR_LIMIT, records.get(3).status());
+        for (CallRecord record : records) {
+            assertFalse(record.stream(), "decisions never stream");
+            assertEquals(0, record.completionTokens(), "decision failures record no output tokens");
+        }
+    }
+
+    @Test
+    void finalizeDecisionSettlesActualInputTokensAndWritesOneOkRow() {
+        KeyStore.CreatedKey created = keyStore.create(
+                new KeyStore.KeyCreateRequest("test", List.of(DECISION_MODEL), null, null, null, null, null));
+        PricingRate rate = new PricingRate(0.14, 0.28, 4096);
+        Governance.Preflight preflight = new Governance.Preflight(created.record(), rate, 0, 1400, true, false, 0);
+        DecisionRequest request = decisionRequest(DECISION_MODEL);
+        DecisionResponse response = new DecisionResponse(
+                DECISION_MODEL,
+                Map.of("q", new DecisionAnswer.NoulAnswer(0.9)),
+                new Usage(42, 0, 42),
+                Map.of(),
+                Map.of());
+
+        governance.finalizeDecision(request, response, preflight, 12, "typesafe");
+
+        List<CallRecord> records = callStore.recentCalls(10);
+        assertEquals(1, records.size(), "exactly one OK row per decision");
+        CallRecord record = records.get(0);
+        assertEquals(CallStatus.OK, record.status());
+        assertEquals(DECISION_MODEL, record.model());
+        assertEquals("typesafe", record.provider());
+        assertEquals(42, record.promptTokens());
+        assertEquals(0, record.completionTokens(), "System One usage is input-only");
+        assertFalse(record.stream());
+        // 42 input tokens at $0.14/1k = 5880 µUSD (input-only — the decision settle
+        // must never price an output side).
+        assertEquals(5880, record.costMicroUsd());
+    }
+
+    @Test
+    void finalizeDecisionWithoutUsageSettlesTheEstimateInsteadOfZero() {
+        Governance.Preflight preflight = preflight();
+        DecisionResponse noUsage = new DecisionResponse(
+                DECISION_MODEL, Map.of("q", new DecisionAnswer.NoulAnswer(0.9)), null, Map.of(), Map.of());
+
+        Governance.Finalized finalized =
+                governance.finalizeDecision(decisionRequest(DECISION_MODEL), noUsage, preflight, 5, "typesafe");
+
+        List<CallRecord> records = callStore.recentCalls(10);
+        assertEquals(1, records.size());
+        // A non-conforming upstream that omits usage must not become a free tier:
+        // the settle bills the pre-dispatch estimate (31 tokens at $0.14/1k).
+        assertEquals(4340, records.get(0).costMicroUsd());
+        assertEquals(31, records.get(0).promptTokens());
+        assertEquals(CallStatus.OK, records.get(0).status());
+        assertEquals(4340, finalized.cost().totalMicroUsd());
+    }
+
+    @Test
+    void enforceDecisionReservesPromptOnlyNeverAnOutputReserve() {
+        KeyStore.CreatedKey created = keyStore.create(
+                new KeyStore.KeyCreateRequest("test", List.of(DECISION_MODEL), null, 1.0, null, null, null));
+        HttpRequest<?> http =
+                HttpRequest.POST("/v1/systemone", "").setAttribute(KeyAuthFilter.KEY_ATTRIBUTE, created.record());
+
+        Governance.Preflight preflight = governance.enforceDecision(http, decisionRequest(DECISION_MODEL));
+
+        assertTrue(preflight.reserved(), "a budgeted key reserves");
+        assertEquals(0, preflight.estimateTokens(), "decisions carry no output reserve (rate -> 0)");
+        assertEquals(4340, preflight.estimateMicroUsd(), "the reservation prices the input estimate alone");
+    }
+
+    @Test
+    void releaseIsExactlyOncePerReservationEvenAfterASettle() {
+        // The controller ladders call release from several nested catch paths; the
+        // ledger's 0-clamp does not make a double subtraction harmless (it would eat
+        // a concurrent reservation's pending), so the preflight's guard must make
+        // the first settle-or-release the only one.
+        InMemorySpendLedger counted = new InMemorySpendLedger(CLOCK, 100);
+        java.util.concurrent.atomic.AtomicInteger releases = new java.util.concurrent.atomic.AtomicInteger();
+        SpendLedger ledger = new SpendLedger() {
+            @Override
+            public long spendByKey(String keyId, long windowSeconds) {
+                return counted.spendByKey(keyId, windowSeconds);
+            }
+
+            @Override
+            public long totalSpendByKey(String keyId) {
+                return counted.totalSpendByKey(keyId);
+            }
+
+            @Override
+            public java.util.List<LedgerEntry> recent(String keyId, int n) {
+                return counted.recent(keyId, n);
+            }
+
+            @Override
+            public ReserveResult reserve(
+                    String keyId,
+                    long estimateMicroUsd,
+                    long hardCapMicroUsd,
+                    double softFraction,
+                    long windowSeconds) {
+                return counted.reserve(keyId, estimateMicroUsd, hardCapMicroUsd, softFraction, windowSeconds);
+            }
+
+            @Override
+            public void settle(String keyId, long estimateMicroUsd, long actualMicroUsd, long reservationWindowStart) {
+                counted.settle(keyId, estimateMicroUsd, actualMicroUsd, reservationWindowStart);
+            }
+
+            @Override
+            public void release(String keyId, long estimateMicroUsd, long reservationWindowStart) {
+                releases.incrementAndGet();
+                counted.release(keyId, estimateMicroUsd, reservationWindowStart);
+            }
+
+            @Override
+            public void recordSpend(String keyId, long microUsd) {
+                counted.recordSpend(keyId, microUsd);
+            }
+        };
+        Governance counting = new Governance(
+                allowAllLimiter(),
+                priceTable,
+                ledger,
+                new LoggingNotifier(),
+                0.8,
+                CLOCK,
+                MetricsRecorder.noop(),
+                callStore);
+        KeyStore.CreatedKey created = keyStore.create(
+                new KeyStore.KeyCreateRequest("test", List.of("deepseek-v4-flash"), null, 1.0, null, null, null));
+        Governance.Preflight aborted = new Governance.Preflight(
+                created.record(), priceTable.rateFor("deepseek-v4-flash"), 1000, 5320, true, false, 0);
+
+        counting.release(aborted);
+        counting.release(aborted);
+        assertEquals(1, releases.get(), "the backstop release after an abort release is a no-op");
+
+        Governance.Preflight settled = new Governance.Preflight(
+                created.record(), priceTable.rateFor("deepseek-v4-flash"), 1000, 5320, true, false, 0);
+        counting.finalize(
+                null,
+                request("deepseek-v4-flash", false),
+                chatResponse(new Usage(14, 12, 26)),
+                settled,
+                12,
+                "deepseek");
+        assertEquals(1, releases.get(), "a successful settle claims the guard too");
+        counting.release(settled);
+        assertEquals(1, releases.get(), "release after settle must not subtract the estimate again");
     }
 }

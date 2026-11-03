@@ -139,6 +139,11 @@ jobs:
       - name: Smoke native binary (codec path)
         run: scripts/bench/native_codec_smoke.sh
 
+      - name: System One decisions gate (JVM + native)
+        # The decision ServiceLoader registration, reflect-configs, and the new
+        # TypeSafe danger-zone/image paths only bite in the product artifact.
+        run: bash scripts/smoke/decisions/run.sh --native
+
       - name: Native PostgreSQL drill (image + JDBC + CallRecord)
         # Release assets must not ship a native image whose JDBC/Postgres path
         # only compiled but never booted. Offline fake upstream + throwaway PG.

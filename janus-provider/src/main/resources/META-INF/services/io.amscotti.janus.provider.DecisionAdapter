@@ -1,0 +1,5 @@
+# DecisionAdapter implementations — explicit registration (no dynamic classloading).
+# Guarded by DecisionAdapterSpiTest (services-file drift guard): exactly these two
+# adapters (systemone / openai-decisions) must be discoverable.
+io.amscotti.janus.provider.SystemOneAdapter
+io.amscotti.janus.provider.OpenAiDecisionsAdapter

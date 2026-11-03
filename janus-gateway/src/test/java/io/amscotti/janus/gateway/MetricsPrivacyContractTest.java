@@ -79,6 +79,36 @@ class MetricsPrivacyContractTest {
     }
 
     @Test
+    void decisionFaceNeverLeaksStateOrAnswerTextAndGetsItsOwnSeries() {
+        // The privacy pin for the fifth face, in JUnit (not only the opt-in smoke
+        // drill): a marker planted in the decision state AND echoed by the fake
+        // backend's answer must never appear in the exposition, while the
+        // face="systemone" series proves the face records at all.
+        TestRouterFactory.DECISION_BACKEND.decideReturns(new io.amscotti.janus.core.model.DecisionResponse(
+                "jev-latest",
+                Map.of("q", new io.amscotti.janus.core.model.DecisionAnswer.NoulAnswer(0.9)),
+                new io.amscotti.janus.core.model.Usage(10, 0, 10),
+                Map.of(),
+                Map.of()));
+
+        HttpResponse<String> http = client.toBlocking()
+                .exchange(
+                        HttpRequest.POST(
+                                        "/v1/systemone",
+                                        "{\"model\":\"jev-latest\",\"state\":\"decide about " + MARKER
+                                                + "\",\"questions\":{\"q\":{\"type\":\"noul\",\"instructions\":\"?\"}}}")
+                                .contentType(MediaType.APPLICATION_JSON),
+                        String.class);
+        assertEquals(HttpStatus.OK, http.getStatus());
+
+        String scrape = TestMetricsFactory.REGISTRY.scrape();
+        assertFalse(scrape.contains(MARKER), "decision state/answers are user content:\n" + scrape);
+        assertTrue(
+                scrape.contains("janus_requests_total{face=\"systemone\",status=\"2xx\"}"),
+                "the decision face records its own series:\n" + scrape);
+    }
+
+    @Test
     void streamedRequestLeaksNothing() throws Exception {
         TestRouterFactory.BACKEND.streamReturns(Stream.of(chunk(MARKER)));
 

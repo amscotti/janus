@@ -48,7 +48,9 @@ final class TestGovernanceFactory {
     /** DeepSeek published rates (input 0.14 / output 0.28 per 1K) — the design's exact-cost table. */
     static final PriceTable PRICES = PriceTable.of(Map.of(
             "deepseek-v4-flash", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
-            "deepseek-v4-pro", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096)));
+            "deepseek-v4-pro", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
+            "jev-latest", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
+            "d3", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096)));
 
     /** Shared ledger; tests assert on freshly-created key ids (per-key isolation). */
     static final InMemorySpendLedger LEDGER = new InMemorySpendLedger(CLOCK, 1000);

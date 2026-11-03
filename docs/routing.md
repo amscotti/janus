@@ -12,6 +12,12 @@
 > and `docs/adding-a-provider.md` (the provider SPI + the `ProviderException` retryable
 > matrix the retry policy consumes).
 
+> **Decision plane:** `[[janus.decision-model-list]]` uses a smaller router —
+> round-robin first pick, config-order retry/failover over retryable failures, and
+> no passive health/circuit breaker. `[janus.router] strategy`, weights, and the
+> health/breaker knobs do not apply to decisions; `max-retries`/`backoff-*`/`jitter`
+> do. See [`system-one.md`](./system-one.md).
+
 ## What routing does
 
 A model alias in `[[janus.model-list]]` is a **routing key**: callers send

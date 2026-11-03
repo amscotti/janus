@@ -28,12 +28,21 @@ and the not-implemented list are in
 
 ## Features
 
-- **Two faces, any provider** — OpenAI `POST /v1/chat/completions` and Anthropic `POST /v1/messages`
+- **Four faces, any provider** — OpenAI `POST /v1/chat/completions`, Anthropic `POST /v1/messages`,
+  OpenAI Responses `POST /v1/responses`, and System One decisions `POST /v1/systemone`
   (streaming + non-streaming), with **cross-format translation** (system prompts, tools, streaming
   deltas, stop reasons, usage) so an OpenAI SDK can call an Anthropic model and vice-versa.
 - **OpenAI Responses face** — `POST /v1/responses` (stateless, streaming + non-streaming;
   `store:true` / retrieval / `previous_response_id` → named 400s). Details in
   [`docs/responses.md`](./docs/responses.md).
+- **System One decision models** — `POST /v1/systemone` (Jev-shaped): typed
+  `choice`/`noul`/`score` questions (and TypeSafe's beta `box`) over a `state`,
+  routed by model id to TypeSafe (Jev), Ollama decision models
+  (`d3`/`clef`/`nimble-v3`), Cloudflare Clef, OpenAI Decisions, or OpenRouter,
+  under the same governance. Image evidence works in each dialect: Ollama/Clef
+  `images[]`, TypeSafe `assets` (JSON or multipart) + danger-zone beta headers,
+  OpenAI `input_image` parts; TypeSafe SDK zstd request compression is accepted.
+  Details in [`docs/system-one.md`](./docs/system-one.md).
 - **Multimodal / vision** — user messages accept OpenAI `image_url` parts and Anthropic `image`
   blocks (data URL ↔ base64, https ↔ url); cross-face conversion is first-class
   (`docs/providers.md`).
@@ -72,9 +81,9 @@ Six Gradle modules. Dependency direction is one-way toward the core:
 
 | Module | Role |
 |--------|------|
-| `janus-core` | Canonical messages + OpenAI/Anthropic codecs (no Micronaut) |
-| `janus-provider` | `ProviderAdapter` SPI + upstream HTTP adapters |
-| `janus-router` | LB strategies, retry, fallback, health, breaker (`ChatBackend` only — never provider types) |
+| `janus-core` | Canonical messages/decisions + OpenAI/Anthropic/System One codecs (no Micronaut) |
+| `janus-provider` | `ProviderAdapter` + `DecisionAdapter` SPIs + upstream HTTP adapters |
+| `janus-router` | LB strategies, retry, fallback, health, breaker (`ChatBackend`/`DecisionBackend` — never provider types) |
 | `janus-store` | Keys, pricing, limits, spend, call records (memory or Postgres) |
 | `janus-gateway` | Micronaut HTTP: faces, auth, governance, metrics, DI wiring |
 | `janus-cli` | JVM composition root (`janus-cli --config …`); native boots `JanusApplication` via `MICRONAUT_CONFIG_FILES` |
@@ -89,6 +98,7 @@ Six Gradle modules. Dependency direction is one-way toward the core:
                  POST /v1/chat/completions   POST /v1/messages
                  POST /v1/responses            (SSE + JSON)
                  GET  /v1/models
+                 POST /v1/systemone ─── decision face (Jev-shaped)
                                      ▼              ▼
                  ┌──────────────────────────────────────────────┐
                  │                 janus-gateway                │
@@ -127,8 +137,9 @@ Six Gradle modules. Dependency direction is one-way toward the core:
                   native image boots via MICRONAUT_CONFIG_FILES instead — see below)
 ```
 
-Pipeline: two ingress faces → auth → canonical model → router (load-balance / retry / fallback /
-breaker) → provider adapters → upstreams, with store, metrics, and config as side rails. Deeper
+Pipeline: ingress faces (OpenAI · Anthropic · responses · systemone) → auth → canonical model →
+router (load-balance / retry / fallback / breaker) → provider adapters → upstreams, with store,
+metrics, and config as side rails. Deeper
 write-up: [`docs/architecture.md`](./docs/architecture.md).
 
 ## Requirements
@@ -247,6 +258,7 @@ Micronaut binds kebab-case TOML keys to record components (underscores silently 
 | Section | Purpose | Key highlights |
 |---|---|---|
 | `[[janus.model-list]]` | model alias → provider entry (two entries with the same `name` = backends in one candidate list) | `name`, `provider`, `api-key-env`, `base-url` |
+| `[[janus.decision-model-list]]` + `[janus.decision-providers.*]` | decision alias → System One / OpenAI Decisions provider | `name`, `provider`, `upstream-model`, `vision` + block `wire-format` |
 | `[janus.providers.<name>]` | declarative per-provider hints | `wire-format` (`openai-compatible` \| `anthropic`), `base-url`, `api-key-env`, `connect-timeout-seconds`, `header-timeout-seconds`, `body-read-timeout-seconds`, `stream-idle-timeout-seconds` |
 | `[janus.router]` | routing + resilience | `strategy`, `latency-alpha`, `weights`, `max-retries`, `backoff-base-ms`, `backoff-max-ms`, `jitter`, `allowed-fails`, `cooldown-time`, `breaker-failure-threshold`, `breaker-window-seconds`, `breaker-cooldown-seconds` |
 | `[janus.timeouts]` | upstream deadlines (absent = code defaults: 10 s connect / 60 s header / 300 s body-read / 60 s stream-idle) | `connect-timeout-seconds`, `header-timeout-seconds`, `body-read-timeout-seconds`, `stream-idle-timeout-seconds` — the same four keys override per `[[janus.model-list]]` entry (highest) and per `[janus.providers.<name>]` block; the stream-idle watchdog resolves per dispatch by the serving provider |
@@ -271,6 +283,7 @@ Full references: [`config.toml`](./config.toml) (canonical, annotated) ·
 | Data | `GET /v1/models/{id}` | retrieve one alias — 404 `model_not_found` for unknown ids |
 | Data | `POST /v1/responses` | OpenAI Responses face (stateless; JSON + SSE) |
 | Data | `GET`/`DELETE /v1/responses/{id}` | envelope 404 stubs (stateless contract) |
+| Data | `POST /v1/systemone` | System One decisions face (Jev-shaped; JSON, non-streaming) |
 | Admin | `POST /key/generate` | create a virtual key — master-key-authed; full key shown exactly once |
 | Admin | `POST /key/delete` | revoke by `key_id` or full key — master-key-authed, idempotent |
 | Admin | `GET /key/list` | redacted key list — master-key-authed (no full key/hash/salt) |
@@ -289,9 +302,9 @@ Same six modules as the Architecture table above. Module boundaries are enforced
 
 | Module | Role | Depends on |
 |---|---|---|
-| `janus-core` | canonical message model + wire codecs (records, sealed types) | nothing internal |
-| `janus-provider` | `ProviderAdapter` SPI + upstream adapters | `core` |
-| `janus-router` | load balancing, retries, fallback, health, breaker | `core` |
+| `janus-core` | canonical message/decision model + wire codecs (records, sealed types) | nothing internal |
+| `janus-provider` | `ProviderAdapter`/`DecisionAdapter` SPIs + upstream adapters | `core` |
+| `janus-router` | load balancing, retries, fallback, health, breaker (chat), round-robin/failover (decisions) | `core` |
 | `janus-store` | keys, pricing, limits, spend, call records | `core` |
 | `janus-gateway` | Micronaut HTTP app — faces, admin, metrics | `core` + `provider` + `router` + `store` |
 | `janus-cli` | composition root — `janus-cli --config …` (JVM CLI only; the native binary boots via `MICRONAUT_CONFIG_FILES`, and `--config` against it fails fast) | `gateway` |
@@ -333,6 +346,7 @@ troubleshooting, monitoring: [`docs/ops.md`](./docs/ops.md).
 | [`docs/benchmarks.md`](./docs/benchmarks.md) | load benchmarks + JMH microbenchmarks |
 | [`docs/compatibility.md`](./docs/compatibility.md) | HTTP surface and scope |
 | [`docs/responses.md`](./docs/responses.md) | Stateless Responses face |
+| [`docs/system-one.md`](./docs/system-one.md) | System One decision models |
 | [`docs/openapi.yaml`](./docs/openapi.yaml) | admin API OpenAPI |
 | [`scripts/live-provider/README.md`](./scripts/live-provider/README.md) | live / native / multi-node opt-in tests |
 
@@ -373,6 +387,7 @@ Offline smoke harnesses (fake upstreams) live under `scripts/smoke/`:
 | `readme/` | README quickstart, verbatim |
 | `docker/` | Compose memory / Postgres / fail-fast (TLS egress probes opt-in: `JANUS_TLS_PROBE=1`) |
 | `cluster/` | Three nodes + Postgres + HAProxy (offline + optional live/agents) |
+| `decisions/` | System One drop-in, translation, failover, governance ([docs/system-one.md](./docs/system-one.md)) |
 
 Load/startup comparison is `scripts/bench/`. Each harness has a `run.sh`.
 

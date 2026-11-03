@@ -8,9 +8,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.amscotti.janus.core.codec.OpenAiCodecException;
 import io.amscotti.janus.core.model.ChatRequest;
 import io.amscotti.janus.core.model.ChatResponse;
+import io.amscotti.janus.core.model.DecisionAnswer;
+import io.amscotti.janus.core.model.DecisionResponse;
 import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.Usage;
 import io.amscotti.janus.router.ChatBackend;
+import io.amscotti.janus.router.DecisionRouter;
 import io.amscotti.janus.router.Router;
 import io.amscotti.janus.store.CallRecord;
 import io.amscotti.janus.store.FixedWindowRateLimiter;
@@ -18,6 +21,8 @@ import io.micronaut.http.HttpRequest;
 import io.micronaut.http.HttpResponse;
 import io.micronaut.http.HttpStatus;
 import io.micronaut.http.MediaType;
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
@@ -41,6 +46,43 @@ class ThrowingRecorderAccountingTest {
     /** Global-only resolver (the no-override shape — deadlines are not this test's subject). */
     private static final StreamIdleTimeoutResolver IDLE =
             new StreamIdleTimeoutResolver(Duration.ofSeconds(60), Map.of());
+
+    @Test
+    void throwingRecorderOnDecisionOkPathKeepsThe200AndWritesOneOkRow() {
+        List<CallRecord> before = TestGovernanceFactory.CALLS.recentCalls(1000);
+        ThrowingRecorder recorder = new ThrowingRecorder();
+        FakeDecisionBackend backend = new FakeDecisionBackend("fake-decision");
+        backend.decideReturns(new DecisionResponse(
+                "jev-latest",
+                Map.of("refund", new DecisionAnswer.NoulAnswer(0.9)),
+                new Usage(10, 0, 10),
+                Map.of(),
+                Map.of()));
+        Governance governance = new Governance(
+                new FixedWindowRateLimiter(CLOCK),
+                TestGovernanceFactory.PRICES,
+                TestGovernanceFactory.LEDGER,
+                TestGovernanceFactory.NOTIFIER,
+                0.8,
+                CLOCK,
+                recorder,
+                TestGovernanceFactory.CALLS);
+        SystemOneController controller = new SystemOneController(
+                new DecisionRouter(Map.of("jev-latest", List.of(backend))), governance, recorder);
+        String body = "{\"model\":\"jev-latest\",\"state\":\"x\","
+                + "\"questions\":{\"refund\":{\"type\":\"noul\",\"instructions\":\"?\"}}}";
+
+        HttpResponse<String> response = controller.systemOne(
+                new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)), HttpRequest.POST("/v1/systemone", ""));
+
+        assertEquals(HttpStatus.OK, response.getStatus(), response.body());
+        assertEquals(1, recorder.recordRequests.get(), "the OK-path recorder failure is contained");
+        List<CallRecord> added = TestGovernanceFactory.CALLS.recentCalls(1000).stream()
+                .filter(record -> !before.contains(record))
+                .toList();
+        assertEquals(1, added.size(), "exactly one OK row, never OK+ERROR: " + added);
+        assertEquals(io.amscotti.janus.store.CallStatus.OK, added.get(0).status());
+    }
 
     @Test
     void throwingRecorderOnOpenAiFaceKeepsTrueEnvelopeAndFiresTheCallLedger() {

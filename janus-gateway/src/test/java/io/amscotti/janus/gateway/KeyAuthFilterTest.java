@@ -248,7 +248,11 @@ class KeyAuthFilterTest {
         TestRouterFactory.BACKEND.completeReturns(chatResponse());
         for (String path : List.of(
                 "/key%2Fgenerate",
-                "/key%2fgenerate", "/v1/chat%2Fcompletions", "/v1/chat/completions%2F", "/v1/messages%2E")) {
+                "/key%2fgenerate",
+                "/v1/chat%2Fcompletions",
+                "/v1/chat/completions%2F",
+                "/v1/messages%2E",
+                "/v1/system%6Fne")) {
             HttpResponse<String> withoutKey =
                     errorResponse(HttpRequest.POST(path, "{}").contentType(MediaType.APPLICATION_JSON));
             assertNotEquals(

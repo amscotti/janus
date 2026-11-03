@@ -71,7 +71,7 @@ collides with the lifetime row, so the bound makes the alias unreachable).
  `GET /key/list` and `POST /key/delete` never echo it, and no key material is ever
  logged. Hash comparison is timing-safe (unit-pinned by `KeyHashTest`).
 - **Authentication.** Model routes (`/v1/chat/completions`, `/v1/messages`,
- `/v1/responses`) require a virtual key (Bearer or `x-api-key`). Authentication is
+ `/v1/responses`, `/v1/systemone`) require a virtual key (Bearer or `x-api-key`). Authentication is
  one atomic store transition:
  verify hash → status → expiry → `lastUsedAt` update — a racing revoke either lands
  before (403) or after (the check already passed); never a torn state.
@@ -152,7 +152,7 @@ GPT-5.6+ Responses requests may mix 30-minute and 12-hour cache writes.
 `long-cache-creation-per-1k` / `long-cache-creation-12h-per-1k`. When the
 12-hour rate is omitted it falls back to the 30-minute rate.
 
-Set `[janus.pricing] require-priced = true` to fail boot when a model-list alias
+Set `[janus.pricing] require-priced = true` to fail boot when a model-list or decision-model-list alias
 has no row, and to 400 a request for an unpriced alias instead of metering at $0.
 Rows are keyed by `name`, so **a duplicate `name` across two
 `[[janus.pricing.models]]` rows is a boot error** — the second row would otherwise
@@ -305,7 +305,7 @@ the full table):
 
 | Series | Type | Labels |
 |---|---|---|
-| `janus_requests_total` | Counter | `face` (openai\|anthropic\|responses\|admin — the last for the `/key/*` operations and master-key rejections on those routes) × `status` (coarse `2xx`\|`4xx`\|`5xx`; a stream ending with a mid-stream error frame/stall counts `5xx`, never `2xx`) |
+| `janus_requests_total` | Counter | `face` (openai\|anthropic\|responses\|systemone\|admin — the last for the `/key/*` operations and master-key rejections on those routes) × `status` (coarse `2xx`\|`4xx`\|`5xx`; a stream ending with a mid-stream error frame/stall counts `5xx`, never `2xx`) |
 | `janus_request_duration_seconds` | Timer | `face` — **percentile-histogram `_bucket` lines** (le=…, le="+Inf") **and** count/sum/max |
 | `janus_ledger_write_seconds` | Timer | (unlabeled) — call-ledger store-write duration, percentile-histogram buckets + count/sum; once per write attempt (success and contained failure alike) |
 | `janus_tokens_in_total` / `janus_tokens_out_total` | Counter | (unlabeled) |
@@ -314,7 +314,7 @@ the full table):
 | `janus_upstream_healthy` | Gauge | `provider` × `base_url` (1 = dispatch-eligible) |
 | `janus_upstream_breaker_state` | Gauge | `provider` × `base_url` (0=CLOSED, 1=HALF_OPEN, 2=OPEN) |
 
-- **Privacy guarantee (the privacy contract):** labels are `face` (openai/anthropic/responses/admin) / coarse
+- **Privacy guarantee (the privacy contract):** labels are `face` (openai/anthropic/responses/systemone/admin) / coarse
  `status` / `key_id` / `provider` ONLY (plus the per-instance `base_url` on the
  upstream gauges — a coarse identity; the label carries
  `scheme://host[:port][/path]` only, never the query or userinfo, so a credential
@@ -414,7 +414,7 @@ never silently swapped for the default).
 - Keys are **hashed at rest** (salted, timing-safe compare; unit-pinned by
  `KeyHashTest` / `InMemoryKeyStoreTest`).
 - The auth surface is exactly: the model routes (`/v1/chat/completions`,
- `/v1/messages`, `/v1/responses`) require virtual keys; `/key/*` requires the
+ `/v1/messages`, `/v1/responses`, `/v1/systemone`) require virtual keys; `/key/*` requires the
  master key; **`/health`, `/metrics`, `/v1/models` and every unlisted path are
  exempt** — the models list stays public metadata. A stricter default for
  unlisted paths is explicitly out of scope.

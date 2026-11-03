@@ -1,8 +1,11 @@
 package io.amscotti.janus.gateway;
 
+import io.amscotti.janus.core.codec.SystemOneCodec;
 import io.amscotti.janus.core.model.AssistantMessage;
 import io.amscotti.janus.core.model.ChatRequest;
 import io.amscotti.janus.core.model.ChatResponse;
+import io.amscotti.janus.core.model.DecisionRequest;
+import io.amscotti.janus.core.model.DecisionResponse;
 import io.amscotti.janus.core.model.DeveloperMessage;
 import io.amscotti.janus.core.model.Message;
 import io.amscotti.janus.core.model.StreamChunk;
@@ -32,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.ToIntFunction;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 import org.slf4j.Logger;
@@ -168,6 +172,9 @@ final class Governance {
      */
     static final int DEFAULT_MAX_TOKENS = 4096;
 
+    /** Estimate-only codec: the pre-dispatch gate prices the actual serialized request. */
+    private static final SystemOneCodec DECISION_ESTIMATE_CODEC = SystemOneCodec.create();
+
     private final RateLimiter rateLimiter;
     private final PriceTable priceTable;
     private final SpendLedger spendLedger;
@@ -267,18 +274,89 @@ final class Governance {
      * {@link #wrapStream} / {@link #release}: the governing key, the resolved price
      * row, the estimate used for the TPM pre-check and the budget reservation, whether
      * a reservation was taken, and whether the soft tier was crossed.
+     *
+     * <p>A class (not a record) on purpose: it carries the exactly-once {@linkplain
+     * #claimReservationDone() reservation-done guard}. The controller ladders call
+     * {@code release} from several nested catch paths (the abort paths release, then
+     * the outer backstop releases again; a settle releases on its own throw path, then
+     * the backstop) — the ledger's {@code max(0, pending − estimate)} clamp only
+     * prevents negativity, not double-subtraction, so a second release would eat into
+     * a <b>concurrent</b> reservation's pending balance and loosen the hard cap. The
+     * guard makes the first release the only one; a successful settle also claims it,
+     * so a backstop release after settle is a no-op. Settle itself is called exactly
+     * once per request by the controller ladder (there is no second-finalize path).
+     * (The stream paths' {@code settledOrReleased} CAS guard protects their side; this
+     * is the same discipline lifted into the shared preflight.)
      */
-    record Preflight(
-            KeyRecord key,
-            PricingRate rate,
-            int estimateTokens,
-            long estimateMicroUsd,
-            boolean reserved,
-            boolean soft,
-            long reservationWindowStart) {
+    static final class Preflight {
 
         /** The no-key / noop outcome: nothing reserved, nothing to settle. */
         static final Preflight NONE = new Preflight(null, null, 0, 0, false, false, 0);
+
+        private final KeyRecord key;
+        private final PricingRate rate;
+        private final int estimateTokens;
+        private final long estimateMicroUsd;
+        private final boolean reserved;
+        private final boolean soft;
+        private final long reservationWindowStart;
+        private final java.util.concurrent.atomic.AtomicBoolean reservationDone =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
+        Preflight(
+                KeyRecord key,
+                PricingRate rate,
+                int estimateTokens,
+                long estimateMicroUsd,
+                boolean reserved,
+                boolean soft,
+                long reservationWindowStart) {
+            this.key = key;
+            this.rate = rate;
+            this.estimateTokens = estimateTokens;
+            this.estimateMicroUsd = estimateMicroUsd;
+            this.reserved = reserved;
+            this.soft = soft;
+            this.reservationWindowStart = reservationWindowStart;
+        }
+
+        KeyRecord key() {
+            return key;
+        }
+
+        PricingRate rate() {
+            return rate;
+        }
+
+        int estimateTokens() {
+            return estimateTokens;
+        }
+
+        long estimateMicroUsd() {
+            return estimateMicroUsd;
+        }
+
+        boolean reserved() {
+            return reserved;
+        }
+
+        boolean soft() {
+            return soft;
+        }
+
+        long reservationWindowStart() {
+            return reservationWindowStart;
+        }
+
+        /**
+         * Exactly-once release claim: {@code true} for the first caller only. A
+         * successful ledger {@code settle} claims too — a backstop release after a
+         * settled reservation must not subtract the estimate again. Settle is called
+         * once per request by the controller ladder, not CAS-guarded here.
+         */
+        boolean claimReservationDone() {
+            return reservationDone.compareAndSet(false, true);
+        }
     }
 
     /** The post-dispatch outcome: soft warning + settled micro-USD for the response headers. */
@@ -297,13 +375,44 @@ final class Governance {
      * behavior).
      */
     Preflight enforce(HttpRequest<?> httpRequest, ChatRequest request) {
+        return enforceEstimates(
+                httpRequest,
+                request == null ? null : request.model(),
+                () -> estimatePromptTokens(request),
+                rate -> estimateTokens(request, rate));
+    }
+
+    /**
+     * Decision-face pre-dispatch gate (System One): identical RPM/TPM/budget
+     * semantics, but decisions settle input-only, so both the TPM pre-check and
+     * the budget reservation price the serialized state/questions/extras (and
+     * any image evidence) alone.
+     */
+    Preflight enforceDecision(HttpRequest<?> httpRequest, DecisionRequest request) {
+        return enforceEstimates(
+                httpRequest,
+                request == null ? null : request.model(),
+                () -> estimateDecisionTokens(request),
+                rate -> 0);
+    }
+
+    private Preflight enforceEstimates(
+            HttpRequest<?> httpRequest,
+            String model,
+            java.util.function.LongSupplier promptEstimateSupplier,
+            ToIntFunction<PricingRate> outputEstimate) {
         if (noop) {
             return Preflight.NONE;
         }
         KeyRecord key = keyFrom(httpRequest);
         if (key == null) {
+            // require-priced must fail closed even with auth off: otherwise an
+            // unpriced alias is dispatched upstream and only rejected at settle
+            // (after the operator has paid for the call).
+            priceTable.rateFor(model);
             return Preflight.NONE;
         }
+        long promptEstimate = promptEstimateSupplier.getAsLong();
         if (key.rpm() != null) {
             RateLimitResult result = rateLimiter.tryAcquire(key.id(), key.rpm(), 1);
             if (result instanceof RateLimitResult.Denied denied) {
@@ -311,9 +420,8 @@ final class Governance {
                         RateLimitExceededException.Reason.RATE_LIMIT_EXCEEDED, denied.retryAfterSeconds(), key.id());
             }
         }
-        long promptEstimate = estimatePromptTokens(request);
-        PricingRate rate = priceTable.rateFor(request.model()).forPromptTokens(promptEstimate);
-        int estimateTokens = estimateTokens(request, rate);
+        PricingRate rate = priceTable.rateFor(model).forPromptTokens(promptEstimate);
+        int estimateTokens = outputEstimate.applyAsInt(rate);
         if (key.tpm() != null && rateLimiter.wouldExceed(key.id(), key.tpm(), estimateTokens + promptEstimate)) {
             // Conservative pre-check (the estimate prices BOTH sides now, like
             // the budget gate): output reserve = max_tokens ?? row default ?? 4096, plus
@@ -404,27 +512,69 @@ final class Governance {
             Preflight preflight,
             long durationMillis,
             String provider) {
+        return finalizeUsage(
+                request == null ? null : request.model(),
+                response.usage(),
+                searchCount(response),
+                () -> estimatePromptTokens(request),
+                preflight,
+                durationMillis,
+                provider);
+    }
+
+    /** Decision-face settle: the {@link #finalize} accounting over a decision
+     * exchange (no hosted-search count; the prompt fallback is the decision estimate —
+     * a supplier, so a response carrying usage never walks the state tree twice). */
+    Finalized finalizeDecision(
+            DecisionRequest request,
+            DecisionResponse response,
+            Preflight preflight,
+            long durationMillis,
+            String provider) {
+        java.util.function.LongSupplier estimate = () -> estimateDecisionTokens(request);
+        // Decisions are input-only: bill the full reported input (cache splits
+        // folded back in) and zero the output/cache side, matching the documented
+        // pricing contract and the call-ledger's "no cache columns" claim. A
+        // response without usage settles the pre-dispatch estimate instead of $0
+        // (a non-conforming upstream must not become a free tier).
+        Usage billed = decisionBilledUsage(response == null ? null : response.usage(), estimate);
+        return finalizeUsage(
+                request == null ? null : request.model(), billed, 0, estimate, preflight, durationMillis, provider);
+    }
+
+    private static Usage decisionBilledUsage(Usage usage, java.util.function.LongSupplier estimate) {
+        long input = usage == null ? estimate.getAsLong() : usage.billedPromptTokens();
+        return new Usage(input, 0, input);
+    }
+
+    private Finalized finalizeUsage(
+            String model,
+            Usage usage,
+            long searchCount,
+            java.util.function.LongSupplier promptFallback,
+            Preflight preflight,
+            long durationMillis,
+            String provider) {
         if (noop) {
             return Finalized.NONE;
         }
-        Usage usage = response.usage();
         // Re-resolve from actual prompt tokens so a request that crossed the
         // long-context threshold at settle is billed at the long-tier rates, even
         // if the pre-dispatch estimate was still under the floor.
-        PricingRate rate = rateForUsage(request, usage);
+        PricingRate rate = rateForUsage(model, usage, promptFallback);
         if (preflight == Preflight.NONE) {
             // Auth-off: no key accounting, but the unlabeled Tier-1 totals still
             // record (keyId null = auth-off; per-key series are never created). The
             // usage metric records BEFORE the OK row — a throwing recorder must not
             // leave an OK CallRecord behind and then propagate into the controller's
             // catch (which would write a second ERROR row: OK+ERROR for one request).
-            long actualMicro = CostCalculator.costMicroUsd(usage, rate, searchCount(response));
-            metricsRecorder.recordUsage(null, usage, actualMicro);
+            long actualMicro = CostCalculator.costMicroUsd(usage, rate, searchCount);
+            recordUsageBestEffort(null, usage, actualMicro);
             // writer: one Tier-1 CallRecord per request, exactly once — status OK on
             // the settled-success path (the error statuses land via recordFailure /
             // recordStreamFailure — finalize and those paths are mutually exclusive).
-            writeCallRecord(null, request, usage, actualMicro, false, CallStatus.OK, durationMillis, provider);
-            return new Finalized(false, null, CostCalculator.breakdown(usage, rate, searchCount(response)));
+            writeCallRecord(null, model, usage, actualMicro, false, CallStatus.OK, durationMillis, provider);
+            return new Finalized(false, null, CostCalculator.breakdown(usage, rate, searchCount));
         }
         KeyRecord key = preflight.key();
         try {
@@ -438,20 +588,23 @@ final class Governance {
             // soft notify therefore runs BEFORE it (as it does on the stream settle
             // path): notifySoft is fully guarded, ledger read included, so nothing
             // after a successful settle can turn a fully-accounted 200 into a 500.
-            long actualMicro = CostCalculator.costMicroUsd(usage, rate, searchCount(response));
+            long actualMicro = CostCalculator.costMicroUsd(usage, rate, searchCount);
             if (preflight.reserved()) {
                 spendLedger.settle(
                         key.id(), preflight.estimateMicroUsd(), actualMicro, preflight.reservationWindowStart());
+                // The reservation is closed — a backstop release from the controller's
+                // catch must not subtract the estimate a second time.
+                preflight.claimReservationDone();
             }
             spendLedger.recordSpend(key.id(), actualMicro);
             if (key.tpm() != null) {
-                long actualTokens = usage == null ? 0 : usage.promptTokens() + usage.completionTokens();
+                long actualTokens = usage == null ? 0 : usage.billedPromptTokens() + usage.completionTokens();
                 accumulateTpm(key, actualTokens);
             }
-            metricsRecorder.recordUsage(key.id(), usage, actualMicro);
-            CostBreakdown split = CostCalculator.breakdown(usage, rate, searchCount(response));
+            recordUsageBestEffort(key.id(), usage, actualMicro);
+            CostBreakdown split = CostCalculator.breakdown(usage, rate, searchCount);
             long used = preflight.soft() ? notifySoft(key) : 0L;
-            writeCallRecord(key, request, usage, actualMicro, false, CallStatus.OK, durationMillis, provider);
+            writeCallRecord(key, model, usage, actualMicro, false, CallStatus.OK, durationMillis, provider);
             if (preflight.soft()) {
                 return new Finalized(true, used, split);
             }
@@ -482,7 +635,13 @@ final class Governance {
      * there is nothing better to do, and the alternative is worse.)
      */
     void release(Preflight preflight) {
-        if (noop || preflight == Preflight.NONE || !preflight.reserved()) {
+        if (noop || preflight == null || preflight == Preflight.NONE || !preflight.reserved()) {
+            return;
+        }
+        if (!preflight.claimReservationDone()) {
+            // Exactly-once: an earlier release or a completed settle already closed
+            // this reservation — a second subtraction would eat into a concurrent
+            // reservation's pending balance (the clamp only prevents negativity).
             return;
         }
         try {
@@ -663,6 +822,7 @@ final class Governance {
             if (preflight.reserved()) {
                 spendLedger.settle(
                         key.id(), preflight.estimateMicroUsd(), actualMicro, preflight.reservationWindowStart());
+                preflight.claimReservationDone();
             }
             if (key != null) {
                 spendLedger.recordSpend(key.id(), actualMicro);
@@ -693,6 +853,7 @@ final class Governance {
         try {
             if (preflight.reserved()) {
                 spendLedger.settle(key.id(), preflight.estimateMicroUsd(), 0, preflight.reservationWindowStart());
+                preflight.claimReservationDone();
             }
             if (key != null) {
                 spendLedger.recordSpend(key.id(), 0);
@@ -809,21 +970,57 @@ final class Governance {
         }
         KeyRecord key =
                 preflight == Preflight.NONE ? (httpRequest == null ? null : keyFrom(httpRequest)) : preflight.key();
-        CallStatus status =
-                switch (httpStatus / 100) {
-                    case 4 ->
-                        httpStatus == HttpStatus.TOO_MANY_REQUESTS.getCode()
-                                ? CallStatus.ERROR_LIMIT
-                                : CallStatus.ERROR_CLIENT;
-                    case 5 ->
-                        (httpStatus == HttpStatus.BAD_GATEWAY.getCode()
-                                        || httpStatus == HttpStatus.GATEWAY_TIMEOUT.getCode())
-                                ? CallStatus.ERROR_UPSTREAM
-                                : CallStatus.ERROR_INTERNAL;
-                    default -> CallStatus.ERROR_INTERNAL;
-                };
         // A failed streaming request keeps its stream=true marker (request.stream).
-        writeCallRecord(key, request, null, 0, request != null && request.stream(), status, durationMillis, provider);
+        writeCallRecord(
+                key,
+                request,
+                null,
+                0,
+                request != null && request.stream(),
+                callStatusFor(httpStatus),
+                durationMillis,
+                provider);
+    }
+
+    /** Decision-face failure record: {@link #recordFailure} semantics, never streaming. */
+    void recordDecisionFailure(
+            HttpRequest<?> httpRequest,
+            Preflight preflight,
+            DecisionRequest request,
+            int httpStatus,
+            long durationMillis,
+            String provider) {
+        if (noop) {
+            return;
+        }
+        KeyRecord key =
+                preflight == Preflight.NONE ? (httpRequest == null ? null : keyFrom(httpRequest)) : preflight.key();
+        writeCallRecord(
+                key,
+                request == null ? null : request.model(),
+                null,
+                0,
+                false,
+                callStatusFor(httpStatus),
+                durationMillis,
+                provider);
+    }
+
+    /**
+     * The coarse call-ledger status vocabulary — one table for the chat and
+     * decision faces (a fix here must not silently diverge between them):
+     * 429 → limit, other 4xx → client, 502/504 → upstream, everything else internal.
+     */
+    private static CallStatus callStatusFor(int httpStatus) {
+        return switch (httpStatus / 100) {
+            case 4 ->
+                httpStatus == HttpStatus.TOO_MANY_REQUESTS.getCode() ? CallStatus.ERROR_LIMIT : CallStatus.ERROR_CLIENT;
+            case 5 ->
+                (httpStatus == HttpStatus.BAD_GATEWAY.getCode() || httpStatus == HttpStatus.GATEWAY_TIMEOUT.getCode())
+                        ? CallStatus.ERROR_UPSTREAM
+                        : CallStatus.ERROR_INTERNAL;
+            default -> CallStatus.ERROR_INTERNAL;
+        };
     }
 
     /**
@@ -844,12 +1041,31 @@ final class Governance {
             CallStatus status,
             long durationMillis,
             String provider) {
+        writeCallRecord(
+                key,
+                request == null ? null : request.model(),
+                usage,
+                costMicroUsd,
+                stream,
+                status,
+                durationMillis,
+                provider);
+    }
+
+    private void writeCallRecord(
+            KeyRecord key,
+            String model,
+            Usage usage,
+            long costMicroUsd,
+            boolean stream,
+            CallStatus status,
+            long durationMillis,
+            String provider) {
         if (callStore == null) {
             return;
         }
         long now = clock.millis();
         String keyId = key == null ? null : key.id();
-        String model = request == null ? null : request.model();
         CallRecord record;
         if (usage == null) {
             record = new CallRecord(
@@ -921,6 +1137,59 @@ final class Governance {
         long prompt = usage != null ? usage.billedPromptTokens() : estimatePromptTokens(request);
         String model = request == null ? null : request.model();
         return priceTable.rateFor(model).forPromptTokens(prompt);
+    }
+
+    /** Decision-face form: the settle rate for {@code model} at actual (or estimated) input size. */
+    private PricingRate rateForUsage(String model, Usage usage, java.util.function.LongSupplier promptFallback) {
+        long prompt = usage != null ? usage.billedPromptTokens() : promptFallback.getAsLong();
+        return priceTable.rateFor(model).forPromptTokens(prompt);
+    }
+
+    /** Metrics are Tier-1 side effects, never allowed to turn a settled 200 into a 500. */
+    private void recordUsageBestEffort(String keyId, Usage usage, long actualMicroUsd) {
+        try {
+            metricsRecorder.recordUsage(keyId, usage, actualMicroUsd);
+        } catch (RuntimeException e) {
+            LOG.warn("usage metric dropped (recorder failure): {}", e.toString());
+        }
+    }
+
+    /**
+     * The decision-face pre-dispatch input-token estimate: the actual compact
+     * serialized request (state, questions, extras — images/assets excluded, since
+     * each is charged a flat 1024 tokens) divided by 4 bytes/token. Unlike the old
+     * content-only sum this includes JSON structure and unmodeled extras, so a
+     * request cannot hide behind a small `plainLength`; settle still corrects to
+     * the upstream's reported input.
+     * Package-private so the serialization and divisor are directly pinned by a test.
+     */
+    static long estimateDecisionTokens(DecisionRequest request) {
+        if (request == null) {
+            return 0;
+        }
+        long imageTokens =
+                request.images() == null ? 0 : 1024L * request.images().size();
+        try {
+            // TypeSafe assets are base64 image bytes, not text: charge each at the
+            // same flat 1024-token image estimate instead of serializing the base64.
+            java.util.Map<String, Object> extras = request.extras();
+            Object assets = extras.get("assets");
+            if (assets instanceof Map<?, ?> assetMap) {
+                imageTokens += 1024L * assetMap.size();
+                java.util.Map<String, Object> withoutAssets = new java.util.HashMap<>(extras);
+                withoutAssets.remove("assets");
+                extras = withoutAssets;
+            }
+            DecisionRequest estimateRequest = new DecisionRequest(
+                    request.model(), request.state(), null, request.questions(), extras, request.meta());
+            String json = DECISION_ESTIMATE_CODEC.encodeRequest(estimateRequest);
+            long bytes = json.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            return Math.max(1, bytes / 4) + imageTokens;
+        } catch (RuntimeException e) {
+            // Hand-built canonical that cannot encode: keep the gate conservative
+            // rather than admitting an unmeasurable request for free.
+            return 1 + imageTokens;
+        }
     }
 
     /**
