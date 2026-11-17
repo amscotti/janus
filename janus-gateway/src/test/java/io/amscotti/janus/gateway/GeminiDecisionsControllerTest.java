@@ -11,6 +11,7 @@ import io.amscotti.janus.core.codec.DecisionCodecException;
 import io.amscotti.janus.core.model.DecisionQuestion;
 import io.amscotti.janus.core.model.DecisionRequest;
 import io.amscotti.janus.provider.GeminiDecisionsAdapter;
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.micronaut.context.ApplicationContext;
 import io.micronaut.context.env.Environment;
 import io.micronaut.http.HttpStatus;
@@ -323,8 +324,12 @@ class GeminiDecisionsControllerTest {
         assertEquals("image", multiSent.get(5).get("type").asString());
         assertEquals("image/png", multiSent.get(5).get("mime_type").asString());
 
-        // 4. Verify $0.10/Mtok accounting + Prometheus /metrics privacy labels
-        String metrics = httpClient.toBlocking().retrieve(io.micronaut.http.HttpRequest.GET("/metrics"));
+        // 4. Verify $0.10/Mtok accounting + Prometheus registry privacy labels (direct scrape avoids
+        // Micronaut PrometheusEndpoint PipedInputStream race under parallel test load)
+        String metrics = embeddedServer
+                .getApplicationContext()
+                .getBean(PrometheusMeterRegistry.class)
+                .scrape();
         assertTrue(metrics.contains("face=\"systemone\""), metrics);
         assertTrue(metrics.contains("janus_cost_micro_usd_total 100200.0"), metrics);
         assertTrue(metrics.contains("janus_key_cost_micro_usd_total"), metrics);
