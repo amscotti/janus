@@ -216,16 +216,18 @@ class DecisionRouterTest {
     void interruptedBackoffAbortsTheChainWithEarlierFailuresSuppressed() {
         FakeBackend a = new FakeBackend("a");
         a.failure = new BackendException(BackendException.TYPE_NETWORK, "down-a");
+        FakeBackend b = new FakeBackend("b");
         RetryPolicy interrupting = new RetryPolicy(2, 1, 1, 0.0, RandomGenerator.getDefault(), millis -> {
             throw new IllegalStateException("interrupted");
         });
         DecisionRouter router =
-                new DecisionRouter(Map.of("m", List.of(a)), interrupting, DefaultRetryClassifier.INSTANCE);
+                new DecisionRouter(Map.of("m", List.of(a, b)), interrupting, DefaultRetryClassifier.INSTANCE);
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> router.decide(request("m")));
         assertEquals("interrupted", thrown.getMessage());
         assertEquals(1, thrown.getSuppressed().length);
         assertEquals("down-a", thrown.getSuppressed()[0].getMessage());
+        assertEquals(0, b.calls.get(), "interrupted backoff must abort before trying the next candidate");
     }
 
     @Test
@@ -320,5 +322,40 @@ class DecisionRouterTest {
     void blankAliasesAreRejectedAtConstruction() {
         assertThrows(
                 IllegalArgumentException.class, () -> new DecisionRouter(Map.of("", List.of(new FakeBackend("a")))));
+    }
+
+    @Test
+    void doesNotSleepBackoffAfterLastCandidateFails() {
+        AtomicInteger sleeps = new AtomicInteger();
+        RetryPolicy countingPolicy =
+                new RetryPolicy(3, 50, 100, 0.0, RandomGenerator.getDefault(), millis -> sleeps.incrementAndGet());
+
+        FakeBackend single = new FakeBackend("single");
+        single.failure = new BackendException(BackendException.TYPE_UPSTREAM_5XX, "boom");
+        DecisionRouter singleRouter =
+                new DecisionRouter(Map.of("m", List.of(single)), countingPolicy, DefaultRetryClassifier.INSTANCE);
+        assertThrows(BackendException.class, () -> singleRouter.decide(request("m")));
+        assertEquals(0, sleeps.get(), "single candidate failure must not sleep backoff");
+
+        sleeps.set(0);
+        FakeBackend a = new FakeBackend("a");
+        a.failure = new BackendException(BackendException.TYPE_NETWORK, "down-a");
+        FakeBackend b = new FakeBackend("b");
+        b.failure = new BackendException(BackendException.TYPE_NETWORK, "down-b");
+        DecisionRouter twoRouter =
+                new DecisionRouter(Map.of("m", List.of(a, b)), countingPolicy, DefaultRetryClassifier.INSTANCE);
+        assertThrows(BackendException.class, () -> twoRouter.decide(request("m")));
+        assertEquals(1, sleeps.get(), "only sleep between a->b, never after last candidate b fails");
+    }
+
+    @Test
+    void imageCapabilityErrorSanitizesModelNameAgainstLogForgery() {
+        FakeBackend textOnly = new FakeBackend("text-only");
+        String maliciousAlias = "model\ninjected\r\nline";
+        DecisionRouter router = new DecisionRouter(Map.of(maliciousAlias, List.of(textOnly)));
+
+        DecisionCodecException e =
+                assertThrows(DecisionCodecException.class, () -> router.decide(imageRequest(maliciousAlias)));
+        assertTrue(!e.getMessage().contains("\n") && !e.getMessage().contains("\r"), e.getMessage());
     }
 }

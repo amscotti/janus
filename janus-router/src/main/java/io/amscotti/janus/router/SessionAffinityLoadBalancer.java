@@ -131,7 +131,7 @@ public final class SessionAffinityLoadBalancer implements LoadBalancer {
     static int fnv1a32(String key) {
         int hash = 0x811C9DC5;
         for (byte b : key.getBytes(StandardCharsets.UTF_8)) {
-            hash = (hash ^ b) * 0x01000193;
+            hash = (hash ^ (b & 0xFF)) * 0x01000193;
         }
         return hash;
     }

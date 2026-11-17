@@ -7,9 +7,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Standard {@link UpstreamHealth} implementation: passive
@@ -79,10 +76,15 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
     public void recordFailure(ChatBackend backend) {
         Objects.requireNonNull(backend, "backend");
         State state = stateOf(backend);
-        state.trialClaimed.set(false); // the claimed trial (if any) is settled by this failure
-        if (state.consecutiveFailures.incrementAndGet() >= allowedFails) {
-            state.unhealthy.set(true);
-            state.probationUntil.set(clock.millis() + cooldownMillis);
+        synchronized (state) {
+            state.trialClaimed = false; // the claimed trial (if any) is settled by this failure
+            if (state.consecutiveFailures < allowedFails) {
+                state.consecutiveFailures++;
+            }
+            if (state.consecutiveFailures >= allowedFails) {
+                state.unhealthy = true;
+                state.probationUntil = clock.millis() + cooldownMillis;
+            }
         }
     }
 
@@ -90,10 +92,12 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
     public void recordSuccess(ChatBackend backend) {
         Objects.requireNonNull(backend, "backend");
         State state = stateOf(backend);
-        state.trialClaimed.set(false); // the claimed trial (if any) is settled by this success
-        state.consecutiveFailures.set(0);
-        state.unhealthy.set(false);
-        state.probationUntil.set(0);
+        synchronized (state) {
+            state.trialClaimed = false; // the claimed trial (if any) is settled by this success
+            state.consecutiveFailures = 0;
+            state.unhealthy = false;
+            state.probationUntil = 0;
+        }
     }
 
     @Override
@@ -103,7 +107,23 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
         long now = clock.millis();
         for (ChatBackend backend : candidates) {
             State state = stateOrNull(backend);
-            if (state == null || !state.unhealthy.get() || trialEligible(state, backend, now)) {
+            boolean admit = false;
+            boolean checkProbe = false;
+            if (state == null) {
+                admit = true;
+            } else {
+                synchronized (state) {
+                    if (!state.unhealthy) {
+                        admit = true;
+                    } else if (state.probationUntil <= now) {
+                        checkProbe = true;
+                    }
+                }
+            }
+            if (checkProbe) {
+                admit = probe == null || probe.isHealthy(backend);
+            }
+            if (admit) {
                 healthy.add(backend);
             }
         }
@@ -118,25 +138,23 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
     public boolean claimTrial(ChatBackend backend) {
         Objects.requireNonNull(backend, "backend");
         State state = stateOrNull(backend);
-        if (state == null || !state.unhealthy.get()) {
+        if (state == null) {
             return true; // healthy (or never-failed): freely dispatchable, nothing to claim
         }
-        long now = clock.millis();
-        long deadline = state.probationUntil.get();
-        if (deadline > now) {
-            return false; // still cooling down, or a concurrent dispatch holds the single trial
+        synchronized (state) {
+            if (!state.unhealthy) {
+                return true;
+            }
+            long now = clock.millis();
+            if (state.probationUntil > now) {
+                return false; // still cooling down, or a concurrent dispatch holds the single trial
+            }
+            // Claim the trial: extend the probation deadline and mark trialClaimed atomically
+            // under the per-backend state monitor so concurrent dispatches and outcomes never race.
+            state.probationUntil = now + cooldownMillis;
+            state.trialClaimed = true;
+            return true;
         }
-        // Claim the trial: atomically extend the probation deadline so only one
-        // concurrent dispatch wins — a concurrent record*/release loses the CAS, and a
-        // claim still held from an earlier window expired with it (deadline <= now
-        // here). The claimed flag marks the slot for {@link #releaseTrial}; the claim
-        // is settled by the attempt's terminal outcome — recordSuccess clears it on
-        // recovery, recordFailure restarts it, releaseTrial frees it without an outcome.
-        if (!state.probationUntil.compareAndSet(deadline, now + cooldownMillis)) {
-            return false;
-        }
-        state.trialClaimed.set(true);
-        return true;
     }
 
     @Override
@@ -146,16 +164,13 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
         if (state == null) {
             return;
         }
-        // Only a claim this layer actually holds is freed (the flag CAS): a concurrent
-        // recordFailure may have re-cooldowned the backend between the dispatch and this
-        // release — that genuine cooldown window must survive. Frees the trial without
-        // an outcome: the backend stays unhealthy and the next dispatch may claim a
-        // fresh trial immediately (mirrors the breaker's releaseProbe on an abandoned
-        // stream). Health is a soft filter, so the worst-case interleave here (a
-        // release write racing a fresh re-cooldown) costs at most one extra trial
-        // attempt, never a lost failure signal.
-        if (state.trialClaimed.compareAndSet(true, false)) {
-            state.probationUntil.set(clock.millis());
+        // Only a claim this layer actually holds is freed: a concurrent recordFailure
+        // clears trialClaimed and sets a genuine cooldown window that survives under lock.
+        synchronized (state) {
+            if (state.trialClaimed) {
+                state.trialClaimed = false;
+                state.probationUntil = clock.millis();
+            }
         }
     }
 
@@ -165,21 +180,15 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
         // must never trigger probe I/O from the scrape thread. Same passive
         // trial-eligibility semantics as healthy (probe veto deliberately omitted).
         State state = stateOrNull(backend);
-        if (state == null || !state.unhealthy.get()) {
+        if (state == null) {
             return true;
         }
-        return state.probationUntil.get() <= clock.millis();
-    }
-
-    /** Pure trial-eligibility for an unhealthy backend: cooldown elapsed and the optional
-     * {@link HealthProbe} does not veto. Claims nothing — the trial is claimed at
-     * dispatch time by {@link #claimTrial}; a probe veto excludes the candidate without
-     * consuming anyone's trial. */
-    private boolean trialEligible(State state, ChatBackend backend, long now) {
-        if (state.probationUntil.get() > now) {
-            return false; // still cooling down, or the single trial is claimed (deadline extended)
+        synchronized (state) {
+            if (!state.unhealthy) {
+                return true;
+            }
+            return state.probationUntil <= clock.millis();
         }
-        return probe == null || probe.isHealthy(backend);
     }
 
     private State stateOf(ChatBackend backend) {
@@ -204,12 +213,12 @@ public final class PassiveUpstreamHealth implements UpstreamHealth {
 
     private static final class State {
 
-        final AtomicInteger consecutiveFailures = new AtomicInteger();
-        final AtomicBoolean unhealthy = new AtomicBoolean();
-        final AtomicLong probationUntil = new AtomicLong();
+        int consecutiveFailures;
+        boolean unhealthy;
+        long probationUntil;
 
         /** Whether a dispatch currently holds the single trial slot (set by
          * {@link #claimTrial}, cleared by the terminal outcome or {@link #releaseTrial}). */
-        final AtomicBoolean trialClaimed = new AtomicBoolean();
+        boolean trialClaimed;
     }
 }

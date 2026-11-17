@@ -2,6 +2,7 @@ package io.amscotti.janus.router;
 
 import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.DoubleSupplier;
 import java.util.random.RandomGenerator;
 
 /**
@@ -26,12 +27,18 @@ public final class RetryPolicy {
     private final long baseDelayMillis;
     private final long maxDelayMillis;
     private final double jitter;
-    private final RandomGenerator random;
+    private final DoubleSupplier randomDouble;
     private final Sleeper sleeper;
 
     /** Defaults: {@link ThreadLocalRandom} jitter source, real {@link Thread#sleep}. */
     public RetryPolicy(int maxRetries, long baseDelayMillis, long maxDelayMillis, double jitter) {
-        this(maxRetries, baseDelayMillis, maxDelayMillis, jitter, ThreadLocalRandom.current(), Sleeper.THREAD_SLEEPER);
+        this(
+                maxRetries,
+                baseDelayMillis,
+                maxDelayMillis,
+                jitter,
+                Sleeper.THREAD_SLEEPER,
+                () -> ThreadLocalRandom.current().nextDouble());
     }
 
     /**
@@ -45,6 +52,22 @@ public final class RetryPolicy {
             double jitter,
             RandomGenerator random,
             Sleeper sleeper) {
+        this(
+                maxRetries,
+                baseDelayMillis,
+                maxDelayMillis,
+                jitter,
+                sleeper,
+                Objects.requireNonNull(random, "random")::nextDouble);
+    }
+
+    private RetryPolicy(
+            int maxRetries,
+            long baseDelayMillis,
+            long maxDelayMillis,
+            double jitter,
+            Sleeper sleeper,
+            DoubleSupplier randomDouble) {
         if (maxRetries < 0) {
             throw new IllegalArgumentException("maxRetries must be >= 0: " + maxRetries);
         }
@@ -62,7 +85,7 @@ public final class RetryPolicy {
         this.baseDelayMillis = baseDelayMillis;
         this.maxDelayMillis = maxDelayMillis;
         this.jitter = jitter;
-        this.random = Objects.requireNonNull(random, "random");
+        this.randomDouble = Objects.requireNonNull(randomDouble, "randomDouble");
         this.sleeper = Objects.requireNonNull(sleeper, "sleeper");
     }
 
@@ -103,7 +126,7 @@ public final class RetryPolicy {
         if (jitter == 0.0) {
             return delay;
         }
-        long jitterMillis = (long) (random.nextDouble() * jitter * delay);
+        long jitterMillis = (long) (randomDouble.getAsDouble() * jitter * delay);
         return delay > Long.MAX_VALUE - jitterMillis ? Long.MAX_VALUE : delay + jitterMillis;
     }
 

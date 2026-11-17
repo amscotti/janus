@@ -263,4 +263,9 @@ class SessionAffinityLoadBalancerTest {
         assertEquals(bBefore + 1, b.completeCalls.size());
         assertEquals(cBefore + 1, c.completeCalls.size());
     }
+
+    @Test
+    void fnv1a32MasksNonAsciiUtf8BytesUnsigned() {
+        assertEquals(0xa82b5049, SessionAffinityLoadBalancer.fnv1a32("café"));
+    }
 }
