@@ -81,8 +81,10 @@ public final class SystemOneAdapter extends AbstractDecisionAdapter {
         // using TypeSafe's assets/Box shape may omit them: derive the images gate
         // so a drop-in SDK request never reaches TypeSafe disabled.
         boolean imageEvidence = Boolean.TRUE.equals(request.meta().get(DecisionRequest.META_DANGER_ZONE_IMAGES))
-                || request.extras().containsKey("assets")
-                || request.questions().values().stream().anyMatch(q -> q instanceof DecisionQuestion.BoxQuestion);
+                || request.hasAssets()
+                || (request.questions() != null
+                        && request.questions().values().stream()
+                                .anyMatch(q -> q instanceof DecisionQuestion.BoxQuestion));
         if (imageEvidence) {
             builder.header("TypeSafe-Danger-Zone-Images", "true");
         }

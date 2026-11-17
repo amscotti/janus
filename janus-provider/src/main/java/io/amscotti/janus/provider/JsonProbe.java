@@ -98,6 +98,129 @@ final class JsonProbe {
         }
     }
 
+    /** Extracts the nested {@code "error"} JSON object raw text, or {@code null} when absent/null. */
+    static String errorObject(String json) {
+        if (json == null) {
+            return null;
+        }
+        String err = jsonMemberValue(json, "error");
+        if (err == null || "null".equals(err) || !err.startsWith("{")) {
+            return null;
+        }
+        return err;
+    }
+
+    /** Google Interactions string {@code error.code} (e.g. {@code "invalid_request"}), or {@code null}. */
+    static String googleErrorCode(String json) {
+        String err = errorObject(json);
+        return err == null ? null : jsonStringMember(err, "code");
+    }
+
+    /** Google RPC string {@code error.status} (e.g. {@code "UNAUTHENTICATED"}), or {@code null}. */
+    static String googleRpcStatus(String json) {
+        String err = errorObject(json);
+        return err == null ? null : jsonStringMember(err, "status");
+    }
+
+    /** Google RPC integer {@code error.code} (e.g. {@code 401}), ignoring string Interactions codes. */
+    static Integer googleRpcCode(String json) {
+        String err = errorObject(json);
+        if (err == null) {
+            return null;
+        }
+        String raw = jsonMemberValue(err, "code");
+        if (raw == null || raw.isEmpty() || raw.charAt(0) == '"') {
+            return null;
+        }
+        return jsonNumberMember(err, "code");
+    }
+
+    /** Safe non-secret identifier for a recognized Google error envelope, or {@code null}. */
+    static String googleErrorLabel(String json) {
+        String code = googleErrorCode(json);
+        if (code != null && !code.isEmpty()) {
+            return code;
+        }
+        String rpcStatus = googleRpcStatus(json);
+        if (rpcStatus != null && !rpcStatus.isEmpty()) {
+            return rpcStatus;
+        }
+        Integer rpcCode = googleRpcCode(json);
+        return rpcCode != null ? "code_" + rpcCode : null;
+    }
+
+    /**
+     * Maps Google Interactions ({@code error.code} string) or Google RPC Gateway
+     * ({@code error.status} / numeric {@code error.code}) error envelopes to a
+     * {@link ProviderException} type constant, or {@code null} when unrecognized.
+     */
+    static String classifyGoogleError(String json) {
+        String code = googleErrorCode(json);
+        if (code != null) {
+            return switch (code) {
+                case "unauthenticated", "permission_denied", "invalid_api_key", "authentication_error" ->
+                    ProviderException.TYPE_AUTH;
+                case "rate_limit_exceeded",
+                        "resource_exhausted",
+                        "too_many_requests",
+                        "rate_limit_error",
+                        "insufficient_quota" -> ProviderException.TYPE_RATE_LIMITED;
+                case "internal",
+                        "internal_error",
+                        "unavailable",
+                        "deadline_exceeded",
+                        "server_error",
+                        "api_error",
+                        "overloaded_error" -> ProviderException.TYPE_UPSTREAM_5XX;
+                case "invalid_request",
+                        "invalid_argument",
+                        "not_found",
+                        "safety",
+                        "prohibited_content",
+                        "blocklist",
+                        "image_safety",
+                        "content_blocked",
+                        "failed_precondition",
+                        "out_of_range",
+                        "already_exists",
+                        "bad_request" -> ProviderException.TYPE_UPSTREAM_4XX;
+                default -> null;
+            };
+        }
+        String rpcStatus = googleRpcStatus(json);
+        if (rpcStatus != null) {
+            String mapped =
+                    switch (rpcStatus) {
+                        case "UNAUTHENTICATED", "PERMISSION_DENIED" -> ProviderException.TYPE_AUTH;
+                        case "RESOURCE_EXHAUSTED" -> ProviderException.TYPE_RATE_LIMITED;
+                        case "UNAVAILABLE", "DEADLINE_EXCEEDED", "INTERNAL", "UNKNOWN", "DATA_LOSS", "ABORTED" ->
+                            ProviderException.TYPE_UPSTREAM_5XX;
+                        case "INVALID_ARGUMENT", "NOT_FOUND", "FAILED_PRECONDITION", "OUT_OF_RANGE", "ALREADY_EXISTS" ->
+                            ProviderException.TYPE_UPSTREAM_4XX;
+                        default -> null;
+                    };
+            if (mapped != null) {
+                return mapped;
+            }
+        }
+        Integer rpcCode = googleRpcCode(json);
+        if (rpcCode != null) {
+            if (rpcCode == 401 || rpcCode == 403) {
+                return ProviderException.TYPE_AUTH;
+            }
+            if (rpcCode == 429) {
+                return ProviderException.TYPE_RATE_LIMITED;
+            }
+            if (rpcCode >= 400 && rpcCode < 500) {
+                return ProviderException.TYPE_UPSTREAM_4XX;
+            }
+            if (rpcCode >= 500 && rpcCode < 600) {
+                return ProviderException.TYPE_UPSTREAM_5XX;
+            }
+        }
+        return null;
+    }
+
     private static int skipWs(String s, int i) {
         while (i < s.length()) {
             char c = s.charAt(i);

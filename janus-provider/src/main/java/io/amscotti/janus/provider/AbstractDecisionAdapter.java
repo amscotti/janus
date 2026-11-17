@@ -48,14 +48,31 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
 
     /** Composition-root form: adapter name + resolved base URL + API key (blank = no auth header). */
     protected AbstractDecisionAdapter(String name, String baseUrl, String apiKey) {
-        this(name, baseUrl, apiKey, CONNECT_TIMEOUT, HEADER_ARRIVAL_TIMEOUT, DEFAULT_BODY_READ_TIMEOUT);
+        this(
+                name,
+                baseUrl,
+                ProviderAuth.TYPE_BEARER,
+                apiKey,
+                CONNECT_TIMEOUT,
+                HEADER_ARRIVAL_TIMEOUT,
+                DEFAULT_BODY_READ_TIMEOUT);
+    }
+
+    /** Auth-typed composition-root form: adapter name + resolved base URL + auth scheme + API key. */
+    protected AbstractDecisionAdapter(String name, String baseUrl, String authType, String apiKey) {
+        this(name, baseUrl, authType, apiKey, CONNECT_TIMEOUT, HEADER_ARRIVAL_TIMEOUT, DEFAULT_BODY_READ_TIMEOUT);
     }
 
     /** ServiceLoader discovery form — blank base + blank secret; inert, must not be used for calls. */
     protected AbstractDecisionAdapter(String name) {
+        this(name, ProviderAuth.TYPE_BEARER);
+    }
+
+    /** Auth-typed ServiceLoader discovery form — blank base + blank secret; inert, must not be used for calls. */
+    protected AbstractDecisionAdapter(String name, String authType) {
         this.name = Objects.requireNonNull(name, "name");
         this.baseUrl = "";
-        this.auth = new ProviderAuth(ProviderAuth.TYPE_BEARER, "");
+        this.auth = new ProviderAuth(authType, "");
         this.connectTimeout = CONNECT_TIMEOUT;
         this.requestTimeout = HEADER_ARRIVAL_TIMEOUT;
         this.bodyReadTimeout = DEFAULT_BODY_READ_TIMEOUT;
@@ -71,6 +88,18 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
             Duration connectTimeout,
             Duration requestTimeout,
             Duration bodyReadTimeout) {
+        this(name, baseUrl, ProviderAuth.TYPE_BEARER, apiKey, connectTimeout, requestTimeout, bodyReadTimeout);
+    }
+
+    /** Auth-typed and timeout-aware composition-root form. */
+    protected AbstractDecisionAdapter(
+            String name,
+            String baseUrl,
+            String authType,
+            String apiKey,
+            Duration connectTimeout,
+            Duration requestTimeout,
+            Duration bodyReadTimeout) {
         if (name == null || name.isBlank()) {
             throw new IllegalArgumentException("name must be non-blank");
         }
@@ -80,7 +109,7 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
         Objects.requireNonNull(apiKey, "apiKey");
         this.name = name;
         this.baseUrl = BaseUrls.normalize(baseUrl);
-        this.auth = new ProviderAuth(ProviderAuth.TYPE_BEARER, apiKey);
+        this.auth = new ProviderAuth(authType, apiKey);
         this.connectTimeout = requirePositive(connectTimeout, "connectTimeout");
         this.requestTimeout = requirePositive(requestTimeout, "requestTimeout");
         this.bodyReadTimeout = requirePositive(bodyReadTimeout, "bodyReadTimeout");
@@ -161,7 +190,13 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
                 .header("Accept", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(outbound));
         if (auth.secret() != null && !auth.secret().isBlank()) {
-            builder.header("Authorization", "Bearer " + auth.secret());
+            switch (auth.type()) {
+                case ProviderAuth.TYPE_X_GOOG_API_KEY -> builder.header("x-goog-api-key", auth.secret());
+                case ProviderAuth.TYPE_X_API_KEY -> builder.header("x-api-key", auth.secret());
+                case ProviderAuth.TYPE_BEARER -> builder.header("Authorization", "Bearer " + auth.secret());
+                case ProviderAuth.TYPE_NONE -> {}
+                default -> throw new IllegalStateException("unsupported auth type: " + auth.type());
+            }
         }
         addHeaders(builder, request);
         HttpRequest authorized = builder.build();
@@ -235,10 +270,11 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
 
     /**
      * Non-2xx classification: status-based default refined by an envelope
-     * {@code error.type} when the body carries an object envelope; the body
-     * text itself never reaches an exception message. Head-derived status and
-     * {@code Retry-After} survive a stalled error-body read (the chat
-     * adapters' discipline).
+     * {@code error.type} or Google error envelope ({@code error.code} /
+     * {@code error.status}) when present; the body text itself never reaches an
+     * exception message. Head-derived status and {@code Retry-After} survive a
+     * stalled error-body read (the chat adapters' discipline), while a local thread
+     * interrupt surfaces as non-retryable with the interrupt flag preserved.
      */
     private ProviderException errorStatusException(HttpResponse<InputStream> response, int status, String message) {
         Long retryAfter = HttpSupport.retryAfterSeconds(response);
@@ -246,6 +282,9 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
         try {
             errorBody = HttpSupport.readErrorBody(response.body(), bodyReadTimeout);
         } catch (ProviderException readFailure) {
+            if (Thread.currentThread().isInterrupted() || readFailure.getCause() instanceof InterruptedException) {
+                return readFailure;
+            }
             return statusException(status, message, retryAfter);
         } finally {
             HttpSupport.closeQuietly(response.body());
@@ -261,6 +300,16 @@ abstract class AbstractDecisionAdapter implements DecisionAdapter {
                         null,
                         retryAfter);
             }
+        }
+        String googleType = JsonProbe.classifyGoogleError(errorBody);
+        if (googleType != null) {
+            String label = JsonProbe.googleErrorLabel(errorBody);
+            return new ProviderException(
+                    googleType,
+                    "upstream google error envelope: " + label + " (HTTP " + status + ")",
+                    status,
+                    null,
+                    retryAfter);
         }
         return statusException(status, message, retryAfter);
     }

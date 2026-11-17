@@ -188,4 +188,65 @@ class JsonProbeTest {
     void numberMemberReturnsNullWhenMemberAbsent() {
         assertNull(JsonProbe.jsonNumberMember("{\"type\":\"x\"}", "status"));
     }
+
+    // ------------------------------------------------------- google envelopes
+
+    @Test
+    void googleInteractionsErrorCodeAndClassificationWorkWithoutNumericConfusion() {
+        String invalid = "{\"error\":{\"message\":\"Unknown field\",\"code\":\"invalid_request\"}}";
+        assertEquals("invalid_request", JsonProbe.googleErrorCode(invalid));
+        assertNull(JsonProbe.googleRpcCode(invalid));
+        assertNull(JsonProbe.googleRpcStatus(invalid));
+        assertEquals("invalid_request", JsonProbe.googleErrorLabel(invalid));
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, JsonProbe.classifyGoogleError(invalid));
+
+        String notFound = "{\"error\":{\"message\":\"Missing model\",\"code\":\"not_found\"}}";
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, JsonProbe.classifyGoogleError(notFound));
+        assertEquals("not_found", JsonProbe.googleErrorLabel(notFound));
+
+        for (String safetyCode :
+                new String[] {"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}) {
+            String safety = "{\"error\":{\"message\":\"blocked\",\"code\":\"" + safetyCode + "\"}}";
+            assertEquals(ProviderException.TYPE_UPSTREAM_4XX, JsonProbe.classifyGoogleError(safety), safetyCode);
+            assertEquals(safetyCode, JsonProbe.googleErrorLabel(safety), safetyCode);
+        }
+
+        String rateLimit = "{\"error\":{\"message\":\"slow down\",\"code\":\"rate_limit_exceeded\"}}";
+        assertEquals(ProviderException.TYPE_RATE_LIMITED, JsonProbe.classifyGoogleError(rateLimit));
+
+        String unavailable = "{\"error\":{\"message\":\"try later\",\"code\":\"unavailable\"}}";
+        assertEquals(ProviderException.TYPE_UPSTREAM_5XX, JsonProbe.classifyGoogleError(unavailable));
+    }
+
+    @Test
+    void googleRpcGatewayCodeAndStatusClassifyCleanly() {
+        String unauth = "{\"error\":{\"code\":401,\"message\":\"Expected OAuth\",\"status\":\"UNAUTHENTICATED\"}}";
+        assertNull(JsonProbe.googleErrorCode(unauth));
+        assertEquals(Integer.valueOf(401), JsonProbe.googleRpcCode(unauth));
+        assertEquals("UNAUTHENTICATED", JsonProbe.googleRpcStatus(unauth));
+        assertEquals("UNAUTHENTICATED", JsonProbe.googleErrorLabel(unauth));
+        assertEquals(ProviderException.TYPE_AUTH, JsonProbe.classifyGoogleError(unauth));
+
+        String denied = "{\"error\":{\"code\":403,\"message\":\"Forbidden\",\"status\":\"PERMISSION_DENIED\"}}";
+        assertEquals(ProviderException.TYPE_AUTH, JsonProbe.classifyGoogleError(denied));
+
+        String invalidArg = "{\"error\":{\"code\":400,\"message\":\"Bad arg\",\"status\":\"INVALID_ARGUMENT\"}}";
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, JsonProbe.classifyGoogleError(invalidArg));
+
+        String rpcNotFound = "{\"error\":{\"code\":404,\"message\":\"No entity\",\"status\":\"NOT_FOUND\"}}";
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, JsonProbe.classifyGoogleError(rpcNotFound));
+
+        String exhausted = "{\"error\":{\"code\":429,\"message\":\"Quota\",\"status\":\"RESOURCE_EXHAUSTED\"}}";
+        assertEquals(ProviderException.TYPE_RATE_LIMITED, JsonProbe.classifyGoogleError(exhausted));
+
+        String deadline = "{\"error\":{\"code\":504,\"message\":\"Timed out\",\"status\":\"DEADLINE_EXCEEDED\"}}";
+        assertEquals(ProviderException.TYPE_UPSTREAM_5XX, JsonProbe.classifyGoogleError(deadline));
+
+        String codeOnly = "{\"error\":{\"code\":503,\"message\":\"Backend down\"}}";
+        assertEquals(ProviderException.TYPE_UPSTREAM_5XX, JsonProbe.classifyGoogleError(codeOnly));
+        assertEquals("code_503", JsonProbe.googleErrorLabel(codeOnly));
+
+        assertNull(JsonProbe.classifyGoogleError("{\"error\":null}"));
+        assertNull(JsonProbe.classifyGoogleError("plain text error"));
+    }
 }

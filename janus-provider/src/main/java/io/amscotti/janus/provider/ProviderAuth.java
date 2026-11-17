@@ -23,13 +23,18 @@ public record ProviderAuth(String type, String secret) {
     public static final String TYPE_BEARER = "bearer";
     /** Anthropic-style upstreams authenticate with the {@code x-api-key} header. */
     public static final String TYPE_X_API_KEY = "x-api-key";
+    /** Google AI Studio / Gemini upstreams authenticate with the {@code x-goog-api-key} header. */
+    public static final String TYPE_X_GOOG_API_KEY = "x-goog-api-key";
 
     public static final String TYPE_NONE = "none";
 
     public ProviderAuth {
-        if (!TYPE_BEARER.equals(type) && !TYPE_X_API_KEY.equals(type) && !TYPE_NONE.equals(type)) {
+        if (!TYPE_BEARER.equals(type)
+                && !TYPE_X_API_KEY.equals(type)
+                && !TYPE_X_GOOG_API_KEY.equals(type)
+                && !TYPE_NONE.equals(type)) {
             throw new IllegalArgumentException("unsupported auth type: " + type + " (expected \"" + TYPE_BEARER
-                    + "\", \"" + TYPE_X_API_KEY + "\" or \"" + TYPE_NONE + "\")");
+                    + "\", \"" + TYPE_X_API_KEY + "\", \"" + TYPE_X_GOOG_API_KEY + "\" or \"" + TYPE_NONE + "\")");
         }
         // The record's contract ("secret holds the credential; null for
         // TYPE_NONE") is enforced, not just documented — an invalid pair must fail fast
