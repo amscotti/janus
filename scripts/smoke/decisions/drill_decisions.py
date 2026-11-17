@@ -370,6 +370,95 @@ def main() -> None:
     else:
         print("[skip] sdk: zstd CLI not installed (JUnit covers the zstd path)", flush=True)
 
+    # 7d. Gemini Decision 1 (/v1beta/decisions): text, multi-format, vision gate,
+    # Box/assets 400s, and mixed-pool openai-decisions -> gemini-decisions PDF failover.
+    import base64 as _b64
+
+    png_b64 = _b64.b64encode(b"\x89PNG\r\n\x1a\n\x00").decode("ascii")
+    pdf_b64 = _b64.b64encode(b"%PDF-1.4\n%%EOF").decode("ascii")
+    wav_b64 = _b64.b64encode(b"RIFF$\x00\x00\x00WAVE").decode("ascii")
+    gkey = generate_key("gemini-smoke", ["gemini-decision-1", "gemini-text-only", "gemini-pooled"])
+
+    status, _, raw_gem = decide(
+        gkey,
+        {
+            "model": "gemini-decision-1",
+            "state": f"Invoice review {MARKER}",
+            "questions": {
+                "q_noul": {"type": "noul", "instructions": "Valid?", "criteria": {"true": "Yes", "false": "No"}},
+                "q_choice": {"type": "choice", "instructions": "Tier?", "criteria": {"a": "A", "b": "B"}},
+                "q_score": {"type": "score", "instructions": "Grade?", "criteria": ["Low", "High"]},
+            },
+        },
+    )
+    assert status == 200, f"gemini-decision-1 text -> {status}: {raw_gem}"
+    gem_res = json.loads(raw_gem)
+    assert gem_res["model"] == "gemini-decision-1", gem_res
+    assert abs(gem_res["answers"]["q_noul"]["noul"] - 0.94) < 1e-6, gem_res
+    assert gem_res["usage"]["input_tokens"] == 250 and gem_res["usage"]["output_tokens"] == 0, gem_res
+    gem_hits = [e for e in fake_entries(FAKE_LOG) if e["path"] == "/v1beta/decisions"]
+    assert gem_hits, "expected /v1beta/decisions upstream hit"
+    assert gem_hits[-1]["headers"].get("x-goog-api-key") == "decisions-gate-fake-goog-key", gem_hits[-1]
+    assert "authorization" not in gem_hits[-1]["headers"], gem_hits[-1]
+    assert gem_hits[-1]["body"]["questions"]["q_noul"]["criteria"]["true_description"] == "Yes"
+    log("gemini: text noul/choice/score routed via /v1beta/decisions with x-goog-api-key")
+
+    status, _, raw_multi = decide(
+        gkey,
+        {
+            "model": "gemini-decision-1",
+            "state": [
+                {"type": "input_text", "text": "Inspect"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{png_b64}", "detail": "high"}},
+                {"type": "file", "file": {"file_data": f"data:application/pdf;base64,{pdf_b64}"}},
+                {"type": "input_audio", "input_audio": {"data": wav_b64, "format": "wav"}},
+                {"type": "video_url", "video_url": {"url": "https://example.com/clip.mp4"}},
+            ],
+            "images": [png_b64],
+            "questions": {"q": {"type": "noul", "instructions": "Approved?"}},
+        },
+    )
+    assert status == 200, f"gemini multi-format -> {status}: {raw_multi}"
+    gem_multi_in = [e for e in fake_entries(FAKE_LOG) if e["path"] == "/v1beta/decisions"][-1]["body"]["input"]
+    assert [blk["type"] for blk in gem_multi_in] == ["text", "image", "document", "audio", "video", "image"], gem_multi_in
+    log("gemini: multi-format text/image/document/audio/video + images[] translated")
+
+    status, _, _ = decide(
+        gkey,
+        {"model": "gemini-text-only", "state": "text ok", "questions": {"q": {"type": "noul", "instructions": "?"}}},
+    )
+    assert status == 200
+
+    before = len(fake_entries(FAKE_LOG))
+    for bad_body in (
+        {"model": "gemini-text-only", "state": "img", "images": [png_b64],
+         "questions": {"q": {"type": "noul", "instructions": "?"}}},
+        {"model": "gemini-decision-1", "state": "box", "images": [png_b64],
+         "questions": {"q": {"type": "box", "instructions": "Locate"}}},
+        {"model": "gemini-decision-1", "state": "assets",
+         "assets": {"a": {"type": "image", "image_url": "https://example.com/a.png"}},
+         "questions": {"q": {"type": "noul", "instructions": "?"}}},
+    ):
+        status, _, bad_raw = decide(gkey, bad_body)
+        assert status == 400, f"expected 400 for {bad_body['model']} -> {status}: {bad_raw}"
+    assert len(fake_entries(FAKE_LOG)) == before, "vision gate and Box/assets rejections must fail before dispatch"
+    log("gemini: vision gate + Box/assets 400s fail closed without dispatch")
+
+    openai_before = len([e for e in fake_entries(FAKE_LOG) if e["path"] == "/v1/decisions"])
+    status, _, raw_pooled = decide(
+        gkey,
+        {
+            "model": "gemini-pooled",
+            "state": [{"type": "document", "data": pdf_b64, "mime_type": "application/pdf"}],
+            "questions": {"q": {"type": "noul", "instructions": "Safe PDF?"}},
+        },
+    )
+    assert status == 200, f"gemini-pooled PDF failover -> {status}: {raw_pooled}"
+    assert json.loads(raw_pooled)["model"] == "gemini-pooled"
+    openai_after = len([e for e in fake_entries(FAKE_LOG) if e["path"] == "/v1/decisions"])
+    assert openai_after == openai_before, "openai-decisions must decline PDF locally before HTTP"
+    log("gemini: mixed pool PDF fails over locally from openai-decisions to /v1beta/decisions")
+
     # 8. metrics + privacy
     status, _, metrics = http("GET", f"{BASE}/metrics", None, {"Authorization": f"Bearer {MASTER}"})
     assert status == 200, f"metrics -> {status}"
