@@ -866,6 +866,106 @@ class AnthropicAdapterTest {
         assertTrue(disconnectObserved.get(), "server must observe the client disconnect after the stream is closed");
     }
 
+    @Test
+    void countTokensRejectsNegativeAndSignPrefixedCounts() {
+        for (String payload :
+                new String[] {"{\"input_tokens\": -5}", "{\"input_tokens\": +5}", "{\"input_tokens\": 1.5}", "{}"}) {
+            if (contextRegistered) {
+                server.removeContext("/v1/messages/count_tokens");
+            }
+            server.createContext("/v1/messages/count_tokens", exchange -> {
+                byte[] bytes = payload.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, bytes.length);
+                try (OutputStream out = exchange.getResponseBody()) {
+                    out.write(bytes);
+                }
+            });
+            contextRegistered = true;
+            try {
+                ProviderException e =
+                        assertThrows(ProviderException.class, () -> adapter.countTokens(request(false)), payload);
+                assertEquals(ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD, e.type(), payload);
+            } finally {
+                server.removeContext("/v1/messages/count_tokens");
+                contextRegistered = false;
+            }
+        }
+    }
+
+    @Test
+    void invalidAnthropicBetaHeaderIsRejectedBeforeSendAndValidTokensForward() {
+        AtomicBoolean hitUpstream = new AtomicBoolean();
+        if (contextRegistered) {
+            server.removeContext("/v1/messages");
+        }
+        server.createContext("/v1/messages", exchange -> {
+            hitUpstream.set(true);
+            String beta = exchange.getRequestHeaders().getFirst("anthropic-beta");
+            assertEquals("interleaved-thinking-2025-05-14, context-1m-2025-08-07", beta);
+            byte[] bytes = RESPONSE_BODY.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(bytes);
+            }
+        });
+        contextRegistered = true;
+
+        for (String invalid : new String[] {"bad\r\nX-Injected: 1", "bad\nline", "bad header", "a,,b", ",leading"}) {
+            ChatRequest bad = request(false).withMetaEntry("anthropic-beta", invalid);
+            ProviderException e = assertThrows(ProviderException.class, () -> adapter.complete(bad), invalid);
+            assertEquals(ProviderException.TYPE_UPSTREAM_4XX, e.type());
+            assertEquals(Integer.valueOf(400), e.statusCode());
+            assertFalse(e.retryable());
+        }
+        assertFalse(hitUpstream.get(), "invalid anthropic-beta must fail before sending upstream request");
+
+        ChatRequest valid = request(false)
+                .withMetaEntry("anthropic-beta", "interleaved-thinking-2025-05-14, context-1m-2025-08-07");
+        adapter.complete(valid);
+        assertTrue(hitUpstream.get());
+    }
+
+    @Test
+    void interruptedReadErrorBodyOn503IsNonRetryableAndPreservesInterrupt() throws Exception {
+        byte[] error = "{\"type\":\"error\",\"error\":{\"message\":\"busy\"}}".getBytes(StandardCharsets.UTF_8);
+        try (RawUpstreamServer upstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: "
+                            + error.length + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            Thread.sleep(2_000);
+        })) {
+            AnthropicAdapter slowErrorAdapter = new AnthropicAdapter(
+                    upstream.baseUrl(),
+                    "sk-ant-test",
+                    AnthropicAdapter.DEFAULT_ANTHROPIC_VERSION,
+                    Duration.ofMillis(500),
+                    Duration.ofMillis(1_000),
+                    Duration.ofSeconds(5));
+            Thread caller = Thread.currentThread();
+            Thread interrupter = new Thread(() -> {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                caller.interrupt();
+            });
+            interrupter.start();
+            try {
+                ProviderException e =
+                        assertThrows(ProviderException.class, () -> slowErrorAdapter.complete(request(false)));
+                assertFalse(e.retryable(), "interrupted 503 error-body read must not be retryable: " + e.type());
+                assertTrue(Thread.interrupted(), "interrupt flag must be preserved");
+            } finally {
+                Thread.interrupted();
+                interrupter.join(2_000);
+            }
+        }
+    }
+
     // -------------------------------------------------------------- helpers
 
     private void serveResponse(int status, String contentType, String body) {

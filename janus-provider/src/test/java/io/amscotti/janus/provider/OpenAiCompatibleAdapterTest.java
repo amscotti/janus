@@ -929,6 +929,45 @@ class OpenAiCompatibleAdapterTest {
         assertTrue(disconnectObserved.get(), "server must observe the client disconnect after the stream is closed");
     }
 
+    @Test
+    void interruptedErrorBodyReadOn503IsNonRetryableAndPreservesInterrupt() throws Exception {
+        byte[] error = "{\"error\":{\"message\":\"busy\"}}".getBytes(StandardCharsets.UTF_8);
+        try (RawUpstreamServer upstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: "
+                            + error.length + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            Thread.sleep(2_000);
+        })) {
+            OpenAiCompatibleAdapter slowErrorAdapter = new OpenAiCompatibleAdapter(
+                    "xai",
+                    upstream.baseUrl(),
+                    "test-key",
+                    Duration.ofMillis(500),
+                    Duration.ofMillis(1_000),
+                    Duration.ofSeconds(5));
+            Thread caller = Thread.currentThread();
+            Thread interrupter = new Thread(() -> {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                caller.interrupt();
+            });
+            interrupter.start();
+            try {
+                ProviderException e =
+                        assertThrows(ProviderException.class, () -> slowErrorAdapter.complete(request(false)));
+                assertFalse(e.retryable(), "interrupted 503 error-body read must not be retryable: " + e.type());
+                assertTrue(Thread.interrupted(), "interrupt flag must be preserved");
+            } finally {
+                Thread.interrupted();
+                interrupter.join(2_000);
+            }
+        }
+    }
+
     // -------------------------------------------------------------- helpers
 
     private void serveResponse(int status, String contentType, String body) {

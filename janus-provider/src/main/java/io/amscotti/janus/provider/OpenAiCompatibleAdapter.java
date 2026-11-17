@@ -11,7 +11,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -206,20 +205,11 @@ public class OpenAiCompatibleAdapter implements ProviderAdapter {
         this.baseUrl = BaseUrls.normalize(baseUrl);
         this.auth = new ProviderAuth(ProviderAuth.TYPE_BEARER, apiKey);
         this.codec = OpenAiMessageCodec.create();
-        Duration connect = Objects.requireNonNull(connectTimeout, "connectTimeout");
-        if (connect.isZero() || connect.isNegative()) {
-            throw new IllegalArgumentException("connectTimeout must be > 0: " + connect);
-        }
-        this.connectTimeout = connect;
-        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
-        if (requestTimeout.isZero() || requestTimeout.isNegative()) {
-            throw new IllegalArgumentException("requestTimeout must be > 0: " + requestTimeout);
-        }
-        this.bodyReadTimeout = Objects.requireNonNull(bodyReadTimeout, "bodyReadTimeout");
-        if (bodyReadTimeout.isZero() || bodyReadTimeout.isNegative()) {
-            throw new IllegalArgumentException("bodyReadTimeout must be > 0: " + bodyReadTimeout);
-        }
-        this.httpClient = HttpClient.newBuilder().connectTimeout(connect).build();
+        this.connectTimeout = HttpSupport.requirePositive(connectTimeout, "connectTimeout");
+        this.requestTimeout = HttpSupport.requirePositive(requestTimeout, "requestTimeout");
+        this.bodyReadTimeout = HttpSupport.requirePositive(bodyReadTimeout, "bodyReadTimeout");
+        this.httpClient =
+                HttpClient.newBuilder().connectTimeout(this.connectTimeout).build();
     }
 
     @Override
@@ -338,24 +328,7 @@ public class OpenAiCompatibleAdapter implements ProviderAdapter {
     // ------------------------------------------------------------------ HTTP
 
     private <T> HttpResponse<T> send(ChatRequest request, boolean stream, HttpResponse.BodyHandler<T> handler) {
-        HttpRequest httpRequest = httpRequest(request, stream);
-        try {
-            return httpClient.send(httpRequest, handler);
-        } catch (HttpTimeoutException e) {
-            throw new ProviderException(ProviderException.TYPE_TIMEOUT, "upstream request timed out", null, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            // A locally interrupted wait is not an upstream fault — a
-            // retryable network type would make the router burn a retry slot (the
-            // interrupt flag is sticky, so the immediate retry re-throws immediately).
-            // Classify as the terminal non-retryable catch-all; the client-visible
-            // mapping (502 / api_error) is unchanged from the network type.
-            throw new ProviderException(
-                    ProviderException.TYPE_UPSTREAM_4XX, "interrupted while waiting for upstream", null, e);
-        } catch (IOException e) {
-            throw new ProviderException(
-                    ProviderException.TYPE_NETWORK, "upstream request failed: " + e.getMessage(), null, e);
-        }
+        return HttpSupport.send(httpClient, httpRequest(request, stream), handler);
     }
 
     private HttpRequest httpRequest(ChatRequest request, boolean stream) {
@@ -526,67 +499,13 @@ public class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     static ProviderException statusException(int status, String message, Long retryAfterSeconds) {
-        String type =
-                switch (status) {
-                    // 401/403 both mean the upstream rejected our credentials/permissions
-                    // (OpenAI-format upstreams — OpenAI/OpenRouter/xAI — return 403 for
-                    // credential and permission failures; parity with the Anthropic
-                    // adapter's 401/403 → auth mapping).
-                    case 401, 403 -> ProviderException.TYPE_AUTH;
-                    case 429 -> ProviderException.TYPE_RATE_LIMITED;
-                    default ->
-                        status >= 500 ? ProviderException.TYPE_UPSTREAM_5XX : ProviderException.TYPE_UPSTREAM_4XX;
-                };
-        return new ProviderException(type, message, status, null, retryAfterSeconds);
+        return HttpSupport.statusException(status, message, retryAfterSeconds, false);
     }
 
-    /**
-     * Non-2xx classification: status-based default, refined by the OpenAI error
-     * envelope's {@code error.type} when the body carries one (parity with the Anthropic
-     * adapter); non-JSON or envelope-less bodies fall back to the status mapping. The
-     * body is probed structurally — its text is never placed in the exception message.
-     * The upstream {@code Retry-After} (429s) is carried on the exception so the
-     * gateway's passthrough can forward the provider's backoff window.
-     */
-    private static ProviderException statusException(int status, String body, String message, Long retryAfterSeconds) {
-        String envelopeType = errorEnvelopeType(body);
-        if (envelopeType != null) {
-            String mapped = envelopeTypeToProviderType(envelopeType);
-            if (mapped != null) {
-                return new ProviderException(
-                        mapped,
-                        "upstream error envelope: " + envelopeType + " (HTTP " + status + ")",
-                        status,
-                        null,
-                        retryAfterSeconds);
-            }
-        }
-        return statusException(status, message, retryAfterSeconds);
-    }
-
-    /**
-     * Non-2xx classification with an error-body probe that may fail or be capped: the
-     * status mapping and the upstream {@code Retry-After} are derived from the response
-     * <b>head</b>, which is already available before the body is read — a stalled or
-     * mid-read-failed error body must not discard them (a 429 with a stalled
-     * body stays rate_limited with the provider's backoff window, a 401 stays auth and
-     * non-retryable — the router must not burn a retry slot on an auth failure). The
-     * probe is best-effort: on success it may refine the status default via the
-     * envelope's {@code error.type}; on any read failure the status mapping is raised
-     * unchanged. The connection is released either way.
-     */
     private static ProviderException errorStatusException(
             HttpResponse<InputStream> response, Duration bodyReadTimeout, int status, String message) {
-        Long retryAfter = HttpSupport.retryAfterSeconds(response);
-        String errorBody;
-        try {
-            errorBody = HttpSupport.readErrorBody(response.body(), bodyReadTimeout);
-        } catch (ProviderException readFailure) {
-            return statusException(status, message, retryAfter);
-        } finally {
-            HttpSupport.closeQuietly(response.body());
-        }
-        return statusException(status, errorBody, message, retryAfter);
+        return HttpSupport.errorStatusException(
+                response, bodyReadTimeout, status, message, OpenAiCompatibleAdapter::envelopeTypeToProviderType, false);
     }
 
     private static ProviderException errorFrameException(ErrorFrame frame) {
@@ -612,19 +531,6 @@ public class OpenAiCompatibleAdapter implements ProviderAdapter {
             case "server_error", "api_error", "overloaded_error" -> ProviderException.TYPE_UPSTREAM_5XX;
             default -> null;
         };
-    }
-
-    /**
-     * OpenAI error-envelope probe: {@code {"error":{"type":...,"message":...}}} — the
-     * nested {@code error.type} name, or null when the body is not an error envelope
-     * (via the minimal {@link JsonProbe}; no Jackson dependency).
-     */
-    private static String errorEnvelopeType(String body) {
-        String errorObject = JsonProbe.jsonMemberValue(body, "error");
-        if (errorObject == null || "null".equals(errorObject)) {
-            return null;
-        }
-        return JsonProbe.jsonStringMember(errorObject, "type");
     }
 
     private record ErrorFrame(String type, Integer status) {}

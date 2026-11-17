@@ -4,10 +4,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.TimeoutException;
+import java.util.function.UnaryOperator;
 
 /**
  * Package-private HTTP plumbing shared by {@link OpenAiCompatibleAdapter} and
@@ -45,6 +50,90 @@ final class HttpSupport {
 
     static boolean isSuccess(int status) {
         return status >= 200 && status < 300;
+    }
+
+    static Duration requirePositive(Duration timeout, String name) {
+        Duration d = Objects.requireNonNull(timeout, name);
+        if (d.isZero() || d.isNegative()) {
+            throw new IllegalArgumentException(name + " must be > 0: " + d);
+        }
+        return d;
+    }
+
+    static <T> HttpResponse<T> send(
+            HttpClient httpClient, HttpRequest httpRequest, HttpResponse.BodyHandler<T> handler) {
+        try {
+            return httpClient.send(httpRequest, handler);
+        } catch (HttpTimeoutException e) {
+            throw new ProviderException(ProviderException.TYPE_TIMEOUT, "upstream request timed out", null, e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            // A locally interrupted wait is not an upstream fault — classify as the
+            // terminal non-retryable catch-all so the router does not burn a retry slot.
+            throw new ProviderException(
+                    ProviderException.TYPE_UPSTREAM_4XX, "interrupted while waiting for upstream", null, e);
+        } catch (IOException e) {
+            throw new ProviderException(
+                    ProviderException.TYPE_NETWORK, "upstream request failed: " + e.getMessage(), null, e);
+        }
+    }
+
+    static ProviderException statusException(
+            int status, String message, Long retryAfterSeconds, boolean treat529As5xx) {
+        String type =
+                switch (status) {
+                    case 401, 403 -> ProviderException.TYPE_AUTH;
+                    case 429 -> ProviderException.TYPE_RATE_LIMITED;
+                    case 529 ->
+                        treat529As5xx ? ProviderException.TYPE_UPSTREAM_5XX : ProviderException.TYPE_UPSTREAM_4XX;
+                    default ->
+                        status >= 500 ? ProviderException.TYPE_UPSTREAM_5XX : ProviderException.TYPE_UPSTREAM_4XX;
+                };
+        return new ProviderException(type, message, status, null, retryAfterSeconds);
+    }
+
+    static ProviderException errorStatusException(
+            HttpResponse<InputStream> response,
+            Duration bodyReadTimeout,
+            int status,
+            String message,
+            UnaryOperator<String> envelopeTypeMapper,
+            boolean treat529As5xx) {
+        Long retryAfter = retryAfterSeconds(response);
+        String errorBody;
+        try {
+            errorBody = readErrorBody(response.body(), bodyReadTimeout);
+        } catch (ProviderException readFailure) {
+            if (Thread.currentThread().isInterrupted()) {
+                return new ProviderException(
+                        ProviderException.TYPE_UPSTREAM_4XX, readFailure.getMessage(), status, readFailure);
+            }
+            return statusException(status, message, retryAfter, treat529As5xx);
+        } finally {
+            closeQuietly(response.body());
+        }
+        String envelopeType = errorEnvelopeType(errorBody);
+        if (envelopeType != null) {
+            String mapped = envelopeTypeMapper.apply(envelopeType);
+            if (mapped != null) {
+                return new ProviderException(
+                        mapped,
+                        "upstream error envelope: " + envelopeType + " (HTTP " + status + ")",
+                        status,
+                        null,
+                        retryAfter);
+            }
+        }
+        return statusException(status, message, retryAfter, treat529As5xx);
+    }
+
+    /** Nested {@code error.type} from an OpenAI/Anthropic error JSON object, or null. */
+    static String errorEnvelopeType(String body) {
+        String errorObject = JsonProbe.jsonMemberValue(body, "error");
+        if (errorObject == null || "null".equals(errorObject)) {
+            return null;
+        }
+        return JsonProbe.jsonStringMember(errorObject, "type");
     }
 
     /**
@@ -188,9 +277,11 @@ final class HttpSupport {
                 // Deadline exceeded — close the input to unblock the stalled read, then
                 // surface the timeout (parity with the pre-virtual-thread bounded read).
                 closeQuietly(in);
+                String formattedTimeout =
+                        timeout.toMillis() < 1000 ? timeout.toMillis() + "ms" : timeout.toSeconds() + "s";
                 throw new ProviderException(
                         ProviderException.TYPE_TIMEOUT,
-                        "upstream response body read timed out after " + timeout.toSeconds() + "s",
+                        "upstream response body read timed out after " + formattedTimeout,
                         null,
                         new TimeoutException());
             }

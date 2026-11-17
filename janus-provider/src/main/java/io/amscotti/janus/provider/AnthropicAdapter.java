@@ -12,7 +12,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -191,20 +190,11 @@ public final class AnthropicAdapter implements ProviderAdapter {
         this.anthropicVersion = anthropicVersion;
         this.auth = new ProviderAuth(ProviderAuth.TYPE_X_API_KEY, apiKey);
         this.codec = AnthropicMessageCodec.create();
-        Duration connect = Objects.requireNonNull(connectTimeout, "connectTimeout");
-        if (connect.isZero() || connect.isNegative()) {
-            throw new IllegalArgumentException("connectTimeout must be > 0: " + connect);
-        }
-        this.connectTimeout = connect;
-        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
-        if (requestTimeout.isZero() || requestTimeout.isNegative()) {
-            throw new IllegalArgumentException("requestTimeout must be > 0: " + requestTimeout);
-        }
-        this.bodyReadTimeout = Objects.requireNonNull(bodyReadTimeout, "bodyReadTimeout");
-        if (bodyReadTimeout.isZero() || bodyReadTimeout.isNegative()) {
-            throw new IllegalArgumentException("bodyReadTimeout must be > 0: " + bodyReadTimeout);
-        }
-        this.httpClient = HttpClient.newBuilder().connectTimeout(connect).build();
+        this.connectTimeout = HttpSupport.requirePositive(connectTimeout, "connectTimeout");
+        this.requestTimeout = HttpSupport.requirePositive(requestTimeout, "requestTimeout");
+        this.bodyReadTimeout = HttpSupport.requirePositive(bodyReadTimeout, "bodyReadTimeout");
+        this.httpClient =
+                HttpClient.newBuilder().connectTimeout(this.connectTimeout).build();
     }
 
     @Override
@@ -322,8 +312,16 @@ public final class AnthropicAdapter implements ProviderAdapter {
             HttpSupport.closeQuietly(response.body());
         }
         String raw = JsonProbe.jsonMemberValue(responseBody, "input_tokens");
+        String trimmed = raw == null ? "" : raw.trim();
+        if (trimmed.isEmpty() || !isAllAsciiDigits(trimmed)) {
+            throw new ProviderException(
+                    ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD,
+                    "upstream returned an invalid token-count body",
+                    null,
+                    null);
+        }
         try {
-            return Long.parseLong(raw == null ? "" : raw.trim());
+            return Long.parseLong(trimmed);
         } catch (NumberFormatException e) {
             throw new ProviderException(
                     ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD,
@@ -331,6 +329,16 @@ public final class AnthropicAdapter implements ProviderAdapter {
                     null,
                     e);
         }
+    }
+
+    private static boolean isAllAsciiDigits(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -362,23 +370,7 @@ public final class AnthropicAdapter implements ProviderAdapter {
     }
 
     private <T> HttpResponse<T> send(HttpRequest httpRequest, HttpResponse.BodyHandler<T> handler) {
-        try {
-            return httpClient.send(httpRequest, handler);
-        } catch (HttpTimeoutException e) {
-            throw new ProviderException(ProviderException.TYPE_TIMEOUT, "upstream request timed out", null, e);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            // A locally interrupted wait is not an upstream fault — a
-            // retryable network type would make the router burn a retry slot (the
-            // interrupt flag is sticky, so the immediate retry re-throws immediately).
-            // Classify as the terminal non-retryable catch-all; the client-visible
-            // mapping (502 / api_error) is unchanged from the network type.
-            throw new ProviderException(
-                    ProviderException.TYPE_UPSTREAM_4XX, "interrupted while waiting for upstream", null, e);
-        } catch (IOException e) {
-            throw new ProviderException(
-                    ProviderException.TYPE_NETWORK, "upstream request failed: " + e.getMessage(), null, e);
-        }
+        return HttpSupport.send(httpClient, httpRequest, handler);
     }
 
     private HttpRequest httpRequest(ChatRequest request, boolean stream) {
@@ -397,9 +389,44 @@ public final class AnthropicAdapter implements ProviderAdapter {
         }
         Object beta = request.meta().get("anthropic-beta");
         if (beta instanceof String header && !header.isBlank()) {
-            builder.header("anthropic-beta", header);
+            builder.header("anthropic-beta", validateAnthropicBeta(header));
         }
         return builder.build();
+    }
+
+    /**
+     * Validate comma-separated HTTP header tokens for {@code anthropic-beta} before
+     * handing to {@link HttpRequest.Builder#header} (prevents CRLF/control injection
+     * and raw {@link IllegalArgumentException} escaping error mapping).
+     */
+    private static String validateAnthropicBeta(String header) {
+        String trimmed = header.trim();
+        String[] parts = trimmed.split(",", -1);
+        for (String part : parts) {
+            String token = part.trim();
+            if (token.isEmpty() || !isHttpToken(token)) {
+                throw new ProviderException(
+                        ProviderException.TYPE_UPSTREAM_4XX, "invalid anthropic-beta header format", 400, null);
+            }
+        }
+        return trimmed;
+    }
+
+    private static boolean isHttpToken(String token) {
+        for (int i = 0; i < token.length(); i++) {
+            char c = token.charAt(i);
+            if (!isTokenChar(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isTokenChar(char c) {
+        return (c >= 'a' && c <= 'z')
+                || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9')
+                || "!#$%&'*+-.^_`|~".indexOf(c) >= 0;
     }
 
     private URI countTokensEndpoint() {
@@ -550,63 +577,20 @@ public final class AnthropicAdapter implements ProviderAdapter {
     // ------------------------------------------------------- error mapping
 
     /**
-     * Non-2xx classification: status-based default, refined by the Anthropic error
-     * envelope's {@code error.type} when the body carries one (non-JSON bodies fall back
-     * to the status mapping). 529 (overloaded) is Anthropic's documented retryable
-     * status → {@code upstream_5xx}. The upstream {@code Retry-After} (429s — Anthropic's
-     * tiered over-limit window) is carried on the exception so the gateway's passthrough
-     * can forward the provider's backoff window.
+     * Status-only mapping (the body probe produced no envelope type): 401/403 -> auth,
+     * 429 -> rate_limited, 529 (overloaded) and 5xx -> upstream_5xx, everything else -> upstream_4xx.
      */
-    private static ProviderException statusException(int status, String body, String message, Long retryAfterSeconds) {
-        String envelopeType = errorEnvelopeType(body);
-        if (envelopeType != null) {
-            String mapped = envelopeTypeToProviderType(envelopeType);
-            if (mapped != null) {
-                return new ProviderException(
-                        mapped,
-                        "upstream error envelope: " + envelopeType + " (HTTP " + status + ")",
-                        status,
-                        null,
-                        retryAfterSeconds);
-            }
-        }
-        return statusException(status, message, retryAfterSeconds);
-    }
-
-    /** Status-only mapping (the body probe produced no envelope type): 401/403 → auth,
-     * 429 → rate_limited, 529 and 5xx → upstream_5xx, everything else → upstream_4xx. */
     static ProviderException statusException(int status, String message, Long retryAfterSeconds) {
-        String type =
-                switch (status) {
-                    case 401, 403 -> ProviderException.TYPE_AUTH;
-                    case 429 -> ProviderException.TYPE_RATE_LIMITED;
-                    case 529 -> ProviderException.TYPE_UPSTREAM_5XX;
-                    default ->
-                        status >= 500 ? ProviderException.TYPE_UPSTREAM_5XX : ProviderException.TYPE_UPSTREAM_4XX;
-                };
-        return new ProviderException(type, message, status, null, retryAfterSeconds);
+        return HttpSupport.statusException(status, message, retryAfterSeconds, true);
     }
 
     /** Streaming {@code event: error} frame — classified purely by envelope type. */
     private static ProviderException errorFrameException(String data) {
-        String envelopeType = errorEnvelopeType(data);
+        String envelopeType = HttpSupport.errorEnvelopeType(data);
         String mapped = envelopeType == null ? null : envelopeTypeToProviderType(envelopeType);
         String type = mapped == null ? ProviderException.TYPE_UPSTREAM_4XX : mapped;
         return new ProviderException(
                 type, "upstream streaming error frame" + (envelopeType == null ? "" : ": " + envelopeType), null, null);
-    }
-
-    /**
-     * Anthropic error-envelope probe: {@code {"type":"error","error":{"type":...,"message":...}}}
-     * — the nested {@code error.type} name, or null when the body is not an error
-     * envelope (via the minimal {@link JsonProbe}; no Jackson dependency).
-     */
-    private static String errorEnvelopeType(String body) {
-        String errorObject = JsonProbe.jsonMemberValue(body, "error");
-        if (errorObject == null || "null".equals(errorObject)) {
-            return null;
-        }
-        return JsonProbe.jsonStringMember(errorObject, "type");
     }
 
     /** Envelope {@code error.type} names → provider type; null when unmapped (status default). */
@@ -620,29 +604,9 @@ public final class AnthropicAdapter implements ProviderAdapter {
         };
     }
 
-    // --------------------------------------------------------------- helpers
-
-    /**
-     * Non-2xx classification with an error-body probe that may fail or be capped: the
-     * status mapping and the upstream {@code Retry-After} are derived from the response
-     * <b>head</b>, which is already available before the body is read — a stalled or
-     * mid-read-failed error body must not discard them (a 429 with a stalled
-     * body stays rate_limited with the provider's backoff window, a 401 stays auth and
-     * non-retryable). The probe is best-effort: on success it may refine the status
-     * default via the envelope's {@code error.type}; on any read failure the status
-     * mapping is raised unchanged. The connection is released either way.
-     */
     private static ProviderException errorStatusException(
             HttpResponse<InputStream> response, Duration bodyReadTimeout, int status, String message) {
-        Long retryAfter = HttpSupport.retryAfterSeconds(response);
-        String errorBody;
-        try {
-            errorBody = HttpSupport.readErrorBody(response.body(), bodyReadTimeout);
-        } catch (ProviderException readFailure) {
-            return statusException(status, message, retryAfter);
-        } finally {
-            HttpSupport.closeQuietly(response.body());
-        }
-        return statusException(status, errorBody, message, retryAfter);
+        return HttpSupport.errorStatusException(
+                response, bodyReadTimeout, status, message, AnthropicAdapter::envelopeTypeToProviderType, true);
     }
 }

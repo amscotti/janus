@@ -56,6 +56,12 @@ class HttpSupportTest {
         ProviderException e = assertThrows(ProviderException.class, () -> HttpSupport.readBody(stalled, DEADLINE));
         assertEquals(ProviderException.TYPE_TIMEOUT, e.type());
         assertTrue(e.retryable());
+        assertTrue(e.getMessage().contains("500ms"), "sub-second timeout should format in ms: " + e.getMessage());
+
+        PipedInputStream stalled50 = new PipedInputStream(new java.io.PipedOutputStream());
+        ProviderException e50 =
+                assertThrows(ProviderException.class, () -> HttpSupport.readBody(stalled50, Duration.ofMillis(50)));
+        assertTrue(e50.getMessage().contains("50ms"), "50ms timeout should format as 50ms: " + e50.getMessage());
     }
 
     @Test

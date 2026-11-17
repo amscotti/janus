@@ -5,13 +5,17 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -51,7 +55,30 @@ class ProviderAdapterSpiTest {
     }
 
     @Test
-    void servicesFileMatchesDiscoveredAdapters() throws Exception {
+    void servicesFileMatchesAllNonAbstractProviderAdapterImplementations() throws Exception {
+        Set<String> classpathAdapters = new TreeSet<>();
+        Path root = Path.of(ProviderAdapter.class
+                .getProtectionDomain()
+                .getCodeSource()
+                .getLocation()
+                .toURI());
+        Path pkg = root.resolve("io/amscotti/janus/provider");
+        try (Stream<Path> walk = Files.walk(pkg)) {
+            for (Path path : walk.toList()) {
+                if (!Files.isRegularFile(path) || !path.getFileName().toString().endsWith(".class")) {
+                    continue;
+                }
+                String rel = pkg.relativize(path).toString().replace('/', '.').replace('\\', '.');
+                String fqcn = "io.amscotti.janus.provider." + rel.substring(0, rel.length() - ".class".length());
+                Class<?> candidate = Class.forName(fqcn);
+                if (ProviderAdapter.class.isAssignableFrom(candidate)
+                        && !candidate.isInterface()
+                        && !Modifier.isAbstract(candidate.getModifiers())) {
+                    classpathAdapters.add(candidate.getName());
+                }
+            }
+        }
+
         Set<String> discovered = new TreeSet<>();
         ServiceLoader.load(ProviderAdapter.class).stream()
                 .map(provider -> provider.type().getName())
@@ -59,6 +86,10 @@ class ProviderAdapterSpiTest {
 
         Set<String> fileEntries = readServicesFile();
 
+        assertEquals(
+                classpathAdapters,
+                fileEntries,
+                "every concrete ProviderAdapter must be registered in META-INF/services");
         assertEquals(discovered, fileEntries, "services file must match ServiceLoader discovery");
         assertEquals(
                 EXPECTED_ADAPTER_CLASSES,
