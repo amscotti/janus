@@ -38,10 +38,14 @@ and the not-implemented list are in
 - **System One decision models** — `POST /v1/systemone` (Jev-shaped): typed
   `choice`/`noul`/`score` questions (and TypeSafe's beta `box`) over a `state`,
   routed by model id to TypeSafe (Jev), Ollama decision models
-  (`d3`/`clef`/`nimble-v3`), Cloudflare Clef, OpenAI Decisions, or OpenRouter,
-  under the same governance. Image evidence works in each dialect: Ollama/Clef
+  (`d3`/`clef`/`nimble-v3`), Cloudflare Clef, OpenAI Decisions, Google Gemini
+  Decision 1 (`gemini-decisions` via `/v1beta/decisions`), or OpenRouter
+  (including `google/gemini-decision-1` via `systemone`), under the same
+  governance. Media and image evidence work across dialects: Ollama/Clef
   `images[]`, TypeSafe `assets` (JSON or multipart) + danger-zone beta headers,
-  OpenAI `input_image` parts; TypeSafe SDK zstd request compression is accepted.
+  OpenAI `input_image` parts, and Gemini multi-format blocks (`image`,
+  `document` PDF/CSV, `audio`, `video` in native or cross-dialect form);
+  TypeSafe SDK zstd request compression is accepted.
   Details in [`docs/system-one.md`](./docs/system-one.md).
 - **Multimodal / vision** — user messages accept OpenAI `image_url` parts and Anthropic `image`
   blocks (data URL ↔ base64, https ↔ url); cross-face conversion is first-class
@@ -81,7 +85,7 @@ Six Gradle modules. Dependency direction is one-way toward the core:
 
 | Module | Role |
 |--------|------|
-| `janus-core` | Canonical messages/decisions + OpenAI/Anthropic/System One codecs (no Micronaut) |
+| `janus-core` | Canonical messages/decisions + OpenAI/Anthropic/System One/Gemini codecs (no Micronaut) |
 | `janus-provider` | `ProviderAdapter` + `DecisionAdapter` SPIs + upstream HTTP adapters |
 | `janus-router` | LB strategies, retry, fallback, health, breaker (`ChatBackend`/`DecisionBackend` — never provider types) |
 | `janus-store` | Keys, pricing, limits, spend, call records (memory or Postgres) |

@@ -16,6 +16,7 @@ import io.amscotti.janus.core.model.StreamChunk;
 import io.amscotti.janus.core.model.ToolCall;
 import io.amscotti.janus.core.model.ToolDefinition;
 import io.amscotti.janus.core.model.ToolMessage;
+import io.amscotti.janus.core.model.Usage;
 import io.amscotti.janus.core.model.UserMessage;
 import java.util.List;
 import java.util.Map;
@@ -168,6 +169,84 @@ class CodecWireShapeGuardTest {
         assertEquals(2, countOccurrences(json, "\"index\""));
         assertTrue(json.contains("\"index\":0"), json);
         assertTrue(json.contains("\"index\":1"), json);
+    }
+
+    @Test
+    void responsesEncodeAndStreamNeverLeakCanonicalMetaOrForeignWireShapes() {
+        OpenAiResponsesCodec responses = OpenAiResponsesCodec.create();
+        ChatRequest req = new ChatRequest(
+                "model-1",
+                List.of(new UserMessage("hi")),
+                "be brief",
+                List.of(new ToolDefinition("function", "get_weather", "desc", "{\"type\":\"object\"}")),
+                "auto",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                Map.of("internal_secret_meta", "SECRET-META-XYZ"));
+        ChatResponse resp = new ChatResponse(
+                "r1",
+                "chat.completion",
+                1L,
+                "model-1",
+                List.of(new ChatChoice(
+                        0,
+                        new AssistantMessage(
+                                "hello",
+                                List.of(new ToolCall(
+                                        "call_1", "function", new FunctionCall("get_weather", "{\"x\":1}")))),
+                        ChatResponse.STOP_REASON_TOOL_CALLS)),
+                new Usage(4, 2, 6),
+                ChatResponse.STOP_REASON_TOOL_CALLS,
+                Map.of(),
+                Map.of("response_meta_secret", "SECRET-RESP-META"));
+        String json = responses.encodeResponse(req, resp);
+        assertTrue(json.contains("\"object\":\"response\""), json);
+        assertTrue(json.contains("\"type\":\"message\""), json);
+        assertTrue(json.contains("\"type\":\"function_call\""), json);
+        assertFalse(json.contains("internal_secret_meta"), json);
+        assertFalse(json.contains("SECRET-META-XYZ"), json);
+        assertFalse(json.contains("response_meta_secret"), json);
+        assertFalse(json.contains("SECRET-RESP-META"), json);
+        assertFalse(json.contains("\"choices\""), json);
+        assertFalse(json.contains("\"tool_calls\""), json);
+        assertFalse(json.contains("\"input_schema\""), json);
+        assertFalse(json.contains("\"stop_reason\""), json);
+        assertFalse(json.contains("\"finish_reason\""), json);
+        assertFalse(json.contains("\"prompt_tokens\""), json);
+
+        OpenAiResponsesCodec.OpenAiResponsesStreamEncoder streamEncoder = responses.newStreamEncoder(req);
+        StringBuilder streamAll = new StringBuilder();
+        streamEncoder.initialEvents().forEach(e -> streamAll.append(e.dataJson()));
+        streamEncoder
+                .feed(new StreamChunk(
+                        "c1",
+                        "chat.completion.chunk",
+                        1L,
+                        "model-1",
+                        List.of(new ChunkChoice(0, new Delta(ChatRole.ASSISTANT, "hi", null), null)),
+                        new Usage(4, 2, 6),
+                        Map.of()))
+                .forEach(e -> streamAll.append(e.dataJson()));
+        streamEncoder.finish().forEach(e -> streamAll.append(e.dataJson()));
+        String streamWire = streamAll.toString();
+        assertFalse(streamWire.contains("internal_secret_meta"), streamWire);
+        assertFalse(streamWire.contains("SECRET-META-XYZ"), streamWire);
+        assertFalse(streamWire.contains("\"choices\""), streamWire);
+        assertFalse(streamWire.contains("\"prompt_tokens\""), streamWire);
     }
 
     private static int countOccurrences(String haystack, String needle) {

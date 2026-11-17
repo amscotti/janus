@@ -63,8 +63,16 @@ class GatewayReflectConfigDriftGuardTest {
     private static final String CONFIG_PATH =
             "META-INF/native-image/io.amscotti.janus/janus-gateway/reflect-config.json";
     private static final String GATEWAY_PACKAGE = "io.amscotti.janus.gateway";
+    private static final String CORE_PACKAGE = "io.amscotti.janus.core";
+    private static final String CORE_MODEL_PACKAGE = "io.amscotti.janus.core.model";
+    private static final String CORE_CODEC_PACKAGE = "io.amscotti.janus.core.codec";
     private static final String DTO_PACKAGE = "io.amscotti.janus.gateway.dto";
-    private static final String JACKSON_ANNOTATION_PACKAGE = "com.fasterxml.jackson.annotation";
+    private static final Set<String> REFLECT_ANNOTATION_PACKAGES =
+            Set.of("com.fasterxml.jackson.annotation", "tools.jackson.databind.annotation");
+    private static final Set<String> MICRONAUT_REFLECT_ANNOTATIONS = Set.of(
+            "io.micronaut.serde.annotation.Serdeable",
+            "io.micronaut.core.annotation.Introspected",
+            "io.micronaut.core.annotation.ReflectiveAccess");
     private static final Set<String> PINNED_JDBC_ENTRIES =
             Set.of("org.postgresql.Driver", "org.postgresql.util.PGobject");
     private static final Set<String> PINNED_NETTY_ENTRIES = Set.of("io.netty.util.ReferenceCountUtil");
@@ -78,9 +86,12 @@ class GatewayReflectConfigDriftGuardTest {
         }
         // (b) the designated DTO subpackage — every class, annotation-independent
         expected.addAll(dtoPackageClasses());
-        // (c) remaining gateway Jackson DTOs — classes with com.fasterxml.jackson.annotation on
-        // the class or its record components (annotation-driven beyond the dto package)
-        expected.addAll(jacksonAnnotatedGatewayClasses());
+        // (c) remaining gateway DTOs/introspected types (Jackson/Micronaut reflect annotations)
+        expected.addAll(annotatedClassesUnder(GATEWAY_PACKAGE, name -> !name.startsWith(DTO_PACKAGE + ".")));
+        // (c2) any core class outside model/codec carrying Jackson/Micronaut reflect annotations
+        expected.addAll(annotatedClassesUnder(
+                CORE_PACKAGE,
+                name -> !name.startsWith(CORE_MODEL_PACKAGE + ".") && !name.startsWith(CORE_CODEC_PACKAGE + ".")));
         // (d) pinned JDBC entries (postgres driver + PGobject, /)
         expected.addAll(PINNED_JDBC_ENTRIES);
         // (e) pinned Netty entry (ReferenceCountUtil reflective scan, class javadoc)
@@ -260,22 +271,21 @@ class GatewayReflectConfigDriftGuardTest {
     }
 
     /**
-     * Every gateway main class carrying a Jackson annotation (class-level or on a record
-     * component), recursively over the gateway package tree except the pinned {@code dto}
-     * subpackage (covered annotation-independently above).
+     * Every main class under {@code basePackage} matching {@code filter} that carries a Jackson
+     * or Micronaut reflection annotation (class-level or on a member).
      */
-    private static Set<String> jacksonAnnotatedGatewayClasses() throws Exception {
+    private static Set<String> annotatedClassesUnder(String basePackage, java.util.function.Predicate<String> filter)
+            throws Exception {
         Set<String> names = new TreeSet<>();
-        Enumeration<URL> urls = GatewayReflectConfigDriftGuardTest.class
-                .getClassLoader()
-                .getResources(GATEWAY_PACKAGE.replace('.', '/'));
+        Enumeration<URL> urls =
+                GatewayReflectConfigDriftGuardTest.class.getClassLoader().getResources(basePackage.replace('.', '/'));
         while (urls.hasMoreElements()) {
             URL url = urls.nextElement();
             if (isTestClassesUrl(url)) {
-                continue; // only main classes are DTOs; test classes are not
+                continue; // only main classes are candidates; test classes are not
             }
-            for (String name : classNamesUnder(url, GATEWAY_PACKAGE)) {
-                if (name.startsWith(DTO_PACKAGE + ".") || isAnonymousName(name)) {
+            for (String name : classNamesUnder(url, basePackage)) {
+                if (!filter.test(name) || isAnonymousName(name)) {
                     continue;
                 }
                 if (isJacksonDto(name)) {
@@ -394,7 +404,9 @@ class GatewayReflectConfigDriftGuardTest {
 
     private static boolean hasJacksonAnnotation(java.lang.annotation.Annotation[] annotations) {
         for (java.lang.annotation.Annotation annotation : annotations) {
-            if (annotation.annotationType().getPackageName().equals(JACKSON_ANNOTATION_PACKAGE)) {
+            Class<? extends java.lang.annotation.Annotation> type = annotation.annotationType();
+            if (REFLECT_ANNOTATION_PACKAGES.contains(type.getPackageName())
+                    || MICRONAUT_REFLECT_ANNOTATIONS.contains(type.getName())) {
                 return true;
             }
         }

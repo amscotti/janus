@@ -29,6 +29,8 @@ class SystemOneFixtureManifestTest {
             "decisions.request.json",
             "decisions.response.ollama-nimble.json",
             "decisions.response.ollama-tev1.json",
+            "gemini.decisions.request.json",
+            "gemini.decisions.response.json",
             "openai.decisions.request.json",
             "openai.decisions.response.json");
 
@@ -65,11 +67,14 @@ class SystemOneFixtureManifestTest {
         // every SSE fixture through its codec — same bar here).
         SystemOneCodec systemOne = new SystemOneCodec(JsonSupport.mapper());
         OpenAiDecisionsCodec openAi = new OpenAiDecisionsCodec(JsonSupport.mapper());
+        GeminiDecisionsCodec gemini = new GeminiDecisionsCodec(JsonSupport.mapper());
         assertNotNull(systemOne.decodeRequest(read("decisions.request.json")));
         assertNotNull(systemOne.decodeResponse(read("decisions.response.ollama-tev1.json")));
         assertNotNull(systemOne.decodeResponse(read("decisions.response.ollama-nimble.json")));
         assertNotNull(openAi.decodeRequest(read("openai.decisions.request.json")));
         assertNotNull(openAi.decodeResponse(read("openai.decisions.response.json")));
+        assertNotNull(gemini.decodeRequest(read("gemini.decisions.request.json")));
+        assertNotNull(gemini.decodeResponse(read("gemini.decisions.response.json")));
     }
 
     private static Path fixtureRoot() throws URISyntaxException, IOException {

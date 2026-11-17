@@ -99,7 +99,7 @@ class GoldenMatrixTest {
     @Test
     void responsesLegsReplayByteForByte() throws Exception {
         OpenAiResponsesCodec responses = OpenAiResponsesCodec.create();
-        java.util.function.LongSupplier matrixClock = () -> MatrixCanonicals.CREATED * 1000L;
+        java.util.function.LongSupplier matrixClock = () -> MatrixCanonicals.CREATED;
         for (String dir : java.util.List.of("ro", "ra")) {
             String sibling = dir.equals("ro") ? "oo" : "oa";
             for (String mode : MODES) {

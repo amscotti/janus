@@ -20,8 +20,10 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -927,6 +929,127 @@ class OpenAiCompatibleAdapterTest {
 
         awaitTrue(disconnectObserved, 2_000);
         assertTrue(disconnectObserved.get(), "server must observe the client disconnect after the stream is closed");
+    }
+
+    @Test
+    void interruptedErrorBodyReadOn503IsNonRetryableAndPreservesInterrupt() throws Exception {
+        byte[] error = "{\"error\":{\"message\":\"busy\"}}".getBytes(StandardCharsets.UTF_8);
+        try (RawUpstreamServer upstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: "
+                            + error.length + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            Thread.sleep(2_000);
+        })) {
+            OpenAiCompatibleAdapter slowErrorAdapter = new OpenAiCompatibleAdapter(
+                    "xai",
+                    upstream.baseUrl(),
+                    "test-key",
+                    Duration.ofMillis(500),
+                    Duration.ofMillis(1_000),
+                    Duration.ofSeconds(5));
+            Thread caller = Thread.currentThread();
+            Thread interrupter = new Thread(() -> {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                caller.interrupt();
+            });
+            interrupter.start();
+            try {
+                ProviderException e =
+                        assertThrows(ProviderException.class, () -> slowErrorAdapter.complete(request(false)));
+                assertFalse(e.retryable(), "interrupted 503 error-body read must not be retryable: " + e.type());
+                assertTrue(Thread.interrupted(), "interrupt flag must be preserved");
+            } finally {
+                Thread.interrupted();
+                interrupter.join(2_000);
+            }
+        }
+    }
+
+    @Test
+    void streamIteratorExhaustionEmptyFrameTruncatedFrameAndIoExceptionEdges() throws Exception {
+        // 1. Empty `data:\n\n` frame is skipped; repeated hasNext() on exhausted iterator returns false;
+        // next() past exhaustion throws NoSuchElementException.
+        serveResponse(
+                200,
+                "text/event-stream",
+                "data:\n\n"
+                        + "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,"
+                        + "\"model\":\"xai-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"
+                        + "data: [DONE]\n\n");
+        try (Stream<StreamChunk> stream = adapter.stream(request(false))) {
+            Iterator<StreamChunk> it = stream.iterator();
+            assertTrue(it.hasNext());
+            assertEquals("hi", it.next().choices().get(0).delta().content());
+            assertFalse(it.hasNext());
+            assertFalse(it.hasNext(), "repeated hasNext() on exhausted iterator must stay false");
+            assertThrows(NoSuchElementException.class, it::next);
+        }
+
+        // 2. Truncated non-terminal SSE frame -> SseParseException -> TYPE_BAD_UPSTREAM_PAYLOAD
+        serveResponse(200, "text/event-stream", "data: {\"partial\"");
+        ProviderException truncated = assertThrows(ProviderException.class, () -> {
+            try (Stream<StreamChunk> stream = adapter.stream(request(false))) {
+                stream.toList();
+            }
+        });
+        assertEquals(ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD, truncated.type());
+
+        // 3. Premature EOF / IOException mid-stream -> TYPE_NETWORK; stream.close() after error is safe
+        byte[] firstFrame = ("data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"created\":1700000000,"
+                        + "\"model\":\"xai-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"part\"},\"finish_reason\":null}]}\n\n")
+                .getBytes(StandardCharsets.UTF_8);
+        try (RawUpstreamServer upstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: "
+                            + (firstFrame.length + 1024) + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.write(firstFrame);
+            out.flush();
+            // Close immediately before remaining Content-Length bytes arrive
+        })) {
+            OpenAiCompatibleAdapter ioAdapter = new OpenAiCompatibleAdapter("xai", upstream.baseUrl(), "test-key");
+            Stream<StreamChunk> stream = ioAdapter.stream(request(false));
+            try {
+                Iterator<StreamChunk> it = stream.iterator();
+                assertTrue(it.hasNext());
+                assertEquals("part", it.next().choices().get(0).delta().content());
+                ProviderException net = assertThrows(ProviderException.class, it::hasNext);
+                assertEquals(ProviderException.TYPE_NETWORK, net.type());
+                assertTrue(net.retryable());
+            } finally {
+                stream.close();
+            }
+        }
+
+        // 4. Close immediately without consuming chunks
+        serveResponse(200, "text/event-stream", SSE_BODY);
+        Stream<StreamChunk> immediate = adapter.stream(request(false));
+        immediate.close();
+        immediate.close();
+    }
+
+    @Test
+    void constructorBlankBaseUrlTimeoutGettersAndShortBaseUrlEndpoint() throws Exception {
+        assertThrows(IllegalArgumentException.class, () -> new OpenAiCompatibleAdapter("xai", "  ", "k"));
+        assertThrows(IllegalArgumentException.class, () -> new OpenAiCompatibleAdapter("xai", null, "k"));
+
+        OpenAiCompatibleAdapter timed = new OpenAiCompatibleAdapter(
+                "xai", baseUri.toString(), "k", Duration.ofSeconds(3), Duration.ofSeconds(7), Duration.ofSeconds(9));
+        assertEquals(Duration.ofSeconds(3), timed.connectTimeout());
+        assertEquals(Duration.ofSeconds(7), timed.headerTimeout());
+        assertEquals(Duration.ofSeconds(9), timed.bodyReadTimeout());
+
+        // Short baseUrl shorter than "/chat/completions" exercises regionMatchesIgnoreCase length guard.
+        OpenAiCompatibleAdapter shortBase = new OpenAiCompatibleAdapter("xai", "http://a", "k");
+        assertEquals("http://a", shortBase.baseUrl());
+        ProviderException err = assertThrows(ProviderException.class, () -> shortBase.complete(request(false)));
+        assertTrue(
+                ProviderException.TYPE_NETWORK.equals(err.type()) || ProviderException.TYPE_TIMEOUT.equals(err.type()),
+                err.type());
     }
 
     // -------------------------------------------------------------- helpers

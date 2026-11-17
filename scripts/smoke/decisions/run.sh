@@ -79,13 +79,16 @@ FAKE2_PORT="$(free_port "$((${FAKE2_PORT:-9872} > FAKE_PORT ? ${FAKE2_PORT:-9872
 
 mkdir -p "$RUN_DIR"
 PIDS=()
+JANUS_PGID=""
 cleanup() {
+  if [[ -n "$JANUS_PGID" ]]; then
+    kill -TERM "-$JANUS_PGID" 2>/dev/null || true
+    sleep 0.2
+    kill -KILL "-$JANUS_PGID" 2>/dev/null || true
+  fi
   for pid in "${PIDS[@]:-}"; do
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
-  # Gradle `run` forks the app JVM; reap the run-scoped process group by the
-  # exact config path only (never a broad pattern).
-  pkill -f "smoke/decisions/.run/config.toml" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -111,10 +114,12 @@ wait_http "http://127.0.0.1:$FAKE2_PORT/v1/models" 15 || die "second fake upstre
 sed -e "s/__FAKE_PORT__/$FAKE_PORT/g" -e "s/__FAKE2_PORT__/$FAKE2_PORT/g" \
   "$SMOKE_DIR/config.fake.toml" > "$RUN_DIR/config.toml"
 export JANUS_MASTER_KEY="decisions-gate-master-DISTINCTIVE-7f3a"
+export JANUS_SMOKE_GEMINI_KEY="decisions-gate-fake-goog-key"
 log "booting Janus on :$JANUS_PORT (JVM leg)"
-MICRONAUT_SERVER_PORT="$JANUS_PORT" nohup ./gradlew :janus-cli:run --no-daemon \
-  --args="--config $RUN_DIR/config.toml" > "$RUN_DIR/janus.log" 2>&1 &
-PIDS+=("$!")
+MICRONAUT_SERVER_PORT="$JANUS_PORT" "$PY_BIN" -c 'import os, sys; os.setpgrp(); os.execvp(sys.argv[1], sys.argv[1:])' \
+  ./gradlew :janus-cli:run --no-daemon --args="--config $RUN_DIR/config.toml" < /dev/null > "$RUN_DIR/janus.log" 2>&1 &
+JANUS_PGID="$!"
+PIDS+=("$JANUS_PGID")
 wait_http "http://127.0.0.1:$JANUS_PORT/v1/models" 240 || { tail -n 40 "$RUN_DIR/janus.log" >&2; die "Janus did not start"; }
 
 # ---------------------------------------------------------------- drill

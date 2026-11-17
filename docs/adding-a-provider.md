@@ -262,9 +262,11 @@ token counting, or SSE:
 family key; the router backend name is the entry's provider name for the generic
 `systemone` family), `baseUrl()`, `auth()`, and
 `DecisionResponse decide(DecisionRequest)`. `AbstractDecisionAdapter` supplies the
-shared JDK-`HttpClient` transport, the header-arrival/body-read deadlines, bounded
-error-body reads, status→`ProviderException` mapping (including the OpenAI error
-envelope refinement), and three constructor forms. Subclasses supply only the
+shared JDK-`HttpClient` transport, `Bearer` / `x-goog-api-key` / `x-api-key` auth
+header selection, the header-arrival/body-read deadlines, bounded error-body reads
+with interrupt preservation, status→`ProviderException` mapping (including OpenAI
+and Google Interactions/RPC error envelope classification), and discovery vs.
+composition constructor forms. Subclasses supply only the
 dialect: `endpoint(base)`, `encode(request)`, `decode(body)`, and optionally
 `addHeaders(builder, request)` (TypeSafe's `TypeSafe-Danger-Zone-*` beta gates).
 
@@ -272,7 +274,8 @@ The seam the router sees is `io.amscotti.janus.router.DecisionBackend`; the gate
 `DecisionAdapterBackend` adapts one to the other, stamps the `upstream-model` remap,
 stamps the client alias back onto the response, and carries the `vision` flag. A
 per-backend cap/dialect rejection (for example OpenAI's 400-question/2–10-level
-limits or TypeSafe-only `assets`/Box) is a retryable capability failure: the router
+limits, Gemini's missing-instructions/1,000-question limits, or unsupported
+`assets`/Box/media blocks) is a retryable capability failure: the router
 walks to the next candidate and returns a typed 400 only when every candidate
 declines.
 
@@ -280,8 +283,9 @@ Wiring a new decision dialect:
 
 1. Add the adapter class (encode/decode + endpoint/auth), extending
    `AbstractDecisionAdapter`.
-2. Add its `META-INF/services/io.amscotti.janus.provider.DecisionAdapter` line and
-   update `DecisionAdapterSpiTest`.
+2. Add its `META-INF/services/io.amscotti.janus.provider.DecisionAdapter` line;
+   `DecisionAdapterSpiTest` scans concrete `DecisionAdapter` implementations on
+   the classpath and guards `META-INF/services` parity.
 3. Add its constructor arm to `DecisionRouterFactory.createDecisionAdapter` and its
    `wire-format` value to `DecisionModelListFactory.validateBlock`; update
    `DecisionRouterFactoryTest`.

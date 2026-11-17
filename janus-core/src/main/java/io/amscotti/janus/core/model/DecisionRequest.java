@@ -64,39 +64,74 @@ public record DecisionRequest(
     }
 
     /**
+     * Whether the request carries non-empty TypeSafe {@code assets} in {@code extras}.
+     * Empty maps ({@code "assets": {}}) and explicit nulls ({@code "assets": null}) are
+     * treated as absent so they never falsely trigger image routing or danger-zone headers.
+     */
+    @JsonIgnore
+    public boolean hasAssets() {
+        Object assets = extras.get("assets");
+        return switch (assets) {
+            case null -> false;
+            case Map<?, ?> map -> !map.isEmpty();
+            case Iterable<?> items -> items.iterator().hasNext();
+            case String s -> !s.isBlank();
+            default -> true;
+        };
+    }
+
+    /**
      * Whether the request carries image evidence in <b>any</b> dialect: the
-     * Ollama/Clef {@code images[]} extension, TypeSafe's top-level {@code assets}
-     * map, or a Box question (which requires an image). The router uses this to
-     * pick {@code vision = true} backends; the dialogs differ, the capability
-     * does not.
+     * Ollama/Clef {@code images[]} extension, TypeSafe's non-empty top-level
+     * {@code assets} map, a Box question (which requires an image), or image
+     * content parts nested in {@code state} or question {@code instructions}/
+     * {@code criteria}. The router uses this to pick {@code vision = true}
+     * backends; non-image media (audio/video/documents) does not trigger image
+     * routing.
      */
     @JsonIgnore
     public boolean hasImageEvidence() {
         if (images != null && !images.isEmpty()) {
             return true;
         }
-        if (extras.containsKey("assets")) {
+        if (hasAssets()) {
             return true;
         }
         if (questions != null) {
             for (DecisionQuestion question : questions.values()) {
+                if (question == null) {
+                    continue;
+                }
                 if (question instanceof DecisionQuestion.BoxQuestion) {
+                    return true;
+                }
+                if (containsImagePart(question.instructions()) || containsImagePart(criteriaOf(question))) {
                     return true;
                 }
             }
         }
-        // Cloudflare/OpenRouter decision models accept images as state-array
-        // parts ({"type":"image_url","image_url":{"url":"data:..."}}); TypeSafe
-        // structured content can also nest image references. Detect them so a
+        // Cloudflare/OpenRouter/Gemini decision models accept images as state-array
+        // parts ({"type":"image_url","image_url":{"url":"data:..."}} / {"type":"image",...});
+        // TypeSafe structured content can also nest image references. Detect them so a
         // mixed pool never sends image evidence to a text-only backend.
         return containsImagePart(state);
     }
 
+    private static Object criteriaOf(DecisionQuestion question) {
+        return switch (question) {
+            case DecisionQuestion.ChoiceQuestion c -> c.criteria();
+            case DecisionQuestion.NoulQuestion n -> n.criteria();
+            case DecisionQuestion.ScoreQuestion s -> s.criteria();
+            case DecisionQuestion.BoxQuestion ignored -> null;
+        };
+    }
+
     private static boolean containsImagePart(Object value) {
         return switch (value) {
+            case null -> false;
             case Map<?, ?> map -> {
                 Object type = map.get("type");
-                if ("image_url".equals(type) || "image".equals(type)) {
+                if ("image_url".equals(type) || "input_image".equals(type) || "image".equals(type)) {
                     yield true;
                 }
                 Object imageUrl = map.get("image_url");

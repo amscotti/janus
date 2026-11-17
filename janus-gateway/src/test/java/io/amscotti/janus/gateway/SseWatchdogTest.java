@@ -1,12 +1,15 @@
 package io.amscotti.janus.gateway;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -82,6 +85,21 @@ class SseWatchdogTest {
             assertTrue(near.compareTo(far) < 0);
             assertTrue(far.compareTo(near) > 0);
             assertThrows(TimeoutException.class, () -> near.get(1, TimeUnit.MILLISECONDS));
+            assertFalse(near.isCancelled());
+            assertFalse(near.isDone());
+            Delayed externalDelayed = new Delayed() {
+                @Override
+                public long getDelay(TimeUnit unit) {
+                    return unit.convert(10, TimeUnit.SECONDS);
+                }
+
+                @Override
+                public int compareTo(Delayed o) {
+                    return 0;
+                }
+            };
+            assertTrue(near.compareTo(externalDelayed) < 0);
+            assertTrue(far.compareTo(externalDelayed) > 0);
             assertTrue(near.cancel(false));
             assertTrue(near.isCancelled());
             assertTrue(near.isDone());
@@ -90,6 +108,48 @@ class SseWatchdogTest {
         } finally {
             near.cancel(false);
             far.cancel(false);
+        }
+    }
+
+    @Test
+    void cancelledWatchdogStopsFiringAndRuntimeExceptionCallbackDoesNotBreakPool() throws Exception {
+        long baseline = stableCount();
+        AtomicInteger callsAfterCancel = new AtomicInteger();
+        CountDownLatch firstFired = new CountDownLatch(1);
+        ScheduledFuture<?> task = SseWatchdog.schedule(
+                () -> {
+                    callsAfterCancel.incrementAndGet();
+                    firstFired.countDown();
+                },
+                TimeUnit.MILLISECONDS.toNanos(10));
+        try {
+            assertTrue(firstFired.await(2, TimeUnit.SECONDS));
+            assertTrue(task.cancel(false));
+            int countAtCancel = callsAfterCancel.get();
+            Thread.sleep(100);
+            assertTrue(
+                    callsAfterCancel.get() <= countAtCancel + 1,
+                    "cancelled task must stop firing (saw " + callsAfterCancel.get() + " vs " + countAtCancel + ")");
+            assertEquals(baseline, SseWatchdog.scheduledTaskCount());
+        } finally {
+            task.cancel(true);
+        }
+
+        // RuntimeException thrown inside callback is caught and logged while cancel(true) removes it cleanly
+        CountDownLatch boomFired = new CountDownLatch(1);
+        ScheduledFuture<?> throwing = SseWatchdog.schedule(
+                () -> {
+                    boomFired.countDown();
+                    throw new RuntimeException("simulated onStall boom");
+                },
+                TimeUnit.MILLISECONDS.toNanos(10));
+        try {
+            assertTrue(boomFired.await(2, TimeUnit.SECONDS));
+            assertTrue(throwing.cancel(true));
+            assertTrue(throwing.isCancelled());
+            assertEquals(baseline, SseWatchdog.scheduledTaskCount());
+        } finally {
+            throwing.cancel(true);
         }
     }
 

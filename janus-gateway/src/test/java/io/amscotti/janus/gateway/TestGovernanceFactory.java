@@ -50,6 +50,7 @@ final class TestGovernanceFactory {
             "deepseek-v4-flash", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
             "deepseek-v4-pro", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
             "jev-latest", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
+            "vision-model", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096),
             "d3", new PricingRate(0.14, 0.28, 0.0, 0.0, 4096)));
 
     /** Shared ledger; tests assert on freshly-created key ids (per-key isolation). */

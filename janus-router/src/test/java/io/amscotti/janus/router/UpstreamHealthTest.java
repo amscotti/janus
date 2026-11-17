@@ -385,4 +385,73 @@ class UpstreamHealthTest {
         health.recordFailure(a);
         assertEquals(List.of(b), health.healthy(List.of(a, b)));
     }
+
+    @Test
+    void concurrentMixedTransitionsMaintainConsistentStateAfterQuiescence() throws Exception {
+        MutableClock clock = new MutableClock(T0);
+        PassiveUpstreamHealth health = new PassiveUpstreamHealth(3, 50, clock);
+        FakeBackend a = TestData.fake("A");
+        FakeBackend b = TestData.fake("B");
+        int threads = 8;
+        int iterations = 500;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<>();
+        for (int i = 0; i < threads; i++) {
+            final int tid = i;
+            futures.add(pool.submit(() -> {
+                start.await();
+                for (int j = 0; j < iterations; j++) {
+                    switch ((tid + j) % 4) {
+                        case 0 -> health.recordFailure(a);
+                        case 1 -> health.recordSuccess(a);
+                        case 2 -> {
+                            if (health.claimTrial(a) && (j % 2 == 0)) {
+                                health.releaseTrial(a);
+                            }
+                        }
+                        default -> health.healthy(List.of(a, b));
+                    }
+                    if (j % 10 == 0) {
+                        clock.advance(20);
+                    }
+                }
+                return null;
+            }));
+        }
+        start.countDown();
+        for (Future<?> f : futures) {
+            f.get(10, TimeUnit.SECONDS);
+        }
+        pool.shutdown();
+
+        // Quiescent recovery: recordSuccess must leave consecutiveFailures == 0 and healthy == true,
+        // so 2 failures (< allowedFails 3) keep it healthy and the 3rd flips it unhealthy.
+        health.recordSuccess(a);
+        assertTrue(health.passivelyHealthy(a));
+        assertEquals(List.of(a, b), health.healthy(List.of(a, b)));
+        health.recordFailure(a);
+        assertEquals(List.of(a, b), health.healthy(List.of(a, b)));
+        health.recordFailure(a);
+        assertEquals(List.of(a, b), health.healthy(List.of(a, b)));
+        health.recordFailure(a);
+        assertEquals(List.of(b), health.healthy(List.of(a, b)));
+    }
+
+    @Test
+    void manyConsecutiveFailuresDoNotOverflowAndRecoverCleanly() {
+        MutableClock clock = new MutableClock(T0);
+        PassiveUpstreamHealth health = new PassiveUpstreamHealth(2, 1000, clock);
+        FakeBackend a = TestData.fake("A");
+        FakeBackend b = TestData.fake("B");
+        for (int i = 0; i < 10_000; i++) {
+            health.recordFailure(a);
+        }
+        assertFalse(health.passivelyHealthy(a));
+        assertEquals(List.of(b), health.healthy(List.of(a, b)));
+        health.recordSuccess(a);
+        assertTrue(health.passivelyHealthy(a));
+        health.recordFailure(a);
+        assertEquals(List.of(a, b), health.healthy(List.of(a, b)), "1 < allowedFails=2 after recovery");
+    }
 }

@@ -11,6 +11,7 @@ import io.micronaut.http.MutableHttpResponse;
 import io.micronaut.http.annotation.Filter;
 import io.micronaut.http.filter.HttpServerFilter;
 import io.micronaut.http.filter.ServerFilterChain;
+import io.micronaut.http.filter.ServerFilterPhase;
 import io.micronaut.scheduling.TaskExecutors;
 import jakarta.inject.Inject;
 import jakarta.inject.Named;
@@ -168,6 +169,11 @@ class KeyAuthFilter implements HttpServerFilter {
         this.metricsRecorder = Objects.requireNonNull(metricsRecorder, "metricsRecorder");
         this.masterKeyThrottle = Objects.requireNonNull(masterKeyThrottle, "masterKeyThrottle");
         this.blockingExecutor = Objects.requireNonNull(blockingExecutor, "blockingExecutor");
+    }
+
+    @Override
+    public int getOrder() {
+        return ServerFilterPhase.SECURITY.order();
     }
 
     @Override

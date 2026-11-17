@@ -159,6 +159,8 @@ public record JanusConfig(
 
     public static final String WIRE_FORMAT_OPENAI_DECISIONS = "openai-decisions";
 
+    public static final String WIRE_FORMAT_GEMINI_DECISIONS = "gemini-decisions";
+
     /**
      * One {@code [[janus.model_list]]} entry: the model
      * alias callers use (the router key) + the provider entry that serves it.
@@ -926,8 +928,9 @@ public record JanusConfig(
      * One {@code [janus.decision-providers.<name>]} block — the decision
      * analogue of {@link ProviderEntry}, in its own table so a name can serve
      * chat and decisions through different providers without collision.
-     * {@code wireFormat} is {@link #WIRE_FORMAT_SYSTEMONE} or
-     * {@link #WIRE_FORMAT_OPENAI_DECISIONS} (validated by
+     * {@code wireFormat} is {@link #WIRE_FORMAT_SYSTEMONE},
+     * {@link #WIRE_FORMAT_OPENAI_DECISIONS}, or
+     * {@link #WIRE_FORMAT_GEMINI_DECISIONS} (validated by
      * {@code DecisionModelListFactory} at boot — not in this constructor,
      * because Micronaut drops a map element whose constructor throws);
      * {@code baseUrl}/{@code apiKeyEnv} and the three adapter

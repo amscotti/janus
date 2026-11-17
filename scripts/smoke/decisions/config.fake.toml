@@ -74,6 +74,34 @@ base-url = "http://127.0.0.1:__FAKE2_PORT__"
 wire-format = "openai-decisions"
 base-url = "http://127.0.0.1:__FAKE_PORT__"
 
+[janus.decision-providers.fake-gemini]
+wire-format = "gemini-decisions"
+base-url = "http://127.0.0.1:__FAKE_PORT__"
+api-key-env = "JANUS_SMOKE_GEMINI_KEY"
+
+[[janus.decision-model-list]]
+name = "gemini-decision-1"
+provider = "fake-gemini"
+vision = true
+
+[[janus.decision-model-list]]
+name = "gemini-text-only"
+provider = "fake-gemini"
+upstream-model = "gemini-decision-1"
+vision = false
+
+[[janus.decision-model-list]]
+name = "gemini-pooled"
+provider = "fake-openai"
+upstream-model = "gpt-6-luna"
+vision = true
+
+[[janus.decision-model-list]]
+name = "gemini-pooled"
+provider = "fake-gemini"
+upstream-model = "gemini-decision-1"
+vision = true
+
 [janus.router]
 max-retries = 2
 
@@ -84,6 +112,21 @@ master-key-env = "JANUS_MASTER_KEY"
 [[janus.pricing.models]]
 name = "jev-latest"
 input-per-1k = 0.000042
+output-per-1k = 0.0
+
+[[janus.pricing.models]]
+name = "gemini-decision-1"
+input-per-1k = 0.0001
+output-per-1k = 0.0
+
+[[janus.pricing.models]]
+name = "gemini-text-only"
+input-per-1k = 0.0001
+output-per-1k = 0.0
+
+[[janus.pricing.models]]
+name = "gemini-pooled"
+input-per-1k = 0.0001
 output-per-1k = 0.0
 
 [[janus.pricing.models]]

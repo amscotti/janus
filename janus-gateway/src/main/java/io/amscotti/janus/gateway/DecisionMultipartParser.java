@@ -23,7 +23,9 @@ final class DecisionMultipartParser {
 
     private static final byte[] CRLF = {'\r', '\n'};
     private static final byte[] HEADER_END = {'\r', '\n', '\r', '\n'};
+    private static final int[] HEADER_END_LPS = prefixTable(HEADER_END);
     private static final int MAX_PARTS = 512;
+    private static final int MAX_BOUNDARY_LENGTH = 70;
 
     private DecisionMultipartParser() {}
 
@@ -36,8 +38,10 @@ final class DecisionMultipartParser {
         String boundary = boundary(contentType);
         byte[] delimiter = ("--" + boundary).getBytes(StandardCharsets.ISO_8859_1);
         byte[] contentDelimiter = ("\r\n--" + boundary).getBytes(StandardCharsets.ISO_8859_1);
+        int[] delimiterLps = prefixTable(delimiter);
+        int[] contentDelimiterLps = prefixTable(contentDelimiter);
 
-        int position = indexOf(body, delimiter, 0);
+        int position = findDelimiter(body, delimiter, delimiterLps, 0, true);
         if (position < 0) {
             throw invalid("multipart boundary not found");
         }
@@ -52,13 +56,13 @@ final class DecisionMultipartParser {
             } else {
                 throw invalid("malformed multipart delimiter");
             }
-            int headersEnd = indexOf(body, HEADER_END, position);
+            int headersEnd = kmpIndexOf(body, HEADER_END, HEADER_END_LPS, position);
             if (headersEnd < 0) {
                 throw invalid("multipart part has no header terminator");
             }
             String headers = new String(body, position, headersEnd - position, StandardCharsets.ISO_8859_1);
             int contentStart = headersEnd + HEADER_END.length;
-            int next = indexOf(body, contentDelimiter, contentStart);
+            int next = findDelimiter(body, contentDelimiter, contentDelimiterLps, contentStart, false);
             if (next < 0) {
                 throw invalid("multipart part has no closing delimiter");
             }
@@ -98,53 +102,167 @@ final class DecisionMultipartParser {
         if (contentType == null || contentType.isBlank()) {
             throw invalid("multipart Content-Type is missing its boundary");
         }
-        for (String token : contentType.split(";")) {
-            String trimmed = token.trim();
-            if (trimmed.regionMatches(true, 0, "boundary=", 0, "boundary=".length())) {
-                String value = trimmed.substring("boundary=".length()).trim();
-                if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
-                    value = value.substring(1, value.length() - 1);
-                }
-                if (!value.isBlank()) {
-                    return value;
-                }
+        String value = parameter(contentType, "boundary");
+        if (value == null || value.isBlank()) {
+            throw invalid("multipart Content-Type is missing its boundary");
+        }
+        if (value.length() > MAX_BOUNDARY_LENGTH) {
+            throw invalid("multipart boundary exceeds 70 characters");
+        }
+        if (value.charAt(value.length() - 1) == ' ') {
+            throw invalid("multipart boundary must not end with whitespace");
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x20 || c > 0x7E) {
+                throw invalid("multipart boundary contains invalid characters");
             }
         }
-        throw invalid("multipart Content-Type is missing its boundary");
+        return value;
     }
 
-    /** Extract {@code name=value} from a Content-Disposition header (quoted or token). */
-    private static String parameter(String header, String name) {
-        String needle = name + "=";
-        int index = header.toLowerCase(Locale.ROOT).indexOf(needle);
-        if (index < 0) {
-            return null;
+    /**
+     * Extract an exact {@code name=value} header parameter after the initial media/disposition
+     * type token, honoring RFC 9110/7578 optional whitespace around {@code =} and quoted
+     * strings containing {@code ;} or escaped pairs.
+     */
+    private static String parameter(String header, String targetName) {
+        int len = header.length();
+        boolean pastFirstSemicolon = false;
+        boolean inQuotes = false;
+        int segmentStart = 0;
+        for (int i = 0; i <= len; i++) {
+            char c = i < len ? header.charAt(i) : ';';
+            if (inQuotes) {
+                if (c == '\\' && i + 1 < len) {
+                    i++;
+                } else if (c == '"') {
+                    inQuotes = false;
+                }
+                continue;
+            }
+            if (c == '"' && i < len) {
+                inQuotes = true;
+                continue;
+            }
+            if (c == ';') {
+                if (!pastFirstSemicolon) {
+                    pastFirstSemicolon = true;
+                } else {
+                    String matched = matchParameter(header, segmentStart, i, targetName);
+                    if (matched != null) {
+                        return matched;
+                    }
+                }
+                segmentStart = i + 1;
+            }
         }
-        int valueStart = index + needle.length();
-        if (valueStart >= header.length()) {
-            return null;
-        }
-        if (header.charAt(valueStart) == '"') {
-            int end = header.indexOf('"', valueStart + 1);
-            return end < 0 ? null : header.substring(valueStart + 1, end);
-        }
-        int end = header.indexOf(';', valueStart);
-        String value = end < 0 ? header.substring(valueStart) : header.substring(valueStart, end);
-        return value.trim();
+        return null;
     }
 
-    private static int indexOf(byte[] haystack, byte[] needle, int from) {
-        int last = haystack.length - needle.length;
-        outer:
-        for (int i = Math.max(0, from); i <= last; i++) {
-            for (int j = 0; j < needle.length; j++) {
-                if (haystack[i + j] != needle[j]) {
-                    continue outer;
+    private static String matchParameter(String header, int start, int end, String targetName) {
+        int eq = header.indexOf('=', start);
+        if (eq < 0 || eq >= end) {
+            return null;
+        }
+        String paramName = header.substring(start, eq).trim();
+        if (!paramName.equalsIgnoreCase(targetName)) {
+            return null;
+        }
+        int vStart = eq + 1;
+        while (vStart < end && isOws(header.charAt(vStart))) {
+            vStart++;
+        }
+        int vEnd = end;
+        while (vEnd > vStart && isOws(header.charAt(vEnd - 1))) {
+            vEnd--;
+        }
+        if (vStart >= vEnd) {
+            return null;
+        }
+        if (header.charAt(vStart) == '"') {
+            if (vEnd - vStart < 2 || header.charAt(vEnd - 1) != '"') {
+                return null;
+            }
+            StringBuilder unescaped = new StringBuilder(vEnd - vStart - 2);
+            for (int i = vStart + 1; i < vEnd - 1; i++) {
+                char c = header.charAt(i);
+                if (c == '\\' && i + 1 < vEnd - 1) {
+                    unescaped.append(header.charAt(++i));
+                } else {
+                    unescaped.append(c);
                 }
             }
-            return i;
+            return unescaped.toString();
+        }
+        return header.substring(vStart, vEnd);
+    }
+
+    private static boolean isOws(char c) {
+        return c == ' ' || c == '\t';
+    }
+
+    private static int findDelimiter(byte[] haystack, byte[] pattern, int[] lps, int from, boolean requireLineStart) {
+        int j = 0;
+        for (int i = Math.max(0, from); i < haystack.length; i++) {
+            while (j > 0 && haystack[i] != pattern[j]) {
+                j = lps[j - 1];
+            }
+            if (haystack[i] == pattern[j]) {
+                j++;
+                if (j == pattern.length) {
+                    int matchStart = i - pattern.length + 1;
+                    int after = i + 1;
+                    boolean validLead = !requireLineStart
+                            || matchStart == 0
+                            || (matchStart >= 2
+                                    && haystack[matchStart - 2] == '\r'
+                                    && haystack[matchStart - 1] == '\n');
+                    if (validLead && isDelimiterSuffix(haystack, after)) {
+                        return matchStart;
+                    }
+                    j = lps[j - 1];
+                }
+            }
         }
         return -1;
+    }
+
+    private static boolean isDelimiterSuffix(byte[] body, int after) {
+        if (after + 1 >= body.length) {
+            return false;
+        }
+        return (body[after] == '\r' && body[after + 1] == '\n') || (body[after] == '-' && body[after + 1] == '-');
+    }
+
+    private static int kmpIndexOf(byte[] haystack, byte[] pattern, int[] lps, int from) {
+        int j = 0;
+        for (int i = Math.max(0, from); i < haystack.length; i++) {
+            while (j > 0 && haystack[i] != pattern[j]) {
+                j = lps[j - 1];
+            }
+            if (haystack[i] == pattern[j]) {
+                j++;
+                if (j == pattern.length) {
+                    return i - pattern.length + 1;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private static int[] prefixTable(byte[] pattern) {
+        int[] lps = new int[pattern.length];
+        int j = 0;
+        for (int i = 1; i < pattern.length; i++) {
+            while (j > 0 && pattern[i] != pattern[j]) {
+                j = lps[j - 1];
+            }
+            if (pattern[i] == pattern[j]) {
+                lps[i] = ++j;
+            }
+        }
+        return lps;
     }
 
     private static DecisionCodecException invalid(String message) {

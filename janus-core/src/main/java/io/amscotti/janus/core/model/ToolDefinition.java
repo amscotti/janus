@@ -41,4 +41,16 @@ public record ToolDefinition(
     public ToolDefinition(String name, String description, String inputSchema) {
         this(null, name, description, inputSchema, null, null);
     }
+
+    /** Tool description and schema are client/prompt content: excluded from log output
+     * unless content logging is explicitly enabled ({@code [janus.privacy] log-content}). */
+    @Override
+    public String toString() {
+        if (ContentLogging.enabled()) {
+            return "ToolDefinition[type=" + type + ", name=" + name + ", description=" + description + ", inputSchema="
+                    + inputSchema + ", strict=" + strict + ", cacheControl=" + cacheControl + "]";
+        }
+        return "ToolDefinition[type=" + type + ", name=" + name + ", strict=" + strict
+                + ", description/inputSchema not logged]";
+    }
 }

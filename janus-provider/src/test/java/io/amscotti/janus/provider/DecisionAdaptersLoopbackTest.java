@@ -1,12 +1,14 @@
 package io.amscotti.janus.provider;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import io.amscotti.janus.core.codec.GeminiDecisionsCodec;
 import io.amscotti.janus.core.codec.OpenAiDecisionsCodec;
 import io.amscotti.janus.core.codec.SystemOneCodec;
 import io.amscotti.janus.core.model.DecisionAnswer;
@@ -16,11 +18,14 @@ import io.amscotti.janus.core.model.DecisionResponse;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,11 +48,18 @@ class DecisionAdaptersLoopbackTest {
                     + "\"model\":\"gpt-6-luna\",\"usage\":{\"input_tokens\":30,\"input_tokens_details\":"
                     + "{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens\":3,\"total_tokens\":33}}";
 
+    private static final String GEMINI_RESPONSE =
+            "{\"answers\":{\"refund\":{\"type\":\"noul\",\"noul\":0.93,\"confidence\":0.93}},"
+                    + "\"usage\":{\"total_tokens\":210,\"total_input_tokens\":210,\"total_output_tokens\":0,"
+                    + "\"input_tokens_by_modality\":[{\"modality\":\"text\",\"tokens\":210}]}}";
+
     private HttpServer server;
     private URI baseUri;
     private final AtomicReference<String> capturedBody = new AtomicReference<>();
     private final AtomicReference<String> capturedPath = new AtomicReference<>();
     private final AtomicReference<String> capturedAuth = new AtomicReference<>();
+    private final AtomicReference<String> capturedXApiKey = new AtomicReference<>();
+    private final AtomicReference<String> capturedGoogKey = new AtomicReference<>();
     private final AtomicReference<String> capturedDangerImages = new AtomicReference<>();
     private final AtomicReference<String> capturedDangerLongContext = new AtomicReference<>();
     private final AtomicReference<Integer> nextStatus = new AtomicReference<>(200);
@@ -55,6 +67,8 @@ class DecisionAdaptersLoopbackTest {
     private final AtomicReference<Long> nextHeaderDelayMillis = new AtomicReference<>(0L);
     private final AtomicReference<Long> nextBodyDelayMillis = new AtomicReference<>(0L);
     private final AtomicReference<String> nextRetryAfter = new AtomicReference<>();
+    private final AtomicReference<CountDownLatch> stallEntered = new AtomicReference<>();
+    private final AtomicReference<CountDownLatch> stallRelease = new AtomicReference<>();
 
     @BeforeEach
     void startServer() throws IOException {
@@ -62,15 +76,31 @@ class DecisionAdaptersLoopbackTest {
         server.createContext("/", exchange -> {
             capturedPath.set(exchange.getRequestURI().getPath());
             capturedAuth.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            capturedXApiKey.set(exchange.getRequestHeaders().getFirst("x-api-key"));
+            capturedGoogKey.set(exchange.getRequestHeaders().getFirst("x-goog-api-key"));
             capturedDangerImages.set(exchange.getRequestHeaders().getFirst("TypeSafe-Danger-Zone-Images"));
             capturedDangerLongContext.set(exchange.getRequestHeaders().getFirst("TypeSafe-Danger-Zone-Long-Context"));
             capturedBody.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             sleep(nextHeaderDelayMillis.getAndSet(0L));
-            byte[] bytes = nextBody.get().getBytes(StandardCharsets.UTF_8);
+            CountDownLatch entered = stallEntered.getAndSet(null);
+            CountDownLatch release = stallRelease.getAndSet(null);
             exchange.getResponseHeaders().set("Content-Type", "application/json");
             if (nextRetryAfter.get() != null) {
                 exchange.getResponseHeaders().set("Retry-After", nextRetryAfter.get());
             }
+            if (entered != null && release != null) {
+                exchange.sendResponseHeaders(nextStatus.get(), 1024);
+                exchange.getResponseBody().flush();
+                entered.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+                exchange.close();
+                return;
+            }
+            byte[] bytes = nextBody.get().getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(nextStatus.get(), bytes.length);
             sleep(nextBodyDelayMillis.getAndSet(0L));
             try (OutputStream out = exchange.getResponseBody()) {
@@ -300,6 +330,188 @@ class DecisionAdaptersLoopbackTest {
                 assertThrows(IllegalStateException.class, () -> new SystemOneAdapter().decide(request("d3")));
         assertTrue(e.getMessage().contains("no base URL"), e.getMessage());
         assertThrows(IllegalStateException.class, () -> new OpenAiDecisionsAdapter().decide(request("gpt-6-luna")));
+        assertThrows(
+                IllegalStateException.class, () -> new GeminiDecisionsAdapter().decide(request("gemini-decision-1")));
+    }
+
+    @Test
+    void emptyAndNullAssetsDoNotTriggerDangerZoneImagesHeader() {
+        serve(200, SYSTEMONE_RESPONSE);
+        SystemOneAdapter adapter = new SystemOneAdapter("typesafe", baseUri.toString(), "");
+
+        DecisionRequest emptyAssets = new DecisionRequest(
+                "d3",
+                "Check status.",
+                null,
+                Map.of("refund", new DecisionQuestion.NoulQuestion("Refund?", null)),
+                Map.of("assets", Map.of()),
+                Map.of());
+        adapter.decide(emptyAssets);
+        assertNull(capturedDangerImages.get(), "empty assets {} must not enable danger-zone-images");
+
+        Map<String, Object> nullAssetsExtras = new LinkedHashMap<>();
+        nullAssetsExtras.put("assets", null);
+        DecisionRequest nullAssets = new DecisionRequest(
+                "d3",
+                "Check status.",
+                null,
+                Map.of("refund", new DecisionQuestion.NoulQuestion("Refund?", null)),
+                nullAssetsExtras,
+                Map.of());
+        adapter.decide(nullAssets);
+        assertNull(capturedDangerImages.get(), "null assets must not enable danger-zone-images");
+    }
+
+    @Test
+    void geminiDecisionsPostsTranslatedBodyWithXGoogApiKeyAndOmitsAuthorization() {
+        serve(200, GEMINI_RESPONSE);
+        GeminiDecisionsAdapter adapter = new GeminiDecisionsAdapter(baseUri.toString(), "goog-secret");
+        DecisionRequest request = request("gemini-decision-1");
+
+        DecisionResponse response = adapter.decide(request);
+
+        assertEquals("/v1beta/decisions", capturedPath.get());
+        assertEquals("goog-secret", capturedGoogKey.get());
+        assertNull(capturedAuth.get(), "gemini-decisions must not send Authorization: Bearer");
+        assertEquals(GeminiDecisionsCodec.create().encodeRequest(request), capturedBody.get());
+        assertNull(response.model(), "Gemini omits model so backend echoes requested alias");
+        DecisionAnswer.NoulAnswer answer = assertInstanceOf(
+                DecisionAnswer.NoulAnswer.class, response.answers().get("refund"));
+        assertEquals(0.93, answer.noul());
+        assertEquals(210, response.usage().promptTokens());
+        assertEquals(0, response.usage().completionTokens());
+        assertEquals("req-1", response.meta().get("request_id"));
+
+        // Verbatim /decisions path suffix + blank secret omits auth headers
+        GeminiDecisionsAdapter verbatim = new GeminiDecisionsAdapter(baseUri + "/v1beta/decisions", "");
+        verbatim.decide(request("gemini-decision-1"));
+        assertEquals("/v1beta/decisions", capturedPath.get());
+        assertNull(capturedGoogKey.get());
+        assertNull(capturedAuth.get());
+    }
+
+    @Test
+    void geminiDecisionsUnsupportedBoxFailsFastAsUnsupportedRequestWithoutHttpCall() {
+        GeminiDecisionsAdapter adapter = new GeminiDecisionsAdapter(baseUri.toString(), "goog-secret");
+        capturedPath.set(null);
+        DecisionRequest boxRequest = new DecisionRequest(
+                "gemini-decision-1",
+                "Find the widget.",
+                java.util.List.of("iVBORw0KGgo="),
+                Map.of("bbox", new DecisionQuestion.BoxQuestion("Find it")),
+                Map.of(),
+                Map.of());
+        ProviderException e = assertThrows(ProviderException.class, () -> adapter.decide(boxRequest));
+        assertEquals(ProviderException.TYPE_UNSUPPORTED_REQUEST, e.type());
+        assertTrue(e.retryable(), "unsupported_request fails over to remaining pool candidates");
+        assertNull(capturedPath.get(), "capability rejection must happen locally before issuing HTTP call");
+    }
+
+    @Test
+    void geminiDecisionsClassifiesGoogleEnvelopesWithoutLeakingErrorBodyText() {
+        GeminiDecisionsAdapter adapter = new GeminiDecisionsAdapter(baseUri.toString(), "goog-secret");
+        String secretCanary = "SENSITIVE_UPSTREAM_PROMPT_CANARY";
+
+        // 400 Interactions invalid_request & safety
+        for (String code : new String[] {"invalid_request", "safety", "content_blocked"}) {
+            serve(400, "{\"error\":{\"message\":\"" + secretCanary + "\",\"code\":\"" + code + "\"}}");
+            ProviderException err =
+                    assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")), code);
+            assertEquals(ProviderException.TYPE_UPSTREAM_4XX, err.type());
+            assertEquals(400, err.statusCode());
+            assertFalse(err.retryable());
+            assertFalse(err.getMessage().contains(secretCanary), "must never leak upstream body text");
+        }
+
+        // 401 RPC UNAUTHENTICATED
+        serve(401, "{\"error\":{\"code\":401,\"message\":\"" + secretCanary + "\",\"status\":\"UNAUTHENTICATED\"}}");
+        ProviderException unauth =
+                assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_AUTH, unauth.type());
+        assertEquals(401, unauth.statusCode());
+        assertFalse(unauth.retryable());
+        assertFalse(unauth.getMessage().contains(secretCanary));
+
+        // 403 RPC PERMISSION_DENIED
+        serve(403, "{\"error\":{\"code\":403,\"message\":\"" + secretCanary + "\",\"status\":\"PERMISSION_DENIED\"}}");
+        ProviderException forbidden =
+                assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_AUTH, forbidden.type());
+        assertEquals(403, forbidden.statusCode());
+        assertFalse(forbidden.retryable());
+        assertFalse(forbidden.getMessage().contains(secretCanary));
+
+        // 404 Interactions not_found
+        serve(404, "{\"error\":{\"message\":\"" + secretCanary + "\",\"code\":\"not_found\"}}");
+        ProviderException notFound =
+                assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, notFound.type());
+        assertEquals(404, notFound.statusCode());
+        assertFalse(notFound.retryable());
+        assertFalse(notFound.getMessage().contains(secretCanary));
+
+        // 429 RPC RESOURCE_EXHAUSTED with Retry-After
+        nextRetryAfter.set("11");
+        serve(429, "{\"error\":{\"code\":429,\"message\":\"" + secretCanary + "\",\"status\":\"RESOURCE_EXHAUSTED\"}}");
+        ProviderException rateLimited =
+                assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_RATE_LIMITED, rateLimited.type());
+        assertEquals(11L, rateLimited.retryAfterSeconds());
+        assertTrue(rateLimited.retryable());
+        assertFalse(rateLimited.getMessage().contains(secretCanary));
+        nextRetryAfter.set(null);
+
+        // 503 RPC UNAVAILABLE (retryable)
+        serve(503, "{\"error\":{\"code\":503,\"message\":\"" + secretCanary + "\",\"status\":\"UNAVAILABLE\"}}");
+        ProviderException unavailable =
+                assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_UPSTREAM_5XX, unavailable.type());
+        assertTrue(unavailable.retryable());
+        assertFalse(unavailable.getMessage().contains(secretCanary));
+    }
+
+    @Test
+    void interruptedReadErrorBodyOnHttp503ReturnsNonRetryableAndPreservesInterruptFlag() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        stallEntered.set(entered);
+        stallRelease.set(release);
+        serve(503, "");
+
+        GeminiDecisionsAdapter adapter = new GeminiDecisionsAdapter(
+                baseUri.toString(), "goog-secret", Duration.ofSeconds(2), Duration.ofSeconds(2), Duration.ofSeconds(5));
+        Thread caller = Thread.currentThread();
+        Thread interrupter = new Thread(() -> {
+            try {
+                if (entered.await(2, TimeUnit.SECONDS)) {
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                    while (System.nanoTime() < deadline) {
+                        for (StackTraceElement frame : caller.getStackTrace()) {
+                            if ("readErrorBody".equals(frame.getMethodName())) {
+                                caller.interrupt();
+                                return;
+                            }
+                        }
+                        Thread.onSpinWait();
+                    }
+                    caller.interrupt();
+                }
+            } catch (InterruptedException ignored) {
+                // test cleanup
+            }
+        });
+        interrupter.start();
+        try {
+            ProviderException thrown =
+                    assertThrows(ProviderException.class, () -> adapter.decide(request("gemini-decision-1")));
+            assertFalse(thrown.retryable(), "interrupted HTTP 503 error-body read must not return retryable=true");
+            assertEquals(ProviderException.TYPE_UPSTREAM_4XX, thrown.type());
+            assertTrue(Thread.currentThread().isInterrupted(), "interrupt flag must remain set");
+        } finally {
+            Thread.interrupted();
+            release.countDown();
+            interrupter.join(2000);
+        }
     }
 
     private void serve(int status, String body) {
@@ -349,9 +561,294 @@ class DecisionAdaptersLoopbackTest {
         assertEquals(Duration.ofSeconds(7), openAi.headerTimeout());
         assertEquals(Duration.ofSeconds(9), openAi.bodyReadTimeout());
 
+        GeminiDecisionsAdapter gemini = new GeminiDecisionsAdapter(
+                "http://127.0.0.1:1", "k", Duration.ofSeconds(3), Duration.ofSeconds(7), Duration.ofSeconds(9));
+        assertEquals(Duration.ofSeconds(3), gemini.connectTimeout());
+        assertEquals(Duration.ofSeconds(7), gemini.headerTimeout());
+        assertEquals(Duration.ofSeconds(9), gemini.bodyReadTimeout());
+
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new SystemOneAdapter(
                         "n", "http://127.0.0.1:1", "k", Duration.ZERO, Duration.ofSeconds(7), Duration.ofSeconds(9)));
+    }
+
+    @Test
+    void openAiDecisionsVerbatimMixedCaseAndShortBaseUrlsAndExtraAnswerKey() {
+        serve(200, OPENAI_RESPONSE);
+
+        OpenAiDecisionsAdapter verbatimLower = new OpenAiDecisionsAdapter(baseUri + "/decisions", "k");
+        verbatimLower.decide(request("gpt-6-luna"));
+        assertEquals("/decisions", capturedPath.get());
+
+        OpenAiDecisionsAdapter verbatimUpper = new OpenAiDecisionsAdapter(baseUri + "/DECISIONS", "k");
+        verbatimUpper.decide(request("gpt-6-luna"));
+        assertEquals("/DECISIONS", capturedPath.get());
+
+        OpenAiDecisionsAdapter shortBase = new OpenAiDecisionsAdapter("http://a", "k");
+        assertEquals(URI.create("http://a/v1/decisions"), shortBase.endpoint("http://a"));
+
+        OpenAiDecisionsAdapter discovery = new OpenAiDecisionsAdapter();
+        IllegalStateException inert =
+                assertThrows(IllegalStateException.class, () -> discovery.decide(request("gpt-6-luna")));
+        assertTrue(inert.getMessage().contains("no base URL"), inert.getMessage());
+
+        serve(
+                200,
+                "{\"answers\":[{\"type\":\"predicate\",\"name\":\"refund\",\"probability\":0.91},"
+                        + "{\"type\":\"predicate\",\"name\":\"unrequested\",\"probability\":0.12}],"
+                        + "\"model\":\"gpt-6-luna\",\"usage\":{\"input_tokens\":30,\"output_tokens\":3,\"total_tokens\":33}}");
+        OpenAiDecisionsAdapter adapter = new OpenAiDecisionsAdapter(baseUri.toString(), "test-key");
+        ProviderException extra = assertThrows(ProviderException.class, () -> adapter.decide(request("gpt-6-luna")));
+        assertEquals(ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD, extra.type());
+        assertTrue(extra.getMessage().contains("not requested"), extra.getMessage());
+    }
+
+    @Test
+    void constructorGuardRailsRejectInvalidInputsAcrossDecisionAdapters() {
+        assertThrows(IllegalArgumentException.class, () -> new SystemOneAdapter(null, baseUri.toString(), "k"));
+        assertThrows(IllegalArgumentException.class, () -> new SystemOneAdapter("   ", baseUri.toString(), "k"));
+        assertThrows(IllegalArgumentException.class, () -> new SystemOneAdapter("n", null, "k"));
+        assertThrows(IllegalArgumentException.class, () -> new SystemOneAdapter("n", "   ", "k"));
+        assertThrows(NullPointerException.class, () -> new SystemOneAdapter("n", baseUri.toString(), null));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OpenAiDecisionsAdapter(
+                        baseUri.toString(), "k", Duration.ofMillis(-1), Duration.ofSeconds(1), Duration.ofSeconds(1)));
+        assertThrows(
+                NullPointerException.class,
+                () -> new OpenAiDecisionsAdapter(
+                        baseUri.toString(), "k", null, Duration.ofSeconds(1), Duration.ofSeconds(1)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OpenAiDecisionsAdapter(
+                        baseUri.toString(), "k", Duration.ofSeconds(1), Duration.ZERO, Duration.ofSeconds(1)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OpenAiDecisionsAdapter(
+                        baseUri.toString(), "k", Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(-5)));
+    }
+
+    @Test
+    void abstractDecisionAdapterXApiKeyAuthNullQuestionsAnswersAndPartialMissing() {
+        serve(200, SYSTEMONE_RESPONSE);
+        AbstractDecisionAdapter xApiAdapter =
+                new AbstractDecisionAdapter("custom-x", baseUri.toString(), ProviderAuth.TYPE_X_API_KEY, "x-secret") {
+                    @Override
+                    protected URI endpoint(String baseUrl) {
+                        return URI.create(baseUrl + "/v1/custom");
+                    }
+
+                    @Override
+                    protected String encode(DecisionRequest request) {
+                        return "{}";
+                    }
+
+                    @Override
+                    protected DecisionResponse decode(String body) {
+                        return new DecisionResponse("m", Map.of(), null, Map.of(), Map.of());
+                    }
+                };
+
+        DecisionResponse emptyOk = xApiAdapter.decide(new DecisionRequest("m", "s", null, null, Map.of(), Map.of()));
+        assertEquals("/v1/custom", capturedPath.get());
+        assertEquals("x-secret", capturedXApiKey.get());
+        assertNull(capturedAuth.get(), "x-api-key auth must omit Authorization");
+        assertTrue(emptyOk.answers().isEmpty());
+
+        AbstractDecisionAdapter nullAnswersAdapter =
+                new AbstractDecisionAdapter(
+                        "null-answers", baseUri.toString(), ProviderAuth.TYPE_X_API_KEY, "x-secret") {
+                    @Override
+                    protected URI endpoint(String baseUrl) {
+                        return URI.create(baseUrl + "/v1/custom");
+                    }
+
+                    @Override
+                    protected String encode(DecisionRequest request) {
+                        return "{}";
+                    }
+
+                    @Override
+                    protected DecisionResponse decode(String body) {
+                        return new DecisionResponse("m", null, null, Map.of(), Map.of());
+                    }
+                };
+        assertThrows(ProviderException.class, () -> nullAnswersAdapter.decide(request("m")));
+        DecisionResponse bothNullOk =
+                nullAnswersAdapter.decide(new DecisionRequest("m", "s", null, null, Map.of(), Map.of()));
+        assertNull(bothNullOk.answers());
+
+        // 1 of 2 requested answers present exercises both filter predicates in requireCompleteAnswers.
+        serve(200, SYSTEMONE_RESPONSE);
+        SystemOneAdapter sys = new SystemOneAdapter("ollama", baseUri.toString(), "");
+        Map<String, DecisionQuestion> twoQuestions = new LinkedHashMap<>();
+        twoQuestions.put("refund", new DecisionQuestion.NoulQuestion("Refund?", null));
+        twoQuestions.put("escalate", new DecisionQuestion.NoulQuestion("Escalate?", null));
+        DecisionRequest twoReq = new DecisionRequest("d3", "s", null, twoQuestions, Map.of(), Map.of());
+        ProviderException partial = assertThrows(ProviderException.class, () -> sys.decide(twoReq));
+        assertEquals(ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD, partial.type());
+        assertTrue(partial.getMessage().contains("omitted 1 of 2"), partial.getMessage());
+    }
+
+    @Test
+    void abstractDecisionAdapterNetworkInterruptAndEnvelopeMappings() throws Exception {
+        SystemOneAdapter adapter = new SystemOneAdapter("ollama", baseUri.toString(), "");
+
+        // Plain-status and envelope refinements
+        serve(403, "forbidden");
+        assertEquals(
+                ProviderException.TYPE_AUTH,
+                assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                        .type());
+
+        serve(429, "slow down");
+        assertEquals(
+                ProviderException.TYPE_RATE_LIMITED,
+                assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                        .type());
+
+        serve(400, "{\"error\":null}");
+        assertEquals(
+                ProviderException.TYPE_UPSTREAM_4XX,
+                assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                        .type());
+
+        serve(400, "{\"error\":{\"type\":\"unmapped_type\"}}");
+        assertEquals(
+                ProviderException.TYPE_UPSTREAM_4XX,
+                assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                        .type());
+
+        for (String rateType : new String[] {"insufficient_quota", "rate_limit_exceeded"}) {
+            serve(500, "{\"error\":{\"type\":\"" + rateType + "\"}}");
+            assertEquals(
+                    ProviderException.TYPE_RATE_LIMITED,
+                    assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                            .type());
+        }
+        for (String authType : new String[] {"invalid_api_key", "permission_error"}) {
+            serve(500, "{\"error\":{\"type\":\"" + authType + "\"}}");
+            assertEquals(
+                    ProviderException.TYPE_AUTH,
+                    assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                            .type());
+        }
+        for (String fiveType : new String[] {"api_error", "overloaded_error"}) {
+            serve(400, "{\"error\":{\"type\":\"" + fiveType + "\"}}");
+            assertEquals(
+                    ProviderException.TYPE_UPSTREAM_5XX,
+                    assertThrows(ProviderException.class, () -> adapter.decide(request("d3")))
+                            .type());
+        }
+
+        // Network failure (connection refused)
+        int closedPort;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            closedPort = socket.getLocalPort();
+        }
+        SystemOneAdapter dead = new SystemOneAdapter("dead", "http://127.0.0.1:" + closedPort, "");
+        ProviderException net = assertThrows(ProviderException.class, () -> dead.decide(request("d3")));
+        assertEquals(ProviderException.TYPE_NETWORK, net.type());
+        assertTrue(net.retryable());
+
+        // Pre-interrupted calling thread on send()
+        Thread.currentThread().interrupt();
+        try {
+            ProviderException interrupted = assertThrows(ProviderException.class, () -> adapter.decide(request("d3")));
+            assertEquals(ProviderException.TYPE_UPSTREAM_4XX, interrupted.type());
+            assertFalse(interrupted.retryable());
+            assertTrue(Thread.currentThread().isInterrupted(), "interrupt flag must be preserved");
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void googleRpcStatusesAndUnreadableErrorBodyFallbackPreserveStatusAndRetryAfter() throws Exception {
+        GeminiDecisionsAdapter gemini = new GeminiDecisionsAdapter(baseUri.toString(), "goog-secret");
+        String canary = "SECRET_CANARY_NEVER_LEAK";
+
+        // Google RPC error statuses: PERMISSION_DENIED, NOT_FOUND, RESOURCE_EXHAUSTED, UNAVAILABLE, DEADLINE_EXCEEDED
+        serve(403, "{\"error\":{\"code\":403,\"message\":\"" + canary + "\",\"status\":\"PERMISSION_DENIED\"}}");
+        ProviderException permDenied =
+                assertThrows(ProviderException.class, () -> gemini.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_AUTH, permDenied.type());
+        assertFalse(permDenied.getMessage().contains(canary));
+
+        serve(404, "{\"error\":{\"code\":404,\"message\":\"" + canary + "\",\"status\":\"NOT_FOUND\"}}");
+        ProviderException rpcNotFound =
+                assertThrows(ProviderException.class, () -> gemini.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_UPSTREAM_4XX, rpcNotFound.type());
+        assertEquals(404, rpcNotFound.statusCode());
+        assertFalse(rpcNotFound.getMessage().contains(canary));
+
+        nextRetryAfter.set("9");
+        serve(429, "{\"error\":{\"code\":429,\"message\":\"" + canary + "\",\"status\":\"RESOURCE_EXHAUSTED\"}}");
+        ProviderException resourceExhausted =
+                assertThrows(ProviderException.class, () -> gemini.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_RATE_LIMITED, resourceExhausted.type());
+        assertEquals(9L, resourceExhausted.retryAfterSeconds());
+        assertTrue(resourceExhausted.retryable());
+        assertFalse(resourceExhausted.getMessage().contains(canary));
+        nextRetryAfter.set(null);
+
+        serve(503, "{\"error\":{\"code\":503,\"message\":\"" + canary + "\",\"status\":\"UNAVAILABLE\"}}");
+        ProviderException rpcUnavailable =
+                assertThrows(ProviderException.class, () -> gemini.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_UPSTREAM_5XX, rpcUnavailable.type());
+        assertTrue(rpcUnavailable.retryable());
+        assertFalse(rpcUnavailable.getMessage().contains(canary));
+
+        serve(504, "{\"error\":{\"code\":504,\"message\":\"" + canary + "\",\"status\":\"DEADLINE_EXCEEDED\"}}");
+        ProviderException deadlineExceeded =
+                assertThrows(ProviderException.class, () -> gemini.decide(request("gemini-decision-1")));
+        assertEquals(ProviderException.TYPE_UPSTREAM_5XX, deadlineExceeded.type());
+        assertEquals(504, deadlineExceeded.statusCode());
+        assertTrue(deadlineExceeded.retryable());
+        assertFalse(deadlineExceeded.getMessage().contains(canary));
+
+        // Unreadable / EOF-truncated error body preserves head HTTP status + Retry-After
+        try (RawUpstreamServer truncatedUpstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                            + "Retry-After: 13\r\nContent-Length: 500\r\n\r\n{\"error\":")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            // Return immediately: socket closes before Content-Length 500 arrives -> readErrorBody fails with
+            // IOException
+        })) {
+            GeminiDecisionsAdapter eofAdapter = new GeminiDecisionsAdapter(
+                    truncatedUpstream.baseUrl(),
+                    "goog-secret",
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(2));
+            ProviderException fallback =
+                    assertThrows(ProviderException.class, () -> eofAdapter.decide(request("gemini-decision-1")));
+            assertEquals(ProviderException.TYPE_UPSTREAM_5XX, fallback.type());
+            assertEquals(503, fallback.statusCode());
+            assertEquals(13L, fallback.retryAfterSeconds());
+        }
+
+        // Stalled error body past bodyReadTimeout also preserves head status + Retry-After
+        try (RawUpstreamServer stalledUpstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\n"
+                            + "Retry-After: 21\r\nContent-Length: 500\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            Thread.sleep(1_000);
+        })) {
+            OpenAiDecisionsAdapter stalledAdapter = new OpenAiDecisionsAdapter(
+                    stalledUpstream.baseUrl(),
+                    "test-key",
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(1),
+                    Duration.ofMillis(120));
+            ProviderException fallback =
+                    assertThrows(ProviderException.class, () -> stalledAdapter.decide(request("gpt-6-luna")));
+            assertEquals(ProviderException.TYPE_RATE_LIMITED, fallback.type());
+            assertEquals(429, fallback.statusCode());
+            assertEquals(21L, fallback.retryAfterSeconds());
+        }
     }
 }

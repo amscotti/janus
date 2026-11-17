@@ -13,6 +13,7 @@ import io.amscotti.janus.core.codec.DecisionCodecException;
 import io.amscotti.janus.core.model.DecisionQuestion;
 import io.amscotti.janus.core.model.DecisionRequest;
 import io.amscotti.janus.provider.DecisionAdapter;
+import io.amscotti.janus.provider.GeminiDecisionsAdapter;
 import io.amscotti.janus.provider.OpenAiDecisionsAdapter;
 import io.amscotti.janus.provider.ProviderAuth;
 import io.amscotti.janus.router.DecisionBackend;
@@ -71,9 +72,12 @@ class DecisionModelListFactoryTest {
         return (providerName, wireFormatKey, baseUrl, apiKey, timeouts) -> {
             builtKey.set(wireFormatKey);
             builtTimeouts.set(timeouts);
-            String backendName = JanusConfig.WIRE_FORMAT_OPENAI_DECISIONS.equals(wireFormatKey)
-                    ? OpenAiDecisionsAdapter.NAME
-                    : providerName;
+            String backendName =
+                    switch (wireFormatKey) {
+                        case JanusConfig.WIRE_FORMAT_OPENAI_DECISIONS -> OpenAiDecisionsAdapter.NAME;
+                        case JanusConfig.WIRE_FORMAT_GEMINI_DECISIONS -> GeminiDecisionsAdapter.NAME;
+                        default -> providerName;
+                    };
             RecordingAdapter adapter = new RecordingAdapter(backendName, baseUrl, apiKey);
             built.set(adapter);
             return adapter;
@@ -175,6 +179,7 @@ class DecisionModelListFactoryTest {
                         recording()));
         assertTrue(e.getMessage().contains("systemone"), e.getMessage());
         assertTrue(e.getMessage().contains("openai-decisions"), e.getMessage());
+        assertTrue(e.getMessage().contains("gemini-decisions"), e.getMessage());
     }
 
     @Test
@@ -260,5 +265,33 @@ class DecisionModelListFactoryTest {
                         defaults(),
                         recording()));
         assertTrue(e.getMessage().contains("\"m\"") && e.getMessage().contains("systemone"), e.getMessage());
+
+        IllegalStateException geminiDup = assertThrows(
+                IllegalStateException.class,
+                () -> DecisionModelListFactory.buildDecisionRoutes(
+                        List.of(new DecisionModelListEntry("g", "g1"), new DecisionModelListEntry("g", "g2")),
+                        Map.of(
+                                "g1", new DecisionProviderEntry("gemini-decisions", null, null),
+                                "g2", new DecisionProviderEntry("gemini-decisions", "https://example.com", null)),
+                        env -> null,
+                        defaults(),
+                        recording()));
+        assertTrue(geminiDup.getMessage().contains("gemini-decisions"), geminiDup.getMessage());
+    }
+
+    @Test
+    void geminiDecisionsFamilyKeepsItsFixedBackendNameAndAcceptsVisionFlag() {
+        DecisionModelListEntry entry =
+                new DecisionModelListEntry("gemini-decision-1", "my-gemini", null, null, null, true, null, null, null);
+        Map<String, List<DecisionBackend>> routes = DecisionModelListFactory.buildDecisionRoutes(
+                List.of(entry),
+                Map.of("my-gemini", new DecisionProviderEntry("gemini-decisions", null, null)),
+                env -> null,
+                defaults(),
+                recording());
+        DecisionBackend backend = routes.get("gemini-decision-1").get(0);
+        assertEquals(GeminiDecisionsAdapter.NAME, backend.name());
+        assertTrue(backend.supportsImages());
+        assertEquals(JanusConfig.WIRE_FORMAT_GEMINI_DECISIONS, builtKey.get());
     }
 }

@@ -100,4 +100,23 @@ class RetryPolicyTest {
         assertThrows(IllegalArgumentException.class, () -> policy.delayMillis(-1));
         assertThrows(IllegalArgumentException.class, () -> policy.sleepBackoff(-1));
     }
+
+    @Test
+    void defaultJitterUsesCallerThreadLocalRandomInsteadOfUnseededSharedReference() throws Exception {
+        RetryPolicy policy = new RetryPolicy(1, 10_000, 10_000, 0.5);
+        java.util.Set<Long> firstDraws = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        int threadCount = 12;
+        List<Thread> threads = new ArrayList<>();
+        for (int i = 0; i < threadCount; i++) {
+            Thread t = new Thread(() -> firstDraws.add(policy.delayMillis(0)));
+            threads.add(t);
+            t.start();
+        }
+        for (Thread t : threads) {
+            t.join(5000);
+        }
+        assertTrue(
+                firstDraws.size() > 1,
+                "fresh worker threads must draw distinct jitter delays via ThreadLocalRandom.current(): " + firstDraws);
+    }
 }

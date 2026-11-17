@@ -30,6 +30,7 @@ import io.micronaut.http.HttpStatus;
  * ProviderException TYPE_NETWORK | 502 | api_error
  * ProviderException TYPE_TIMEOUT | 504 | api_error
  * ProviderException TYPE_BAD_UPSTREAM_PAYLOAD | 502 | api_error
+ * ProviderException TYPE_UNSUPPORTED_REQUEST | 400 | invalid_request_error
  * any other runtime exception | 500 | api_error
  * (* = upstream statusCode when present <b>and in the 4xx band</b>, 502 fallback
  * for codes missing from Micronaut's HttpStatus enum)
@@ -125,6 +126,8 @@ class AnthropicErrorMapper {
                 }
                 case ProviderException.TYPE_TIMEOUT ->
                     mapping(HttpStatus.GATEWAY_TIMEOUT, TYPE_API_ERROR, redactSecrets(provider.getMessage()));
+                case ProviderException.TYPE_UNSUPPORTED_REQUEST ->
+                    mapping(HttpStatus.BAD_REQUEST, TYPE_INVALID_REQUEST, redactSecrets(provider.getMessage()));
                 default -> unexpected(throwable);
             };
         }

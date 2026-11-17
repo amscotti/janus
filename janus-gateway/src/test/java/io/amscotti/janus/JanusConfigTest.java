@@ -280,4 +280,88 @@ class JanusConfigTest {
         assertNull(store.maxPoolSize());
         assertNull(store.retention());
     }
+
+    @Test
+    void invalidModelAndDecisionEntriesFailConsistentlyAcrossValidationEntryPoints() throws Exception {
+        // Chat entries validate in compact constructors and ModelListFactory rejects bad URLs.
+        assertThrows(IllegalArgumentException.class, () -> new JanusConfig.ModelListEntry("", "deepseek", null, null));
+        assertThrows(IllegalArgumentException.class, () -> new JanusConfig.ModelListEntry("m1", "", null, null));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new JanusConfig.ModelListEntry("m1", "deepseek", null, null, 0, null, null, null));
+        assertThrows(IllegalArgumentException.class, () -> new JanusConfig.ProviderEntry("unknown", null, null));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new JanusConfig.ProviderEntry("openai-compatible", null, null, 0, null, null, null));
+
+        // Decision entries defer validation to DecisionModelListFactory at boot so Micronaut's
+        // collection binder never silently drops invalid entries instead of failing boot.
+        for (String badDecisionToml : java.util.List.of("""
+                [janus]
+                name = "janus"
+                version = "0.2.0"
+
+                [[janus.decision-model-list]]
+                name = ""
+                provider = "jev"
+                """, """
+                [janus]
+                name = "janus"
+                version = "0.2.0"
+
+                [[janus.decision-model-list]]
+                name = "jev-latest"
+                provider = ""
+                """, """
+                [janus]
+                name = "janus"
+                version = "0.2.0"
+
+                [[janus.decision-model-list]]
+                name = "jev-latest"
+                provider = "jev"
+                header-timeout-seconds = 0
+                """, """
+                [janus]
+                name = "janus"
+                version = "0.2.0"
+
+                [janus.decision-providers.jev]
+                wire-format = "bogus"
+                """, """
+                [janus]
+                name = "janus"
+                version = "0.2.0"
+
+                [janus.decision-providers.jev]
+                wire-format = "systemone"
+                connect-timeout-seconds = 0
+                """)) {
+            var loaded = new io.micronaut.toml.env.TomlPropertySourceLoader()
+                    .read(
+                            "bad-decision",
+                            new java.io.ByteArrayInputStream(
+                                    badDecisionToml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            assertThrows(
+                    io.micronaut.context.exceptions.BeanCreationException.class,
+                    () -> {
+                        try (io.micronaut.context.ApplicationContext ctx =
+                                io.micronaut.context.ApplicationContext.builder(
+                                                io.micronaut.context.env.Environment.TEST)
+                                        .propertySources(
+                                                io.micronaut.context.env.PropertySource.of("bad-decision", loaded),
+                                                io.micronaut.context.env.PropertySource.of(
+                                                        "prod-factories",
+                                                        java.util.Map.of(
+                                                                "janus.test.production-factories",
+                                                                "true",
+                                                                "janus.keys.auth",
+                                                                "off")))
+                                        .start()) {
+                            ctx.getBean(io.amscotti.janus.router.DecisionRouter.class);
+                        }
+                    },
+                    "invalid decision TOML must fail ApplicationContext boot:\n" + badDecisionToml);
+        }
+    }
 }

@@ -1,6 +1,7 @@
 package io.amscotti.janus.router;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -216,16 +217,18 @@ class DecisionRouterTest {
     void interruptedBackoffAbortsTheChainWithEarlierFailuresSuppressed() {
         FakeBackend a = new FakeBackend("a");
         a.failure = new BackendException(BackendException.TYPE_NETWORK, "down-a");
+        FakeBackend b = new FakeBackend("b");
         RetryPolicy interrupting = new RetryPolicy(2, 1, 1, 0.0, RandomGenerator.getDefault(), millis -> {
             throw new IllegalStateException("interrupted");
         });
         DecisionRouter router =
-                new DecisionRouter(Map.of("m", List.of(a)), interrupting, DefaultRetryClassifier.INSTANCE);
+                new DecisionRouter(Map.of("m", List.of(a, b)), interrupting, DefaultRetryClassifier.INSTANCE);
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> router.decide(request("m")));
         assertEquals("interrupted", thrown.getMessage());
         assertEquals(1, thrown.getSuppressed().length);
         assertEquals("down-a", thrown.getSuppressed()[0].getMessage());
+        assertEquals(0, b.calls.get(), "interrupted backoff must abort before trying the next candidate");
     }
 
     @Test
@@ -320,5 +323,170 @@ class DecisionRouterTest {
     void blankAliasesAreRejectedAtConstruction() {
         assertThrows(
                 IllegalArgumentException.class, () -> new DecisionRouter(Map.of("", List.of(new FakeBackend("a")))));
+    }
+
+    @Test
+    void doesNotSleepBackoffAfterLastCandidateFails() {
+        AtomicInteger sleeps = new AtomicInteger();
+        RetryPolicy countingPolicy =
+                new RetryPolicy(3, 50, 100, 0.0, RandomGenerator.getDefault(), millis -> sleeps.incrementAndGet());
+
+        FakeBackend single = new FakeBackend("single");
+        single.failure = new BackendException(BackendException.TYPE_UPSTREAM_5XX, "boom");
+        DecisionRouter singleRouter =
+                new DecisionRouter(Map.of("m", List.of(single)), countingPolicy, DefaultRetryClassifier.INSTANCE);
+        assertThrows(BackendException.class, () -> singleRouter.decide(request("m")));
+        assertEquals(0, sleeps.get(), "single candidate failure must not sleep backoff");
+
+        sleeps.set(0);
+        FakeBackend a = new FakeBackend("a");
+        a.failure = new BackendException(BackendException.TYPE_NETWORK, "down-a");
+        FakeBackend b = new FakeBackend("b");
+        b.failure = new BackendException(BackendException.TYPE_NETWORK, "down-b");
+        DecisionRouter twoRouter =
+                new DecisionRouter(Map.of("m", List.of(a, b)), countingPolicy, DefaultRetryClassifier.INSTANCE);
+        assertThrows(BackendException.class, () -> twoRouter.decide(request("m")));
+        assertEquals(1, sleeps.get(), "only sleep between a->b, never after last candidate b fails");
+    }
+
+    @Test
+    void imageCapabilityErrorSanitizesModelNameAgainstLogForgery() {
+        FakeBackend textOnly = new FakeBackend("text-only");
+        String maliciousAlias = "model\ninjected\r\nline";
+        DecisionRouter router = new DecisionRouter(Map.of(maliciousAlias, List.of(textOnly)));
+
+        DecisionCodecException e =
+                assertThrows(DecisionCodecException.class, () -> router.decide(imageRequest(maliciousAlias)));
+        assertTrue(!e.getMessage().contains("\n") && !e.getMessage().contains("\r"), e.getMessage());
+    }
+
+    @Test
+    void knowsReturnsFalseForNullAndUnknownAndTrueForConfiguredAlias() {
+        DecisionRouter router = new DecisionRouter(Map.of("m", List.of(new FakeBackend("a"))));
+
+        assertFalse(router.knows(null));
+        assertFalse(router.knows("missing"));
+        assertTrue(router.knows("m"));
+    }
+
+    @Test
+    void observerThrowingErrorIsDroppedAndCannotAbortDispatch() {
+        FakeBackend a = new FakeBackend("a");
+        DecisionRouter router = new DecisionRouter(Map.of("m", List.of(a)));
+
+        DecisionResponse response = router.decide(request("m"), backend -> {
+            throw new AssertionError("observer error");
+        });
+
+        assertEquals("m", response.model());
+        assertEquals(1, a.calls.get());
+    }
+
+    @Test
+    void backendThrowingErrorPropagatesWithoutRetryAndAttachesSuppressedFailures() {
+        AtomicInteger classifierCalls = new AtomicInteger();
+        RetryClassifier counting = error -> {
+            classifierCalls.incrementAndGet();
+            return DefaultRetryClassifier.INSTANCE.isRetryable(error);
+        };
+        DecisionBackend errorBackend = new DecisionBackend() {
+            @Override
+            public String name() {
+                return "err";
+            }
+
+            @Override
+            public String baseUrl() {
+                return "http://fake/err";
+            }
+
+            @Override
+            public boolean supportsImages() {
+                return false;
+            }
+
+            @Override
+            public DecisionResponse decide(DecisionRequest request) {
+                throw new AssertionError("fatal error");
+            }
+        };
+        FakeBackend b = new FakeBackend("b");
+        DecisionRouter single = new DecisionRouter(Map.of("m", List.of(errorBackend, b)), noSleepPolicy(2), counting);
+        AssertionError firstErr = assertThrows(AssertionError.class, () -> single.decide(request("m")));
+        assertEquals("fatal error", firstErr.getMessage());
+        assertEquals(0, classifierCalls.get(), "Errors bypass retry classification");
+        assertEquals(0, b.calls.get(), "Errors do not fail over to the next candidate");
+
+        FakeBackend a = new FakeBackend("a");
+        a.failure = new BackendException(BackendException.TYPE_NETWORK, "down-a");
+        DecisionRouter second = new DecisionRouter(Map.of("m", List.of(a, errorBackend)), noSleepPolicy(2), counting);
+        AssertionError secondErr = assertThrows(AssertionError.class, () -> second.decide(request("m")));
+        assertEquals(1, secondErr.getSuppressed().length);
+        assertEquals("down-a", secondErr.getSuppressed()[0].getMessage());
+    }
+
+    @Test
+    void classifierThrowingRuntimeErrorOrSameFailureInstanceDoesNotRetryOrSelfSuppress() {
+        FakeBackend a = new FakeBackend("a");
+        a.failure = new BackendException(BackendException.TYPE_UPSTREAM_5XX, "boom-runtime");
+        FakeBackend b = new FakeBackend("b");
+
+        DecisionRouter runtimeRouter = new DecisionRouter(Map.of("m", List.of(a, b)), noSleepPolicy(2), error -> {
+            throw new IllegalStateException("classifier runtime");
+        });
+        BackendException rt = assertThrows(BackendException.class, () -> runtimeRouter.decide(request("m")));
+        assertEquals(1, rt.getSuppressed().length);
+        assertEquals("classifier runtime", rt.getSuppressed()[0].getMessage());
+        assertEquals(0, b.calls.get());
+
+        a.failure = new BackendException(BackendException.TYPE_UPSTREAM_5XX, "boom-error");
+        DecisionRouter errorRouter = new DecisionRouter(Map.of("m", List.of(a, b)), noSleepPolicy(2), error -> {
+            throw new AssertionError("classifier error");
+        });
+        BackendException err = assertThrows(BackendException.class, () -> errorRouter.decide(request("m")));
+        assertEquals(1, err.getSuppressed().length);
+        assertEquals("classifier error", err.getSuppressed()[0].getMessage());
+        assertEquals(0, b.calls.get());
+
+        BackendException shared = new BackendException(BackendException.TYPE_UPSTREAM_5XX, "same-instance");
+        a.failure = shared;
+        DecisionRouter sameRouter = new DecisionRouter(Map.of("m", List.of(a, b)), noSleepPolicy(2), error -> {
+            throw (RuntimeException) error;
+        });
+        BackendException same = assertThrows(BackendException.class, () -> sameRouter.decide(request("m")));
+        assertSame(shared, same);
+        assertEquals(0, same.getSuppressed().length, "must never self-suppress");
+        assertEquals(0, b.calls.get());
+    }
+
+    @Test
+    void sleepBackoffRealInterruptAndSameExceptionInstanceAvoidSelfSuppression() {
+        FakeBackend a = new FakeBackend("a");
+        BackendException shared = new BackendException(BackendException.TYPE_NETWORK, "down-a");
+        a.failure = shared;
+        FakeBackend b = new FakeBackend("b");
+        RetryPolicy sameSleeper = new RetryPolicy(2, 1, 1, 0.0, RandomGenerator.getDefault(), millis -> {
+            throw shared;
+        });
+        DecisionRouter sameRouter =
+                new DecisionRouter(Map.of("m", List.of(a, b)), sameSleeper, DefaultRetryClassifier.INSTANCE);
+        BackendException sameThrown = assertThrows(BackendException.class, () -> sameRouter.decide(request("m")));
+        assertSame(shared, sameThrown);
+        assertEquals(0, sameThrown.getSuppressed().length, "must never self-suppress during sleepBackoff");
+
+        RetryPolicy realSleep = new RetryPolicy(2, 50, 100, 0.0);
+        DecisionRouter interruptRouter =
+                new DecisionRouter(Map.of("m", List.of(a, b)), realSleep, DefaultRetryClassifier.INSTANCE);
+        Thread.currentThread().interrupt();
+        try {
+            RuntimeException interrupted =
+                    assertThrows(RuntimeException.class, () -> interruptRouter.decide(request("m")));
+            assertTrue(Thread.currentThread().isInterrupted(), "interrupt flag must be preserved");
+            assertEquals(1, interrupted.getSuppressed().length);
+            assertSame(shared, interrupted.getSuppressed()[0]);
+            assertEquals(0, b.calls.get());
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

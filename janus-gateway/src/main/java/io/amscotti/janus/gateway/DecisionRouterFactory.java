@@ -2,6 +2,7 @@ package io.amscotti.janus.gateway;
 
 import io.amscotti.janus.JanusConfig;
 import io.amscotti.janus.provider.DecisionAdapter;
+import io.amscotti.janus.provider.GeminiDecisionsAdapter;
 import io.amscotti.janus.provider.OpenAiDecisionsAdapter;
 import io.amscotti.janus.provider.SystemOneAdapter;
 import io.amscotti.janus.router.DecisionBackend;
@@ -101,6 +102,11 @@ class DecisionRouterFactory {
                 String resolved =
                         baseUrl == null || baseUrl.isBlank() ? OpenAiDecisionsAdapter.DEFAULT_BASE_URL : baseUrl;
                 yield new OpenAiDecisionsAdapter(resolved, apiKey, connect, header, bodyRead);
+            }
+            case GeminiDecisionsAdapter.NAME -> {
+                String resolved =
+                        baseUrl == null || baseUrl.isBlank() ? GeminiDecisionsAdapter.DEFAULT_BASE_URL : baseUrl;
+                yield new GeminiDecisionsAdapter(resolved, apiKey, connect, header, bodyRead);
             }
             default ->
                 throw new IllegalStateException(

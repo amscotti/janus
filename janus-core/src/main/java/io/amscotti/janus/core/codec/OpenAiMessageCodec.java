@@ -10,6 +10,7 @@ import io.amscotti.janus.core.model.ContentPart;
 import io.amscotti.janus.core.model.Delta;
 import io.amscotti.janus.core.model.DeveloperMessage;
 import io.amscotti.janus.core.model.FunctionCall;
+import io.amscotti.janus.core.model.HostedToolDefinition;
 import io.amscotti.janus.core.model.ImageSourceContent;
 import io.amscotti.janus.core.model.ImageUrlContent;
 import io.amscotti.janus.core.model.Message;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import tools.jackson.core.StreamReadFeature;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
@@ -177,13 +179,14 @@ public final class OpenAiMessageCodec {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
     }
 
-    /** Default mapper per the codec's contract (snake_case, tolerant, single-value arrays). */
+    /** Default mapper per the codec's contract (snake_case, tolerant, single-value arrays, strict duplicate detection). */
     public static OpenAiMessageCodec create() {
         return new OpenAiMessageCodec(JsonMapper.builder()
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .enable(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                 .build());
     }
 
@@ -451,6 +454,9 @@ public final class OpenAiMessageCodec {
         List<String> systemParts = new ArrayList<>();
         List<Message> messages = new ArrayList<>();
         for (OpenAiMessage dtoMessage : dtoMessages) {
+            if (dtoMessage == null) {
+                throw codec(OpenAiCodecException.TYPE_INVALID_REQUEST, "messages must not contain null entries");
+            }
             ChatRole role = requireRole(dtoMessage.role(), "message", OpenAiCodecException.TYPE_INVALID_REQUEST);
             if (role == ChatRole.SYSTEM) {
                 // A *named* system message keeps its per-message canonical home
@@ -669,6 +675,9 @@ public final class OpenAiMessageCodec {
         }
         List<ToolCall> result = new ArrayList<>();
         for (OpenAiToolCall call : calls) {
+            if (call == null) {
+                throw codec(OpenAiCodecException.TYPE_API_ERROR, "tool_calls must not contain null entries");
+            }
             OpenAiFunctionCall function = call.function();
             // The streaming wire index round-trips through ToolCall.index so a
             // passthrough that decodes and re-encodes chunks does not renumber
@@ -689,6 +698,9 @@ public final class OpenAiMessageCodec {
         }
         List<ToolDefinition> result = new ArrayList<>();
         for (OpenAiTool tool : tools) {
+            if (tool == null) {
+                throw codec(OpenAiCodecException.TYPE_INVALID_REQUEST, "tools must not contain null entries");
+            }
             OpenAiFunction function = tool.function();
             // A wire tool with no `function` member keeps null name/description/schema so
             // the encode path omits the invalid OpenAI shape "function":{} (mirrors the
@@ -1143,14 +1155,23 @@ public final class OpenAiMessageCodec {
         Long created = usage.cacheCreationInputTokens();
         long prompt = usage.promptTokens();
         long addBack = 0;
-        if (cached != null && cached > 0) {
-            addBack += cached;
-        }
-        if (created != null && created > 0) {
-            addBack += created;
-        }
-        if (addBack > 0 && usage.promptTokens() + usage.completionTokens() + addBack == usage.totalTokens()) {
-            prompt = usage.promptTokens() + addBack;
+        long total;
+        try {
+            if (cached != null && cached > 0) {
+                addBack = Math.addExact(addBack, cached);
+            }
+            if (created != null && created > 0) {
+                addBack = Math.addExact(addBack, created);
+            }
+            if (addBack > 0
+                    && usage.completionTokens() <= usage.totalTokens()
+                    && usage.promptTokens() <= usage.totalTokens() - usage.completionTokens()
+                    && usage.totalTokens() - usage.promptTokens() - usage.completionTokens() == addBack) {
+                prompt = Math.addExact(usage.promptTokens(), addBack);
+            }
+            total = Math.addExact(prompt, usage.completionTokens());
+        } catch (ArithmeticException e) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage token count overflow", e);
         }
         OpenAiCompletionTokensDetails reasoningDetails = null;
         if (usage.reasoningTokens() != null && usage.reasoningTokens() > 0) {
@@ -1168,21 +1189,18 @@ public final class OpenAiMessageCodec {
         OpenAiPromptTokensDetails promptDetails = cachedOut == null && createdOut == null
                 ? null
                 : new OpenAiPromptTokensDetails(cachedOut, createdOut, writeDetails);
-        return new OpenAiUsage(
-                prompt,
-                usage.completionTokens(),
-                prompt + usage.completionTokens(),
-                promptDetails,
-                cachedOut,
-                reasoningDetails);
+        return new OpenAiUsage(prompt, usage.completionTokens(), total, promptDetails, cachedOut, reasoningDetails);
     }
 
     private static Usage toCanonicalUsage(OpenAiUsage dto) {
         if (dto == null) {
             return null;
         }
-        long prompt = dto.promptTokens() == null ? 0L : dto.promptTokens();
-        long completion = dto.completionTokens() == null ? 0L : dto.completionTokens();
+        long prompt = requireNonNegative(dto.promptTokens(), "prompt_tokens");
+        long completion = requireNonNegative(dto.completionTokens(), "completion_tokens");
+        if (dto.totalTokens() != null && dto.totalTokens() < 0) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage token counts must be non-negative");
+        }
         // The OpenAI wire counts cache-read tokens INSIDE prompt_tokens (OpenAI
         // prompt_tokens_details.cached_tokens / DeepSeek/Kimi prompt_cache_hit_tokens);
         // the canonical Usage counts regular input only, cache separate — the reference
@@ -1196,11 +1214,22 @@ public final class OpenAiMessageCodec {
         Long write12h = cacheWrite12hInputTokens(dto);
         long clampedWrite12h = write12h == null ? 0L : Math.min(write12h, write);
         long regular = prompt - cached - write;
-        long total = dto.totalTokens() == null ? regular + completion + cached + write : dto.totalTokens();
+        long total;
+        try {
+            total = dto.totalTokens() == null
+                    ? Math.addExact(Math.addExact(Math.addExact(regular, completion), cached), write)
+                    : dto.totalTokens();
+        } catch (ArithmeticException e) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage token count overflow", e);
+        }
         Long reasoning = null;
         if (dto.completionTokensDetails() != null
                 && dto.completionTokensDetails().reasoningTokens() != null) {
-            reasoning = Math.max(dto.completionTokensDetails().reasoningTokens(), 0L);
+            long r = dto.completionTokensDetails().reasoningTokens();
+            if (r < 0) {
+                throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage token counts must be non-negative");
+            }
+            reasoning = r;
         }
         if (cached == 0 && write == 0) {
             return new Usage(prompt, completion, total, null, null, reasoning);
@@ -1215,6 +1244,16 @@ public final class OpenAiMessageCodec {
                 write12h != null ? clampedWrite12h : null);
     }
 
+    private static long requireNonNegative(Long value, String field) {
+        if (value == null) {
+            return 0L;
+        }
+        if (value < 0) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage " + field + " must be non-negative");
+        }
+        return value;
+    }
+
     /**
      * Cache-read input tokens on the OpenAI wire: {@code cached_tokens} (the primary
      * {@code prompt_tokens_details} spelling) wins; the DeepSeek/Kimi top-level
@@ -1225,10 +1264,16 @@ public final class OpenAiMessageCodec {
     private static long cachedInputTokens(OpenAiUsage dto) {
         OpenAiPromptTokensDetails details = dto.promptTokensDetails();
         if (details != null && details.cachedTokens() != null) {
-            return Math.max(details.cachedTokens(), 0);
+            if (details.cachedTokens() < 0) {
+                throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage cached_tokens must be non-negative");
+            }
+            return details.cachedTokens();
         }
         Long alias = dto.promptCacheHitTokens();
-        return alias == null ? 0 : Math.max(alias, 0);
+        if (alias != null && alias < 0) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage prompt_cache_hit_tokens must be non-negative");
+        }
+        return alias == null ? 0 : alias;
     }
 
     private static long cacheWriteInputTokens(OpenAiUsage dto) {
@@ -1236,7 +1281,10 @@ public final class OpenAiMessageCodec {
         if (details == null || details.cacheWriteTokens() == null) {
             return 0;
         }
-        return Math.max(details.cacheWriteTokens(), 0);
+        if (details.cacheWriteTokens() < 0) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage cache_write_tokens must be non-negative");
+        }
+        return details.cacheWriteTokens();
     }
 
     private static Long cacheWrite12hInputTokens(OpenAiUsage dto) {
@@ -1246,7 +1294,11 @@ public final class OpenAiMessageCodec {
                 || details.cacheWriteTokensDetails().ttl12hTokens() == null) {
             return null;
         }
-        return Math.max(details.cacheWriteTokensDetails().ttl12hTokens(), 0);
+        long ttl12h = details.cacheWriteTokensDetails().ttl12hTokens();
+        if (ttl12h < 0) {
+            throw codec(OpenAiCodecException.TYPE_API_ERROR, "usage ttl_12h_tokens must be non-negative");
+        }
+        return ttl12h;
     }
 
     // ------------------------------------------------------------ shared helpers
@@ -1340,9 +1392,20 @@ public final class OpenAiMessageCodec {
             throw codec(OpenAiCodecException.TYPE_INVALID_REQUEST, "messages must be non-null and non-empty");
         }
         for (Message message : request.messages()) {
+            if (message == null) {
+                throw codec(OpenAiCodecException.TYPE_INVALID_REQUEST, "messages must not contain null entries");
+            }
             if (message instanceof ToolMessage tool && !nonBlank(tool.toolCallId())) {
                 throw codec(
                         OpenAiCodecException.TYPE_INVALID_REQUEST, "tool message requires a non-blank tool_call_id");
+            }
+            if (message instanceof AssistantMessage assistant && assistant.toolCalls() != null) {
+                for (ToolCall call : assistant.toolCalls()) {
+                    if (call == null) {
+                        throw codec(
+                                OpenAiCodecException.TYPE_INVALID_REQUEST, "tool_calls must not contain null entries");
+                    }
+                }
             }
             if (message instanceof UserMessage user) {
                 boolean hasText = nonBlank(user.content());
@@ -1351,6 +1414,30 @@ public final class OpenAiMessageCodec {
                     throw codec(
                             OpenAiCodecException.TYPE_INVALID_REQUEST,
                             "user message requires non-blank content or multimodal parts");
+                }
+                if (user.parts() != null) {
+                    for (ContentPart part : user.parts()) {
+                        if (part == null) {
+                            throw codec(
+                                    OpenAiCodecException.TYPE_INVALID_REQUEST,
+                                    "user message parts must not contain null entries");
+                        }
+                    }
+                }
+            }
+        }
+        if (request.tools() != null) {
+            for (ToolDefinition tool : request.tools()) {
+                if (tool == null) {
+                    throw codec(OpenAiCodecException.TYPE_INVALID_REQUEST, "tools must not contain null entries");
+                }
+            }
+        }
+        if (request.hostedTools() != null) {
+            for (HostedToolDefinition hosted : request.hostedTools()) {
+                if (hosted == null) {
+                    throw codec(
+                            OpenAiCodecException.TYPE_INVALID_REQUEST, "hosted tools must not contain null entries");
                 }
             }
         }

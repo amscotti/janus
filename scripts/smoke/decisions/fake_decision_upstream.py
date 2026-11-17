@@ -94,6 +94,25 @@ def openai_answers(questions: list) -> list:
     return answers
 
 
+def gemini_answers(questions: dict) -> dict:
+    out = {}
+    for qname, q in questions.items():
+        qtype = q.get("type")
+        if qtype == "noul":
+            out[qname] = {"type": "noul", "noul": 0.94, "confidence": 0.94}
+        elif qtype == "choice":
+            keys = sorted((q.get("criteria") or {}).keys())
+            picked = keys[0] if keys else ""
+            probs = {k: (0.88 if k == picked else round(0.12 / max(1, len(keys) - 1), 4)) for k in keys}
+            out[qname] = {"type": "choice", "choice": picked, "probabilities": probs, "confidence": 0.88}
+        elif qtype == "score":
+            levels = q.get("criteria") or ["Low", "High"]
+            legend = {str(i): str(label) for i, label in enumerate(levels)}
+            probs = {str(i): (0.75 if i == 1 else round(0.25 / max(1, len(levels) - 1), 4)) for i in range(len(levels))}
+            out[qname] = {"type": "score", "score": 1.0, "legend": legend, "probabilities": probs, "confidence": 0.75}
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     log_path: Path = Path("/dev/null")
 
@@ -119,9 +138,10 @@ class Handler(BaseHTTPRequestHandler):
             body = {}
         model = body.get("model")
         danger_headers = {
-            key: value
+            (key.lower() if key.lower() in ("x-goog-api-key", "authorization") else key): value
             for key, value in self.headers.items()
             if key.lower().startswith("typesafe-danger-zone-")
+            or key.lower() in ("x-goog-api-key", "authorization")
         }
         with LOCK:
             with self.log_path.open("a", encoding="utf-8") as fh:
@@ -140,6 +160,17 @@ class Handler(BaseHTTPRequestHandler):
                 "answers": systemone_answers(body.get("questions") or {}),
                 "usage": {"input_tokens": 42, "output_tokens": 0},
                 "prompt_eval_cached_count": 7,
+            }
+            self._send(200, json.dumps(payload).encode("utf-8"))
+        elif self.path.endswith("/v1beta/decisions"):
+            payload = {
+                "answers": gemini_answers(body.get("questions") or {}),
+                "usage": {
+                    "total_tokens": 250,
+                    "total_input_tokens": 250,
+                    "total_output_tokens": 0,
+                    "input_tokens_by_modality": [{"modality": "text", "tokens": 250}],
+                },
             }
             self._send(200, json.dumps(payload).encode("utf-8"))
         elif self.path.endswith("/v1/decisions"):

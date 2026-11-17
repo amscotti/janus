@@ -18,9 +18,12 @@ import java.net.URI;
 import java.net.http.HttpClient.Version;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import tools.jackson.databind.DeserializationFeature;
@@ -226,29 +229,11 @@ final class LiveProviderSupport {
     }
 
     static StatusBody openaiChatRaw(HttpClient client, String virtualKey, String jsonBody) {
-        try {
-            HttpResponse<String> http = client.toBlocking()
-                    .exchange(
-                            HttpRequest.POST("/v1/chat/completions", jsonBody)
-                                    .contentType(MediaType.APPLICATION_JSON_TYPE)
-                                    .bearerAuth(virtualKey),
-                            String.class);
-            return new StatusBody(http.getStatus(), http.body(), readTree(http.body()), http.getHeaders());
-        } catch (HttpClientResponseException e) {
-            String raw = e.getResponse().getBody(String.class).orElse("");
-            JsonNode json;
-            try {
-                json = readTree(raw);
-            } catch (RuntimeException ignored) {
-                json = JSON.nullNode();
-            }
-            return new StatusBody(e.getStatus(), raw, json, e.getResponse().getHeaders());
-        } catch (HttpClientException e) {
-            // No HTTP response (e.g. ReadTimeoutException on a slow reasoning upstream):
-            // surface a clean, diagnosable failure instead of an uncaught client
-            // exception escaping the helper.
-            throw new AssertionError("no HTTP response from gateway: " + e.getMessage(), e);
-        }
+        return postJsonRaw(
+                client,
+                HttpRequest.POST("/v1/chat/completions", jsonBody)
+                        .contentType(MediaType.APPLICATION_JSON_TYPE)
+                        .bearerAuth(virtualKey));
     }
 
     static JsonNode anthropicMessages(HttpClient client, String virtualKey, String jsonBody) {
@@ -258,14 +243,31 @@ final class LiveProviderSupport {
     }
 
     static StatusBody anthropicMessagesRaw(HttpClient client, String virtualKey, String jsonBody) {
+        return postJsonRaw(
+                client,
+                HttpRequest.POST("/v1/messages", jsonBody)
+                        .contentType(MediaType.APPLICATION_JSON_TYPE)
+                        .header("x-api-key", virtualKey)
+                        .header("anthropic-version", "2023-06-01"));
+    }
+
+    static JsonNode systemOne(HttpClient client, String virtualKey, String jsonBody) {
+        StatusBody res = systemOneRaw(client, virtualKey, jsonBody);
+        assertEquals(HttpStatus.OK, res.status(), () -> "/v1/systemone: " + res.raw());
+        return res.json();
+    }
+
+    static StatusBody systemOneRaw(HttpClient client, String virtualKey, String jsonBody) {
+        return postJsonRaw(
+                client,
+                HttpRequest.POST("/v1/systemone", jsonBody)
+                        .contentType(MediaType.APPLICATION_JSON_TYPE)
+                        .bearerAuth(virtualKey));
+    }
+
+    private static StatusBody postJsonRaw(HttpClient client, HttpRequest<String> request) {
         try {
-            HttpResponse<String> http = client.toBlocking()
-                    .exchange(
-                            HttpRequest.POST("/v1/messages", jsonBody)
-                                    .contentType(MediaType.APPLICATION_JSON_TYPE)
-                                    .header("x-api-key", virtualKey)
-                                    .header("anthropic-version", "2023-06-01"),
-                            String.class);
+            HttpResponse<String> http = client.toBlocking().exchange(request, String.class);
             return new StatusBody(http.getStatus(), http.body(), readTree(http.body()), http.getHeaders());
         } catch (HttpClientResponseException e) {
             String raw = e.getResponse().getBody(String.class).orElse("");
@@ -279,6 +281,44 @@ final class LiveProviderSupport {
         } catch (HttpClientException e) {
             throw new AssertionError("no HTTP response from gateway: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Build a minimal, spec-valid 1-page PDF 1.4 with exact xref offsets containing
+     * {@code Invoice 42 PAID} for live multi-format document smoke tests.
+     */
+    static String minimalPdfBase64() {
+        String content = "BT /F1 12 Tf 20 100 Td (Invoice 42 PAID) Tj ET\n";
+        byte[] contentBytes = content.getBytes(StandardCharsets.US_ASCII);
+        String obj1 = "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n";
+        String obj2 = "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n";
+        String obj3 = "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                + "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n";
+        String obj4 = "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n";
+        String obj5 = "5 0 obj\n<< /Length " + contentBytes.length + " >>\nstream\n" + content + "endstream\nendobj\n";
+
+        StringBuilder pdf = new StringBuilder("%PDF-1.4\n");
+        int[] offsets = new int[6];
+        offsets[1] = pdf.length();
+        pdf.append(obj1);
+        offsets[2] = pdf.length();
+        pdf.append(obj2);
+        offsets[3] = pdf.length();
+        pdf.append(obj3);
+        offsets[4] = pdf.length();
+        pdf.append(obj4);
+        offsets[5] = pdf.length();
+        pdf.append(obj5);
+
+        int xrefOffset = pdf.length();
+        pdf.append("xref\n0 6\n0000000000 65535 f \n");
+        for (int i = 1; i <= 5; i++) {
+            pdf.append(String.format(Locale.ROOT, "%010d 00000 n \n", offsets[i]));
+        }
+        pdf.append("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n")
+                .append(xrefOffset)
+                .append("\n%%EOF\n");
+        return Base64.getEncoder().encodeToString(pdf.toString().getBytes(StandardCharsets.US_ASCII));
     }
 
     record StatusBody(HttpStatus status, String raw, JsonNode json, io.micronaut.http.HttpHeaders headers) {}

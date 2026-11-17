@@ -124,7 +124,7 @@ public final class DecisionRouter {
                 // operator's pool topology.
                 throw new DecisionCodecException(
                         DecisionCodecException.TYPE_INVALID_REQUEST,
-                        "model \"" + model + "\" does not accept images — set vision = true on its"
+                        "model \"" + LogSafe.text(model) + "\" does not accept images — set vision = true on its"
                                 + " decision-model-list entry to route image evidence");
             }
             candidates = imageCapable;
@@ -170,7 +170,7 @@ public final class DecisionRouter {
                 return backend.decide(request);
             } catch (RuntimeException | Error e) {
                 boolean retryable = e instanceof RuntimeException && isRetryable(e);
-                if (!retryable || attempt >= maxRetries) {
+                if (!retryable || attempt >= maxRetries || tried.size() >= candidates.size()) {
                     for (Throwable earlier : failures) {
                         if (earlier != e) {
                             e.addSuppressed(earlier);

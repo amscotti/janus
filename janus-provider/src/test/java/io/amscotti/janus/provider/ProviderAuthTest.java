@@ -30,6 +30,13 @@ class ProviderAuthTest {
     }
 
     @Test
+    void xGoogApiKeyAcceptedAndRoundTrips() {
+        ProviderAuth auth = new ProviderAuth(ProviderAuth.TYPE_X_GOOG_API_KEY, "aiza-test");
+        assertEquals("x-goog-api-key", auth.type());
+        assertEquals("aiza-test", auth.secret());
+    }
+
+    @Test
     void noneAcceptsNullSecret() {
         ProviderAuth auth = new ProviderAuth(ProviderAuth.TYPE_NONE, null);
         assertEquals("none", auth.type());
@@ -47,11 +54,12 @@ class ProviderAuthTest {
     void inconsistentSecretTypePairsRejected() {
         // The record's contract ("secret holds the credential; null for
         // TYPE_NONE") is enforced — a TYPE_NONE auth carrying a secret, or a bearer /
-        // x-api-key auth with a null secret, fails fast instead of silently reaching an
-        // adapter (blank secrets stay allowed: the adapters omit the header when blank).
+        // x-api-key / x-goog-api-key auth with a null secret, fails fast instead of silently
+        // reaching an adapter (blank secrets stay allowed: the adapters omit the header when blank).
         assertThrows(IllegalArgumentException.class, () -> new ProviderAuth(ProviderAuth.TYPE_NONE, "k"));
         assertThrows(IllegalArgumentException.class, () -> new ProviderAuth(ProviderAuth.TYPE_BEARER, null));
         assertThrows(IllegalArgumentException.class, () -> new ProviderAuth(ProviderAuth.TYPE_X_API_KEY, null));
+        assertThrows(IllegalArgumentException.class, () -> new ProviderAuth(ProviderAuth.TYPE_X_GOOG_API_KEY, null));
     }
 
     @Test
@@ -59,5 +67,6 @@ class ProviderAuthTest {
         // matches the adapters' blank-omits-header contract
         new ProviderAuth(ProviderAuth.TYPE_BEARER, "");
         new ProviderAuth(ProviderAuth.TYPE_X_API_KEY, "");
+        new ProviderAuth(ProviderAuth.TYPE_X_GOOG_API_KEY, "");
     }
 }

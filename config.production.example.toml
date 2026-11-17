@@ -219,7 +219,11 @@ long-cache-read-per-1k = 0.001
 # decision aliases price through [[janus.pricing.models]] (input-only rows).
 # TypeSafe images use top-level assets + the TypeSafe-Danger-Zone-Images
 # header (Janus forwards/derives it); Ollama/Clef use vision = true + images[];
-# OpenAI uses vision = true and receives input_image data URLs.
+# OpenAI uses vision = true and receives input_image data URLs; Gemini Decision 1
+# uses wire-format = "gemini-decisions" (x-goog-api-key), supports text,
+# shared images[], and multi-format image/document/audio/video blocks at
+# $0.10/Mtok input (input-per-1k = 0.0001, output-per-1k = 0.0), or runs via
+# OpenRouter ("google/gemini-decision-1") on wire-format = "systemone".
 
 # [[janus.decision-model-list]]
 # name = "jev-latest"                 # what callers send
@@ -228,15 +232,25 @@ long-cache-read-per-1k = 0.001
 # name = "gpt-6-luna"
 # provider = "openai-decisions"
 # vision = true                       # image-capable — set only for such models
+# [[janus.decision-model-list]]
+# name = "gemini-decision-1"
+# provider = "gemini-decisions"
+# vision = true                       # supports images + PDF/CSV/audio/video blocks
 # [janus.decision-providers.typesafe]
 # wire-format = "systemone"
 # base-url = "https://api.typesafe.ai"
 # api-key-env = "TYPESAFE_API_KEY"
 # [janus.decision-providers.openai-decisions]
 # api-key-env = "OPENAI_API_KEY"      # registered name → OpenAI's default base
+# [janus.decision-providers.gemini-decisions]
+# api-key-env = "GEMINI_API_KEY"      # registered name → generativelanguage.googleapis.com
 # [[janus.pricing.models]]
 # name = "jev-latest"                 # $0.042/Mtok (TypeSafe list price)
 # input-per-1k = 0.000042
+# output-per-1k = 0.0
+# [[janus.pricing.models]]
+# name = "gemini-decision-1"          # $0.10/Mtok input, 0 output tokens billed
+# input-per-1k = 0.0001
 # output-per-1k = 0.0
 
 # -----------------------------------------------------------------------------

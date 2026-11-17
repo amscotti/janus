@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Google Gemini Decision 1 (`gemini-decisions`)** — `POST /v1/systemone`
+  now routes `gemini-decision-1` to Google AI Studio's
+  `POST /v1beta/decisions` via `GeminiDecisionsCodec` and
+  `GeminiDecisionsAdapter` (`x-goog-api-key` auth via `ProviderAuth.TYPE_X_GOOG_API_KEY`;
+  defaults to `https://generativelanguage.googleapis.com`; `$0.10 / 1M` input
+  tokens = `input-per-1k = 0.0001`, `output-per-1k = 0.0`). Translates plain
+  text, domain JSON folded into a `text` block, shared `images[]`, and native
+  Gemini (`text`/`image`/`document`/`audio`/`video`) as well as cross-dialect
+  (`input_text`/`image_url`/`input_image`/`file`/`input_audio`/`video_url`)
+  media blocks; maps `noul` `"true"`/`"false"` criteria to
+  `true_description`/`false_description`; classifies Google Interactions string
+  `error.code` and Google RPC `error.code`/`error.status` envelopes without
+  leaking upstream body text; declines `BoxQuestion` and non-empty `assets`
+  cleanly for pool failover. Also works on OpenRouter (`google/gemini-decision-1`)
+  via `wire-format = "systemone"`.
+- **Decision codec, provider, and smoke hardening** — checked arithmetic in
+  `OpenAiDecisionsCodec.decodeUsage` (`cached > input || cacheWrite > input - cached`),
+  duplicate/negative `score` level detection, conflict detection on mixed
+  `input_text`/`input_json`, strict base64 validation, and clean capability
+  rejection of non-image media blocks (`document`/`audio`/`video`/`file`/etc.)
+  for automatic mixed-pool failover from `openai-decisions` to
+  `gemini-decisions`; empty/null `assets` and question-level image checks in
+  `DecisionRequest.hasImageEvidence()` and `SystemOneAdapter`; `SystemOneCodec`
+  non-empty image magic-byte check, `"box"` type error hint, and
+  `success == false` precedence; preserved `InterruptedException` status in
+  `AbstractDecisionAdapter.errorStatusException`; sanitized model names in
+  `DecisionAdapterBackend`; classpath-scanning `DecisionAdapterSpiTest`; and
+  tracked-PGID teardown in `scripts/smoke/decisions/run.sh`.
+
 - **System One decision models** — `POST /v1/systemone`, the Jev-shaped
   decisions face (`choice`/`noul`/`score`/`box` questions over a `state`,
   typed probability answers, non-streaming). One client dialect routes by
@@ -99,6 +128,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metrics privacy** — nested decision question/answer records no longer
   print instructions/criteria/answers in `toString` when content logging is
   off; the `face="systemone"` privacy test plants the marker in answers too.
+- **Core model & codec hardening** — `ToolDefinition` and `DecisionAnswer`
+  (`NoulAnswer`/`BoxAnswer`) gate `toString()` on `ContentLogging`; `Usage`
+  rejects negative token counts and checks overflow in `billedPromptTokens()`;
+  `PromptCache` guards version-number parsing against overflow;
+  `OpenAiResponsesCodec` throws typed `OpenAiCodecException` (400) on
+  wrong-typed fields instead of `JsonNodeException` (500), fixes
+  `epochSecondSupplier` seconds scaling, guards null `flatTools` elements,
+  and handles empty `toolCalls`; `OpenAiMessageCodec`, `AnthropicMessageCodec`,
+  `OpenAiResponsesCodec`, and `GatewayJson` enable
+  `STRICT_DUPLICATE_DETECTION`; chat codecs reject negative/overflowing token
+  usage, null content blocks/list elements, empty post-filter Anthropic
+  `messages`, invalid adaptive `effort`, blank `tool_result.toolUseId`, and
+  spurious empty `TEXT` block 0 on `content: ""` with `reasoning_content`.
+- **Chat adapter & router hardening** — `AnthropicAdapter` and
+  `OpenAiCompatibleAdapter` share consolidated `HttpSupport` HTTP/status/error
+  helpers, parse `countTokens` strictly as non-negative digits, validate
+  `anthropic-beta` header tokens, preserve `InterruptedException` in
+  `readErrorBody`, and format sub-second timeouts in `ms`; `DecisionRouter`
+  skips dead backoff sleep after the last candidate fails and sanitizes model
+  names; `PassiveUpstreamHealth` synchronizes multi-field state transitions and
+  caps `consecutiveFailures`; `RetryPolicy` draws `ThreadLocalRandom.current()`
+  at call time; `SessionAffinityLoadBalancer` masks non-ASCII UTF-8 bytes with
+  `0xFF` in `fnv1a32`.
+- **Gateway, governance & parser hardening** — `Governance` uses
+  `billedPromptTokens()` in `settleChunk`, best-effort usage metrics in
+  `settleChunk`/`settleZero`, and saturating pre-dispatch estimate addition;
+  `AnthropicErrorMapper` maps `TYPE_UNSUPPORTED_REQUEST` to HTTP 400
+  `invalid_request_error`; `SseStreamPublisher` emits `stallError()` before
+  completing when a stall races the final drain; `KeyAuthFilter`
+  (`SECURITY.order()`) runs strictly ahead of `DecisionEncodingFilter`
+  (`SECURITY.after()`), which now checks POST + normalized `/v1/systemone/` +
+  media-type essence + stacked `Content-Encoding` and records 415 metrics with
+  an `OpenAiErrorEnvelope`; `SystemOneController` extends
+  `ModelFaceControllerSupport`, closes `rawBody`, runs ingress decode/parse
+  inside `handle()`, and streams bounded 64 KiB zstd/gzip decompression;
+  `DecisionMultipartParser` fixes `filename=`/`name=` parameter collisions, OWS,
+  quoted `;`, RFC 2046 `<=70`-char boundary limits, KMP linear-time search, and
+  `--boundary` termination checks.
 
 ### Changed
 
@@ -130,6 +197,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupt-body 400), multipart `request`/file-part inlining (missing/orphan/
   duplicate part typed 400s), and the codec trust-boundary regressions
   (non-finite/overflow/duplicate keys/structured entries/Box).
+- **Review-fix hardening & boundary suites** — `ModelToStringPrivacyTest`
+  classpath scan of `core.model`, `OpenAiResponsesCodec` wire-shape guard,
+  `STRICT_DUPLICATE_DETECTION`/bounds/stream-delta codec tests,
+  `ProviderAdapterSpiTest` classpath scan + `RouterFactory` parity,
+  `ProviderTimeoutContractTest`, `DecisionRouterTest`/`UpstreamHealthTest`/
+  `RetryPolicyTest`/`SessionAffinityLoadBalancerTest` hardening cases,
+  `ModuleBoundaryTest` inline-FQCN/comment-stripped scans across all modules,
+  7 new `ArchitectureTest` rules, `ErrorMapperContractTest`,
+  `RouteAndFilterContractTest`, all-face `MetricsPrivacyContractTest` + tag-key
+  allowlist, `TimeoutContractTest`, `EndpointMirrorDriftGuardTest`,
+  `GatewayReflectConfigDriftGuardTest`, `JanusConfigTest`,
+  `GovernanceEstimateTest`, `ThrowingRecorderAccountingTest` chunk/zero paths,
+  `SseChunkPublisherTest` stall-race barrier, `DecisionMultipartParserTest`,
+  `SystemOneAuthTest`, `SystemOneGovernanceTest`, and live multi-format
+  (`text` + PNG + PDF) `gemini-decision-1` smoke in `LiveProviderIT`.
+- **Gateway, provider, and router branch-coverage suites** — expanded
+  `SystemOneControllerTest` (gzip JSON/multipart decompression, corrupt/bomb
+  gzip errors, identity/stacked `Content-Encoding`, empty/null/throwing streams,
+  danger-zone flag combinations, unexpected router failures, throwing
+  `MetricsRecorder`), added `GatewayJsonTest` and expanded `SseWatchdogTest`,
+  `KeyAuthFilterTest` (`DeferredAuthPublisher$Bridge`), and
+  `SseChunkPublisherTest` (`SseStreamPublisher$SubscriptionImpl`) reactive/error
+  edge tests, expanded `DecisionAdaptersLoopbackTest`, `AnthropicAdapterTest`,
+  and `OpenAiCompatibleAdapterTest` (endpoint/auth/constructor guards, extra
+  answers, Google RPC statuses, unreadable error bodies, SSE iterator
+  exhaustion/`IOException`/close edges), and expanded `DecisionRouterTest`
+  (`knows(null)`, throwing `Error` observers/classifiers, and `sleepBackoff`
+  interruption suppression).
 
 ## [0.2.0] — 2026-10-24
 

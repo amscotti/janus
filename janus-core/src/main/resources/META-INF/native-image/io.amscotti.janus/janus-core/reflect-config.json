@@ -225,6 +225,17 @@
     "allDeclaredMethods": true
   },
   {
+    "name": "io.amscotti.janus.core.codec.GeminiDecisionsCodec",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true
+  },
+  {
+    "name": "io.amscotti.janus.core.codec.GeminiDecisionsCodec$StrippedMedia",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allRecordComponents": true
+  },
+  {
     "name": "io.amscotti.janus.core.codec.OpenAiChatRequest",
     "allDeclaredConstructors": true,
     "allDeclaredMethods": true,

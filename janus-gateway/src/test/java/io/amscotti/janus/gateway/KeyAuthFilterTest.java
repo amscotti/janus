@@ -33,10 +33,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.reactivestreams.Publisher;
@@ -676,6 +679,448 @@ class KeyAuthFilterTest {
         assertTrue(
                 recorder.lastDurationMillis > 0,
                 "a filter-level rejection must record the measured latency (got " + recorder.lastDurationMillis + ")");
+    }
+
+    @Test
+    void deferredBridgeForwardsPostGateRequestZeroUpstreamCancelAndUpstreamError() throws Exception {
+        InMemoryKeyStore store = new InMemoryKeyStore(TestKeyAuthFactory.CLOCK);
+        KeyStore.CreatedKey created = store.create(
+                new KeyStore.KeyCreateRequest("bridge", List.of("deepseek-v4-flash"), null, null, null, null, null));
+        KeyAuthFilter filter = new KeyAuthFilter(store, MASTER_KEY);
+
+        AtomicLong seenRequestN = new AtomicLong(-1);
+        AtomicBoolean upstreamCancelled = new AtomicBoolean();
+        CountDownLatch upstreamSubscribed = new CountDownLatch(1);
+        AtomicReference<Subscriber<? super MutableHttpResponse<?>>> upstreamSubRef = new AtomicReference<>();
+
+        ServerFilterChain chain = request -> subscriber -> {
+            upstreamSubRef.set(subscriber);
+            subscriber.onSubscribe(new Subscription() {
+                @Override
+                public void request(long n) {
+                    seenRequestN.set(n);
+                    if (n <= 0) {
+                        subscriber.onError(new IllegalArgumentException("non-positive request"));
+                    }
+                }
+
+                @Override
+                public void cancel() {
+                    upstreamCancelled.set(true);
+                }
+            });
+            upstreamSubscribed.countDown();
+        };
+
+        AtomicReference<Subscription> bridgeSub = new AtomicReference<>();
+        AtomicReference<Throwable> terminalError = new AtomicReference<>();
+        CountDownLatch errorArrived = new CountDownLatch(1);
+        Subscriber<MutableHttpResponse<?>> manualSubscriber = new Subscriber<>() {
+            @Override
+            public void onSubscribe(Subscription s) {
+                bridgeSub.set(s); // Do NOT request immediately -> pendingDemand == 0 at upstream onSubscribe
+            }
+
+            @Override
+            public void onNext(MutableHttpResponse<?> response) {}
+
+            @Override
+            public void onError(Throwable t) {
+                terminalError.set(t);
+                errorArrived.countDown();
+            }
+
+            @Override
+            public void onComplete() {}
+        };
+
+        filter.doFilter(HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()), chain)
+                .subscribe(manualSubscriber);
+        assertTrue(upstreamSubscribed.await(2, TimeUnit.SECONDS));
+
+        // Now upstream is wired -> request(0) forwards to upstream and surfaces RS IllegalArgumentException via onError
+        bridgeSub.get().request(0);
+        assertTrue(errorArrived.await(2, TimeUnit.SECONDS));
+        assertEquals(0L, seenRequestN.get());
+        assertTrue(terminalError.get() instanceof IllegalArgumentException);
+
+        // Cancel after upstream is wired must forward cancel to upstream
+        bridgeSub.get().cancel();
+        assertTrue(upstreamCancelled.get());
+    }
+
+    @Test
+    void deferredBridgePreGateDemandClampNonPositiveIgnoreAndPreRunCancel() {
+        InMemoryKeyStore store = new InMemoryKeyStore(TestKeyAuthFactory.CLOCK);
+        KeyStore.CreatedKey created = store.create(
+                new KeyStore.KeyCreateRequest("pregate", List.of("deepseek-v4-flash"), null, null, null, null, null));
+        AtomicBoolean authRan = new AtomicBoolean();
+        KeyStore trackingStore = new KeyStore() {
+            @Override
+            public CreatedKey create(KeyCreateRequest request) {
+                return store.create(request);
+            }
+
+            @Override
+            public Optional<KeyRecord> findByPrefix(String prefix) {
+                return store.findByPrefix(prefix);
+            }
+
+            @Override
+            public boolean revoke(String id) {
+                return store.revoke(id);
+            }
+
+            @Override
+            public AuthResult authenticate(String prefix, String secret) {
+                authRan.set(true);
+                return store.authenticate(prefix, secret);
+            }
+
+            @Override
+            public List<KeyRecordView> list() {
+                return store.list();
+            }
+
+            @Override
+            public void touch(String prefix) {
+                store.touch(prefix);
+            }
+        };
+
+        AtomicBoolean downstreamRan = new AtomicBoolean();
+        AtomicReference<Runnable> queued = new AtomicReference<>();
+        Executor queueingExecutor = queued::set;
+        KeyAuthFilter queuedFilter = new KeyAuthFilter(
+                trackingStore, MASTER_KEY, MetricsRecorder.noop(), MasterKeyThrottle.create(), queueingExecutor);
+        ServerFilterChain trackingChain = request -> {
+            downstreamRan.set(true);
+            return Publishers.just(HttpResponse.ok());
+        };
+
+        AtomicReference<Subscription> subRef = new AtomicReference<>();
+        queuedFilter
+                .doFilter(
+                        HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()),
+                        trackingChain)
+                .subscribe(new Subscriber<>() {
+                    @Override
+                    public void onSubscribe(Subscription s) {
+                        subRef.set(s);
+                    }
+
+                    @Override
+                    public void onNext(MutableHttpResponse<?> response) {}
+
+                    @Override
+                    public void onError(Throwable t) {}
+
+                    @Override
+                    public void onComplete() {}
+                });
+
+        // Pre-gate non-positive request is ignored; large repeated requests clamp to Long.MAX_VALUE
+        subRef.get().request(0);
+        subRef.get().request(-5);
+        subRef.get().request(Long.MAX_VALUE);
+        subRef.get().request(10);
+
+        // Cancel before queued task runs -> run() exits immediately without touching authGate or downstream
+        subRef.get().cancel();
+        queued.get().run();
+        assertFalse(authRan.get());
+        assertFalse(downstreamRan.get());
+
+        // Verify clamped Long.MAX_VALUE reaches upstream when not cancelled
+        AtomicLong forwardedDemand = new AtomicLong();
+        KeyAuthFilter directFilter = new KeyAuthFilter(store, MASTER_KEY);
+        ServerFilterChain demandRecordingChain = request -> subscriber -> subscriber.onSubscribe(new Subscription() {
+            @Override
+            public void request(long n) {
+                forwardedDemand.set(n);
+            }
+
+            @Override
+            public void cancel() {}
+        });
+        directFilter
+                .doFilter(
+                        HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()),
+                        demandRecordingChain)
+                .subscribe(new Subscriber<>() {
+                    @Override
+                    public void onSubscribe(Subscription s) {
+                        s.request(Long.MAX_VALUE);
+                        s.request(1);
+                    }
+
+                    @Override
+                    public void onNext(MutableHttpResponse<?> response) {}
+
+                    @Override
+                    public void onError(Throwable t) {}
+
+                    @Override
+                    public void onComplete() {}
+                });
+        assertEquals(Long.MAX_VALUE, forwardedDemand.get());
+    }
+
+    @Test
+    void deferredBridgeMidAuthCancelRacingOnSubscribeCancelRejectedExecutorAndDownstreamThrow() throws Exception {
+        InMemoryKeyStore store = new InMemoryKeyStore(TestKeyAuthFactory.CLOCK);
+        KeyStore.CreatedKey created = store.create(
+                new KeyStore.KeyCreateRequest("midcancel", List.of("deepseek-v4-flash"), null, null, null, null, null));
+
+        // 1. Cancel while authGate is running -> downstream never subscribed
+        CountDownLatch gateEntered = new CountDownLatch(1);
+        CountDownLatch releaseGate = new CountDownLatch(1);
+        KeyStore latchedStore = new KeyStore() {
+            @Override
+            public CreatedKey create(KeyCreateRequest request) {
+                return store.create(request);
+            }
+
+            @Override
+            public Optional<KeyRecord> findByPrefix(String prefix) {
+                return store.findByPrefix(prefix);
+            }
+
+            @Override
+            public boolean revoke(String id) {
+                return store.revoke(id);
+            }
+
+            @Override
+            public AuthResult authenticate(String prefix, String secret) {
+                gateEntered.countDown();
+                try {
+                    releaseGate.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return store.authenticate(prefix, secret);
+            }
+
+            @Override
+            public List<KeyRecordView> list() {
+                return store.list();
+            }
+
+            @Override
+            public void touch(String prefix) {
+                store.touch(prefix);
+            }
+        };
+        AtomicBoolean downstreamSubscribed = new AtomicBoolean();
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            KeyAuthFilter midCancelFilter = new KeyAuthFilter(
+                    latchedStore, MASTER_KEY, MetricsRecorder.noop(), MasterKeyThrottle.create(), pool);
+            AtomicReference<Subscription> subRef = new AtomicReference<>();
+            midCancelFilter
+                    .doFilter(
+                            HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()),
+                            request -> {
+                                downstreamSubscribed.set(true);
+                                return Publishers.just(HttpResponse.ok());
+                            })
+                    .subscribe(new Subscriber<>() {
+                        @Override
+                        public void onSubscribe(Subscription s) {
+                            subRef.set(s);
+                        }
+
+                        @Override
+                        public void onNext(MutableHttpResponse<?> response) {}
+
+                        @Override
+                        public void onError(Throwable t) {}
+
+                        @Override
+                        public void onComplete() {}
+                    });
+            assertTrue(gateEntered.await(2, TimeUnit.SECONDS));
+            subRef.get().cancel();
+            releaseGate.countDown();
+            pool.submit(() -> {}).get(2, TimeUnit.SECONDS);
+            assertFalse(downstreamSubscribed.get(), "cancelled mid-auth must never dispatch downstream");
+        } finally {
+            pool.shutdownNow();
+        }
+
+        // 2. Cancel racing Bridge.onSubscribe -> upstream subscription cancelled immediately
+        AtomicBoolean upstreamCancelledInOnSubscribe = new AtomicBoolean();
+        AtomicReference<Subscription> bridgeSub = new AtomicReference<>();
+        KeyAuthFilter directFilter = new KeyAuthFilter(store, MASTER_KEY);
+        directFilter
+                .doFilter(
+                        HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()),
+                        request -> subscriber -> {
+                            bridgeSub.get().cancel();
+                            subscriber.onSubscribe(new Subscription() {
+                                @Override
+                                public void request(long n) {}
+
+                                @Override
+                                public void cancel() {
+                                    upstreamCancelledInOnSubscribe.set(true);
+                                }
+                            });
+                        })
+                .subscribe(new Subscriber<>() {
+                    @Override
+                    public void onSubscribe(Subscription s) {
+                        bridgeSub.set(s);
+                    }
+
+                    @Override
+                    public void onNext(MutableHttpResponse<?> response) {}
+
+                    @Override
+                    public void onError(Throwable t) {}
+
+                    @Override
+                    public void onComplete() {}
+                });
+        assertTrue(upstreamCancelledInOnSubscribe.get());
+
+        // 3. Executor throwing RejectedExecutionException -> onError forwarded to subscriber
+        AtomicReference<Throwable> rejectedError = new AtomicReference<>();
+        KeyAuthFilter rejectedFilter =
+                new KeyAuthFilter(store, MASTER_KEY, MetricsRecorder.noop(), MasterKeyThrottle.create(), task -> {
+                    throw new RejectedExecutionException("saturated");
+                });
+        rejectedFilter
+                .doFilter(
+                        HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()),
+                        request -> Publishers.just(HttpResponse.ok()))
+                .subscribe(new Subscriber<>() {
+                    @Override
+                    public void onSubscribe(Subscription s) {}
+
+                    @Override
+                    public void onNext(MutableHttpResponse<?> response) {}
+
+                    @Override
+                    public void onError(Throwable t) {
+                        rejectedError.set(t);
+                    }
+
+                    @Override
+                    public void onComplete() {}
+                });
+        assertTrue(rejectedError.get() instanceof RejectedExecutionException);
+
+        // 4. downstream.get() throwing RuntimeException -> onError forwarded to subscriber
+        AtomicReference<Throwable> chainError = new AtomicReference<>();
+        directFilter
+                .doFilter(
+                        HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", created.fullKey()),
+                        request -> {
+                            throw new IllegalStateException("chain boom");
+                        })
+                .subscribe(new Subscriber<>() {
+                    @Override
+                    public void onSubscribe(Subscription s) {}
+
+                    @Override
+                    public void onNext(MutableHttpResponse<?> response) {}
+
+                    @Override
+                    public void onError(Throwable t) {
+                        chainError.set(t);
+                    }
+
+                    @Override
+                    public void onComplete() {}
+                });
+        assertTrue(chainError.get() instanceof IllegalStateException);
+    }
+
+    @Test
+    void filterEdgeBranchesKnownPrefixWrongSecretNonBearerHeaderAndThrottledValidMasterKey() {
+        InMemoryKeyStore store = new InMemoryKeyStore(TestKeyAuthFactory.CLOCK);
+        KeyStore.CreatedKey created = store.create(
+                new KeyStore.KeyCreateRequest("wrong-sec", List.of("deepseek-v4-flash"), null, null, null, null, null));
+        MasterKeyThrottle throttle =
+                new MasterKeyThrottle(2, java.time.Duration.ofSeconds(60), TestKeyAuthFactory.CLOCK);
+        KeyAuthFilter filter = new KeyAuthFilter(store, MASTER_KEY, MetricsRecorder.noop(), throttle);
+        ServerFilterChain chain = request -> Publishers.just(HttpResponse.ok());
+
+        // Known prefix with wrong secret in InMemoryKeyStore returns INVALID with null record
+        String wrongSecretKey = "sk-janus-" + created.record().prefix() + "-" + "0".repeat(KeyGenerator.SECRET_LENGTH);
+        LatchedSubscriber wrongSecretSub = new LatchedSubscriber();
+        filter.doFilter(HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", wrongSecretKey), chain)
+                .subscribe(wrongSecretSub);
+        wrongSecretSub.awaitTerminal();
+        assertTrue(wrongSecretSub.error instanceof KeyAuthException ka
+                && ka.reason() == KeyAuthException.Reason.INVALID
+                && ka.keyId() == null);
+
+        // Custom store returning a record alongside INVALID exercises the non-null keyId branch
+        KeyStore invalidWithRecordStore = new KeyStore() {
+            @Override
+            public CreatedKey create(KeyCreateRequest request) {
+                return store.create(request);
+            }
+
+            @Override
+            public Optional<KeyRecord> findByPrefix(String prefix) {
+                return store.findByPrefix(prefix);
+            }
+
+            @Override
+            public boolean revoke(String id) {
+                return store.revoke(id);
+            }
+
+            @Override
+            public AuthResult authenticate(String prefix, String secret) {
+                return new AuthResult(AuthOutcome.INVALID, created.record());
+            }
+
+            @Override
+            public List<KeyRecordView> list() {
+                return store.list();
+            }
+
+            @Override
+            public void touch(String prefix) {
+                store.touch(prefix);
+            }
+        };
+        KeyAuthFilter invalidRecordFilter = new KeyAuthFilter(invalidWithRecordStore, MASTER_KEY);
+        LatchedSubscriber invalidWithRecSub = new LatchedSubscriber();
+        invalidRecordFilter
+                .doFilter(HttpRequest.POST("/v1/chat/completions", "").header("x-api-key", wrongSecretKey), chain)
+                .subscribe(invalidWithRecSub);
+        invalidWithRecSub.awaitTerminal();
+        assertTrue(invalidWithRecSub.error instanceof KeyAuthException ka
+                && ka.reason() == KeyAuthException.Reason.INVALID
+                && created.record().id().equals(ka.keyId()));
+
+        // Non-Bearer Authorization & blank Bearer Authorization are treated as missing
+        for (String badHeader : List.of("Basic abc123", "Bearer   ")) {
+            LatchedSubscriber missingSub = new LatchedSubscriber();
+            filter.doFilter(HttpRequest.POST("/v1/chat/completions", "").header("Authorization", badHeader), chain)
+                    .subscribe(missingSub);
+            missingSub.awaitTerminal();
+            assertTrue(
+                    missingSub.error instanceof KeyAuthException ka && ka.reason() == KeyAuthException.Reason.MISSING);
+        }
+
+        // Trip master-key throttle, then verify missing token is throttled (429) while valid master key still passes
+        for (int i = 0; i < 2; i++) {
+            final int attempt = i;
+            assertThrows(
+                    KeyAuthException.class,
+                    () -> filter.doFilter(
+                            HttpRequest.POST("/key/generate", "").header("x-api-key", "bad-" + attempt), chain));
+        }
+        assertThrows(
+                RateLimitExceededException.class, () -> filter.doFilter(HttpRequest.POST("/key/generate", ""), chain));
+        assertNotNull(filter.doFilter(HttpRequest.POST("/key/generate", "").header("x-api-key", MASTER_KEY), chain));
     }
 
     /** A {@link KeyStore} that sleeps inside {@code authenticate} so the rejection latency is measurable. */

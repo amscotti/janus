@@ -295,4 +295,19 @@ class ErrorMapper {
     static String redactSecrets(String message) {
         return message == null ? null : SECRET_SHAPE.matcher(message).replaceAll("<redacted>");
     }
+
+    /** Sanitize client-controlled strings echoed into errors/logs (control chars -> space, bounded length). */
+    static String sanitizeClientText(String value) {
+        if (value == null) {
+            return "";
+        }
+        int maxLen = 128;
+        int limit = Math.min(value.length(), maxLen);
+        StringBuilder sb = new StringBuilder(limit);
+        for (int i = 0; i < limit; i++) {
+            char c = value.charAt(i);
+            sb.append(c < 0x20 || c == 0x7f ? ' ' : c);
+        }
+        return value.length() <= maxLen ? sb.toString() : sb + "...";
+    }
 }

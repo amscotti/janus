@@ -1,16 +1,33 @@
 package io.amscotti.janus;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.library.Architectures.layeredArchitecture;
 import static com.tngtech.archunit.library.GeneralCodingRules.NO_CLASSES_SHOULD_USE_JAVA_UTIL_LOGGING;
 import static com.tngtech.archunit.library.GeneralCodingRules.NO_CLASSES_SHOULD_USE_JODATIME;
 import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices;
 
+import com.tngtech.archunit.core.domain.JavaCall;
+import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaMethod;
+import com.tngtech.archunit.core.domain.properties.HasName;
+import com.tngtech.archunit.core.domain.properties.HasOwner;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
+import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
+import com.tngtech.archunit.lang.ConditionEvents;
+import com.tngtech.archunit.lang.SimpleConditionEvent;
+import io.amscotti.janus.core.model.ContentLogging;
+import io.micronaut.http.annotation.Controller;
+import io.micronaut.http.annotation.Delete;
+import io.micronaut.http.annotation.Patch;
+import io.micronaut.http.annotation.Post;
+import io.micronaut.http.annotation.Put;
+import io.micronaut.scheduling.TaskExecutors;
+import io.micronaut.scheduling.annotation.ExecuteOn;
 
 /**
  * Executable module-boundary contract from AGENTS.md.
@@ -499,4 +516,115 @@ class ArchitectureTest {
             .should()
             .beRecords()
             .because("HTTP DTOs are Jackson-mapped records");
+
+    @ArchTest
+    static final ArchRule contentLoggingMutationStaysInContentLoggingMode = noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.ContentLoggingMode")
+            .should()
+            .callMethod(ContentLogging.class, "enable")
+            .orShould()
+            .callMethod(ContentLogging.class, "disable")
+            .because("only ContentLoggingMode flips the boot ContentLogging gate");
+
+    @ArchTest
+    static final ArchRule micrometerStaysInMetricsFactoryAndRecorder = noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.MetricsFactory")
+            .and()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.MicrometerMetricsRecorder")
+            .and()
+            .haveNameNotMatching(".*\\$Definition.*")
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage("io.micrometer..")
+            .because("Tier-1 metrics go strictly through MetricsFactory and MicrometerMetricsRecorder");
+
+    @ArchTest
+    static final ArchRule nettyAndLogbackStayInGateway = noClasses()
+            .that()
+            .resideInAnyPackage(CORE, PROVIDER, ROUTER, STORE)
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage("io.netty..", "ch.qos.logback..")
+            .because("Netty HTTP server and Logback belong to janus-gateway only");
+
+    @ArchTest
+    static final ArchRule noDynamicClassloading = noClasses()
+            .that()
+            .haveNameNotMatching(".*\\$Definition.*")
+            .should()
+            .callMethodWhere(JavaCall.Predicates.target(HasName.Predicates.name("forName"))
+                    .and(JavaCall.Predicates.target(
+                            HasOwner.Predicates.With.owner(JavaClass.Predicates.assignableTo(Class.class)))))
+            .orShould()
+            .callMethodWhere(JavaCall.Predicates.target(HasName.Predicates.name("loadClass"))
+                    .and(JavaCall.Predicates.target(
+                            HasOwner.Predicates.With.owner(JavaClass.Predicates.assignableTo(ClassLoader.class)))))
+            .orShould()
+            .dependOnClassesThat()
+            .haveFullyQualifiedName("java.lang.invoke.MethodHandles")
+            .orShould()
+            .dependOnClassesThat()
+            .resideInAnyPackage("sun.misc..", "jdk.internal.misc..")
+            .because("native-image discipline: no dynamic classloading, MethodHandles, or Unsafe in main code");
+
+    @ArchTest
+    static final ArchRule systemGetenvStaysInCompositionFactories = noClasses()
+            .that()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.CallStoreFactory")
+            .and()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.MasterKeyProvider")
+            .and()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.RouterFactory")
+            .and()
+            .doNotHaveFullyQualifiedName("io.amscotti.janus.gateway.DecisionRouterFactory")
+            .and()
+            .haveNameNotMatching(".*\\$Definition.*")
+            .should()
+            .callMethod(System.class, "getenv")
+            .orShould()
+            .callMethod(System.class, "getenv", String.class)
+            .because("System.getenv stays confined to the gateway composition factories");
+
+    @ArchTest
+    static final ArchRule allWriteRoutesExecuteOnBlocking = methods()
+            .that()
+            .areAnnotatedWith(Post.class)
+            .or()
+            .areAnnotatedWith(Put.class)
+            .or()
+            .areAnnotatedWith(Patch.class)
+            .or()
+            .areAnnotatedWith(Delete.class)
+            .should(new ArchCondition<JavaMethod>("carry @ExecuteOn(TaskExecutors.BLOCKING)") {
+                @Override
+                public void check(JavaMethod method, ConditionEvents events) {
+                    if (!method.isAnnotatedWith(ExecuteOn.class)) {
+                        events.add(SimpleConditionEvent.violated(
+                                method, method.getFullName() + " is missing @ExecuteOn(TaskExecutors.BLOCKING)"));
+                        return;
+                    }
+                    String executor =
+                            method.getAnnotationOfType(ExecuteOn.class).value();
+                    if (!TaskExecutors.BLOCKING.equals(executor)) {
+                        events.add(SimpleConditionEvent.violated(
+                                method,
+                                method.getFullName() + " has @ExecuteOn(" + executor + ") instead of BLOCKING"));
+                    }
+                }
+            })
+            .because("blocking upstream/store routes must never execute on the Netty event loop");
+
+    @ArchTest
+    static final ArchRule faceControllersExtendModelFaceControllerSupport = classes()
+            .that()
+            .areAnnotatedWith(Controller.class)
+            .and()
+            .doNotHaveSimpleName("AdminKeysController")
+            .and()
+            .doNotHaveSimpleName("ModelsController")
+            .should()
+            .beAssignableTo("io.amscotti.janus.gateway.ModelFaceControllerSupport")
+            .because("all HTTP inference face controllers share ModelFaceControllerSupport");
 }

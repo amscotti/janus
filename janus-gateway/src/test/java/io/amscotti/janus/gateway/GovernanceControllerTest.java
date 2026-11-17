@@ -380,14 +380,14 @@ class GovernanceControllerTest {
 
     @Test
     void negativeUsageFromUpstreamIs500ReleasesReservationAndWritesExactlyOneErrorRow() {
-        // A malformed/broken upstream that yields negative token counts reaches
-        // the CostCalculator in finalize (OpenAiMessageCodec clamps only the cache claim —
-        // prompt/completion pass through raw). The reservation must release (a leaked
-        // 286_720-micro pending balance would deny the follow-up against the 500_000 cap)
-        // and the call ledger must carry exactly one (ERROR) row — never an OK row plus an
-        // ERROR row for one request (the OK write is finalize's last side effect).
+        // A malformed/overflowing upstream that passes non-negative construction yields
+        // ArithmeticException on billedPromptTokens() in finalize. The reservation must
+        // release (a leaked 286_720-micro pending balance would deny the follow-up against
+        // the 500_000 cap) and the call ledger must carry exactly one (ERROR) row — never
+        // an OK row plus an ERROR row for one request.
         KeyStore.CreatedKey created = createKey(0.5, null, null); // cap 500_000 micro
-        TestRouterFactory.BACKEND.completeReturns(chatResponse(new Usage(-5, 10, 5)));
+        TestRouterFactory.BACKEND.completeReturns(
+                chatResponse(new Usage(Long.MAX_VALUE, 10, Long.MAX_VALUE, 1L, null)));
         TestRouterFactory.BACKEND.completeCalls.clear();
 
         HttpResponse<?> failed =

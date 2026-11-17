@@ -674,4 +674,80 @@ class OpenAiResponsesCodecTest {
                 response(ChatResponse.STOP_REASON_STOP, new Usage(1, 1, 2), new AssistantMessage(null, null)));
         assertTrue(json.contains("\"text\":\"\""), json);
     }
+
+    @Test
+    void wrongTypedFieldsProduceTypedInvalidRequestInsteadOfJsonNodeException() {
+        OpenAiCodecException badModel = decodeFails("{\"model\":123,\"input\":\"hi\"}");
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, badModel.type());
+
+        OpenAiCodecException badMaxTokens = decodeFails("{\"model\":\"m\",\"input\":\"hi\",\"max_output_tokens\":1.5}");
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, badMaxTokens.type());
+
+        OpenAiCodecException badStore = decodeFails("{\"model\":\"m\",\"input\":\"hi\",\"store\":\"true\"}");
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, badStore.type());
+
+        OpenAiCodecException badTemperature = decodeFails("{\"model\":\"m\",\"input\":\"hi\",\"temperature\":\"hot\"}");
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, badTemperature.type());
+    }
+
+    @Test
+    void duplicateKeysAreRejected() {
+        OpenAiCodecException e = decodeFails("{\"model\":\"m\",\"model\":\"other\",\"input\":\"hi\"}");
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, e.type());
+    }
+
+    @Test
+    void emptyToolCallsListStillEmitsFallbackTextOutputAndNullToolInRequestIsTolerated() {
+        List<ToolDefinition> toolsWithNull = new ArrayList<>();
+        toolsWithNull.add(null);
+        toolsWithNull.add(new ToolDefinition("function", "f", "desc", "{\"type\":\"object\"}"));
+        ChatRequest req = new ChatRequest(
+                "m",
+                List.of(new UserMessage("hi")),
+                null,
+                toolsWithNull,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        ChatResponse res = new ChatResponse(
+                "1",
+                "chat.completion",
+                1L,
+                "m",
+                List.of(new ChatChoice(0, new AssistantMessage(null, List.of()), "stop")),
+                new Usage(1, 1, 2),
+                ChatResponse.STOP_REASON_STOP,
+                Map.of(),
+                null);
+        String json = codec.encodeResponse(req, res);
+        assertTrue(json.contains("\"type\":\"message\""), json);
+        assertTrue(json.contains("\"text\":\"\""), json);
+        assertTrue(json.contains("\"name\":\"f\""), json);
+    }
+
+    @Test
+    void usageOverflowOnEncodeRaisesTypedApiError() {
+        ChatResponse overflow = response(
+                ChatResponse.STOP_REASON_STOP,
+                new Usage(Long.MAX_VALUE, 1, Long.MAX_VALUE),
+                new AssistantMessage("x", null));
+        OpenAiCodecException e =
+                assertThrows(OpenAiCodecException.class, () -> codec.encodeResponse(echoRequest(), overflow));
+        assertEquals(OpenAiCodecException.TYPE_API_ERROR, e.type());
+    }
 }

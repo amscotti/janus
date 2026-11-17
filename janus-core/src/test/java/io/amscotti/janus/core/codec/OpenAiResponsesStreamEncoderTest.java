@@ -280,6 +280,16 @@ class OpenAiResponsesStreamEncoderTest {
         assertTrue(failed.dataJson().contains("\"sequence_number\""), failed.dataJson());
     }
 
+    @Test
+    void epochSecondSupplierPopulatesCreatedAtDirectlyInSeconds() {
+        OpenAiResponsesCodec.OpenAiResponsesStreamEncoder encoder =
+                codec.newStreamEncoder(request(), () -> 1_700_000_000L);
+        List<OpenAiResponsesStreamEvent> initial = encoder.initialEvents();
+        assertTrue(
+                initial.get(0).dataJson().contains("\"created_at\":1700000000,"),
+                initial.get(0).dataJson());
+    }
+
     private static long assertIncreasing(OpenAiResponsesStreamEvent event, long last) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\\"sequence_number\\\":(\\d+)")
                 .matcher(event.dataJson());
