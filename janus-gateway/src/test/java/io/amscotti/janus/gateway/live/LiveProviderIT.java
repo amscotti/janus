@@ -14,6 +14,7 @@ import static io.amscotti.janus.gateway.live.LiveProviderSupport.cacheablePrefix
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.expectedMicroUsdDeepseekFlash;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.expectedMicroUsdGrok46;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.metricCounter;
+import static io.amscotti.janus.gateway.live.LiveProviderSupport.minimalPdfBase64;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.mintKeyFull;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.multiRoundFollowUpBody;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.multiRoundSeedBody;
@@ -30,6 +31,7 @@ import static io.amscotti.janus.gateway.live.LiveProviderSupport.readTree;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.requireMasterKey;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.scrapeMetrics;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.streamChatBody;
+import static io.amscotti.janus.gateway.live.LiveProviderSupport.systemOne;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.systemPromptChatBody;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.toolCallBody;
 import static io.amscotti.janus.gateway.live.LiveProviderSupport.virtualKey;
@@ -3082,23 +3084,87 @@ class LiveProviderIT {
         String reqBody = """
                 {
                   "model": "gemini-decision-1",
-                  "state": "Customer writes: my order arrived damaged and I want a refund.",
+                  "state": "Customer writes: my order arrived damaged and I want a full refund immediately.",
                   "questions": {
                     "wants_refund": {
                       "type": "noul",
                       "instructions": "Is the customer requesting a refund?",
                       "criteria": {"true": "Requests refund", "false": "No refund"}
+                    },
+                    "category": {
+                      "type": "choice",
+                      "instructions": "Classify the primary support category.",
+                      "criteria": {
+                        "billing": "Billing, payment, or refund issue",
+                        "bug": "Software defect or outage",
+                        "other": "Other general inquiry"
+                      }
+                    },
+                    "urgency": {
+                      "type": "score",
+                      "instructions": "Rate the urgency of this customer request.",
+                      "criteria": ["Low", "Medium", "High"]
                     }
                   }
                 }
                 """;
-        var req = io.micronaut.http.HttpRequest.POST("/v1/systemone", reqBody)
-                .header("Authorization", "Bearer " + key)
-                .contentType(io.micronaut.http.MediaType.APPLICATION_JSON_TYPE);
-        tools.jackson.databind.JsonNode res = readTree(client.toBlocking().retrieve(req));
-        assertEquals("gemini-decision-1", res.get("model").asString());
-        assertTrue(res.get("answers").get("wants_refund").get("noul").asDouble() > 0.5);
-        assertTrue(res.get("usage").get("input_tokens").asLong() > 0);
-        assertEquals(0L, res.get("usage").get("output_tokens").asLong());
+        JsonNode res = systemOne(client, key, reqBody);
+        assertEquals("gemini-decision-1", res.get("model").asString(), res::toString);
+        JsonNode answers = res.get("answers");
+        assertNotNull(answers, res::toString);
+
+        JsonNode noulAns = answers.get("wants_refund");
+        assertEquals("noul", noulAns.get("type").asString(), res::toString);
+        assertTrue(noulAns.get("noul").asDouble() > 0.5, res::toString);
+
+        JsonNode choiceAns = answers.get("category");
+        assertEquals("choice", choiceAns.get("type").asString(), res::toString);
+        assertTrue(
+                List.of("billing", "bug", "other")
+                        .contains(choiceAns.get("choice").asString()),
+                res::toString);
+        assertTrue(choiceAns.get("probabilities").isObject(), res::toString);
+
+        JsonNode scoreAns = answers.get("urgency");
+        assertEquals("score", scoreAns.get("type").asString(), res::toString);
+        double score = scoreAns.get("score").asDouble();
+        assertTrue(score >= 0.0 && score <= 2.0, res::toString);
+        assertTrue(scoreAns.get("legend").isObject(), res::toString);
+        assertTrue(scoreAns.get("probabilities").isObject(), res::toString);
+
+        assertTrue(res.get("usage").get("input_tokens").asLong() > 0, res::toString);
+        assertEquals(0L, res.get("usage").get("output_tokens").asLong(), res::toString);
+    }
+
+    @Test
+    void geminiDecisionsMultiFormatLiveSmoke() {
+        assumeProviderKey("GEMINI_API_KEY");
+        String key = keyFor("gemini-decision-1");
+        String reqBody = """
+                {
+                  "model": "gemini-decision-1",
+                  "state": [
+                    {"type": "text", "text": "Inspect the attached image and PDF invoice document."},
+                    {"type": "image", "data": "%s", "mime_type": "image/png"},
+                    {"type": "document", "data": "%s", "mime_type": "application/pdf"}
+                  ],
+                  "questions": {
+                    "mentions_paid_invoice": {
+                      "type": "noul",
+                      "instructions": "Does the attached PDF document mention a paid invoice?",
+                      "criteria": {"true": "Mentions paid invoice", "false": "Does not mention paid invoice"}
+                    }
+                  }
+                }
+                """.formatted(TINY_PNG_B64, minimalPdfBase64());
+        JsonNode res = systemOne(client, key, reqBody);
+        assertEquals("gemini-decision-1", res.get("model").asString(), res::toString);
+        JsonNode ans = res.get("answers").get("mentions_paid_invoice");
+        assertNotNull(ans, res::toString);
+        assertEquals("noul", ans.get("type").asString(), res::toString);
+        double prob = ans.get("noul").asDouble();
+        assertTrue(prob >= 0.0 && prob <= 1.0 && prob > 0.5, res::toString);
+        assertTrue(res.get("usage").get("input_tokens").asLong() > 0, res::toString);
+        assertEquals(0L, res.get("usage").get("output_tokens").asLong(), res::toString);
     }
 }

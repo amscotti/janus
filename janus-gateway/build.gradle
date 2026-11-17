@@ -223,7 +223,7 @@ tasks.register('liveTest', Test) {
  environment 'JANUS_LIVE', live != null ? live : ''
  // Pass through known provider keys when present (explicit so Gradle doesn't
  // scrub the child env on some runners).
- ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'XAI_API_KEY', 'OPENROUTER_API_KEY', 'META_API_KEY', 'TOGETHER_API_KEY'].each { name ->
+ ['DEEPSEEK_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'XAI_API_KEY', 'OPENROUTER_API_KEY', 'META_API_KEY', 'TOGETHER_API_KEY', 'GEMINI_API_KEY', 'TYPESAFE_API_KEY'].each { name ->
  def v = System.getenv(name)
  if (v != null && !v.isBlank()) {
  environment name, v

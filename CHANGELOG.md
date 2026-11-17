@@ -128,6 +128,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Metrics privacy** — nested decision question/answer records no longer
   print instructions/criteria/answers in `toString` when content logging is
   off; the `face="systemone"` privacy test plants the marker in answers too.
+- **Core model & codec hardening** — `ToolDefinition` and `DecisionAnswer`
+  (`NoulAnswer`/`BoxAnswer`) gate `toString()` on `ContentLogging`; `Usage`
+  rejects negative token counts and checks overflow in `billedPromptTokens()`;
+  `PromptCache` guards version-number parsing against overflow;
+  `OpenAiResponsesCodec` throws typed `OpenAiCodecException` (400) on
+  wrong-typed fields instead of `JsonNodeException` (500), fixes
+  `epochSecondSupplier` seconds scaling, guards null `flatTools` elements,
+  and handles empty `toolCalls`; `OpenAiMessageCodec`, `AnthropicMessageCodec`,
+  `OpenAiResponsesCodec`, and `GatewayJson` enable
+  `STRICT_DUPLICATE_DETECTION`; chat codecs reject negative/overflowing token
+  usage, null content blocks/list elements, empty post-filter Anthropic
+  `messages`, invalid adaptive `effort`, blank `tool_result.toolUseId`, and
+  spurious empty `TEXT` block 0 on `content: ""` with `reasoning_content`.
+- **Chat adapter & router hardening** — `AnthropicAdapter` and
+  `OpenAiCompatibleAdapter` share consolidated `HttpSupport` HTTP/status/error
+  helpers, parse `countTokens` strictly as non-negative digits, validate
+  `anthropic-beta` header tokens, preserve `InterruptedException` in
+  `readErrorBody`, and format sub-second timeouts in `ms`; `DecisionRouter`
+  skips dead backoff sleep after the last candidate fails and sanitizes model
+  names; `PassiveUpstreamHealth` synchronizes multi-field state transitions and
+  caps `consecutiveFailures`; `RetryPolicy` draws `ThreadLocalRandom.current()`
+  at call time; `SessionAffinityLoadBalancer` masks non-ASCII UTF-8 bytes with
+  `0xFF` in `fnv1a32`.
+- **Gateway, governance & parser hardening** — `Governance` uses
+  `billedPromptTokens()` in `settleChunk`, best-effort usage metrics in
+  `settleChunk`/`settleZero`, and saturating pre-dispatch estimate addition;
+  `AnthropicErrorMapper` maps `TYPE_UNSUPPORTED_REQUEST` to HTTP 400
+  `invalid_request_error`; `SseStreamPublisher` emits `stallError()` before
+  completing when a stall races the final drain; `KeyAuthFilter`
+  (`SECURITY.order()`) runs strictly ahead of `DecisionEncodingFilter`
+  (`SECURITY.after()`), which now checks POST + normalized `/v1/systemone/` +
+  media-type essence + stacked `Content-Encoding` and records 415 metrics with
+  an `OpenAiErrorEnvelope`; `SystemOneController` extends
+  `ModelFaceControllerSupport`, closes `rawBody`, runs ingress decode/parse
+  inside `handle()`, and streams bounded 64 KiB zstd/gzip decompression;
+  `DecisionMultipartParser` fixes `filename=`/`name=` parameter collisions, OWS,
+  quoted `;`, RFC 2046 `<=70`-char boundary limits, KMP linear-time search, and
+  `--boundary` termination checks.
 
 ### Changed
 
@@ -159,6 +197,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   corrupt-body 400), multipart `request`/file-part inlining (missing/orphan/
   duplicate part typed 400s), and the codec trust-boundary regressions
   (non-finite/overflow/duplicate keys/structured entries/Box).
+- **Review-fix hardening & boundary suites** — `ModelToStringPrivacyTest`
+  classpath scan of `core.model`, `OpenAiResponsesCodec` wire-shape guard,
+  `STRICT_DUPLICATE_DETECTION`/bounds/stream-delta codec tests,
+  `ProviderAdapterSpiTest` classpath scan + `RouterFactory` parity,
+  `ProviderTimeoutContractTest`, `DecisionRouterTest`/`UpstreamHealthTest`/
+  `RetryPolicyTest`/`SessionAffinityLoadBalancerTest` hardening cases,
+  `ModuleBoundaryTest` inline-FQCN/comment-stripped scans across all modules,
+  7 new `ArchitectureTest` rules, `ErrorMapperContractTest`,
+  `RouteAndFilterContractTest`, all-face `MetricsPrivacyContractTest` + tag-key
+  allowlist, `TimeoutContractTest`, `EndpointMirrorDriftGuardTest`,
+  `GatewayReflectConfigDriftGuardTest`, `JanusConfigTest`,
+  `GovernanceEstimateTest`, `ThrowingRecorderAccountingTest` chunk/zero paths,
+  `SseChunkPublisherTest` stall-race barrier, `DecisionMultipartParserTest`,
+  `SystemOneAuthTest`, `SystemOneGovernanceTest`, and live multi-format
+  (`text` + PNG + PDF) `gemini-decision-1` smoke in `LiveProviderIT`.
 
 ## [0.2.0] — 2026-10-24
 
