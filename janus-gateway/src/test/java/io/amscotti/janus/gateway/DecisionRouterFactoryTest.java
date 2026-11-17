@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.amscotti.janus.JanusConfig;
 import io.amscotti.janus.provider.DecisionAdapter;
+import io.amscotti.janus.provider.GeminiDecisionsAdapter;
 import io.amscotti.janus.provider.OpenAiDecisionsAdapter;
 import io.amscotti.janus.provider.SystemOneAdapter;
 import java.util.Set;
@@ -48,6 +49,16 @@ class DecisionRouterFactoryTest {
     }
 
     @Test
+    void geminiDecisionsFamilyCarriesTheFixedNameAndDefaultBase() {
+        DecisionAdapter adapter =
+                DecisionRouterFactory.createDecisionAdapter("whatever", "gemini-decisions", "  ", "k", TIMEOUTS);
+        assertEquals(GeminiDecisionsAdapter.NAME, adapter.name(), "the family name is fixed, not the entry's");
+        assertEquals(
+                GeminiDecisionsAdapter.DEFAULT_BASE_URL, adapter.baseUrl(), "blank base ⇒ Google AI Studio's base");
+        assertEquals("x-goog-api-key", adapter.auth().type());
+    }
+
+    @Test
     void systemoneBlankBaseFailsFastAtConstruction() {
         RuntimeException e = assertThrows(
                 RuntimeException.class,
@@ -71,23 +82,28 @@ class DecisionRouterFactoryTest {
         // registered" at the first decision alias.
         assertEquals(JanusConfig.WIRE_FORMAT_SYSTEMONE, SystemOneAdapter.NAME);
         assertEquals(JanusConfig.WIRE_FORMAT_OPENAI_DECISIONS, OpenAiDecisionsAdapter.NAME);
+        assertEquals(JanusConfig.WIRE_FORMAT_GEMINI_DECISIONS, GeminiDecisionsAdapter.NAME);
     }
 
     @Test
     void everyServiceLoaderKnownProviderIsConstructible() {
         // The services file lists the registered adapters (DecisionAdapterSpiTest
         // pins that direction); this pins the other half — every registered name
-        // must have a constructor arm, or adding the third adapter to
+        // must have a constructor arm, or adding an adapter to
         // META-INF/services would pass the SPI test and fail at boot.
         Set<String> known = DecisionModelListFactory.knownProviders();
-        assertEquals(Set.of("systemone", "openai-decisions"), known);
+        assertEquals(Set.of("systemone", "openai-decisions", "gemini-decisions"), known);
         for (String provider : known) {
             DecisionAdapter adapter =
                     DecisionRouterFactory.createDecisionAdapter(provider, provider, "http://h", "k", TIMEOUTS);
             assertNotNull(adapter);
-            assertEquals(
-                    OpenAiDecisionsAdapter.NAME.equals(provider) ? OpenAiDecisionsAdapter.NAME : provider,
-                    adapter.name());
+            String expectedName =
+                    switch (provider) {
+                        case OpenAiDecisionsAdapter.NAME -> OpenAiDecisionsAdapter.NAME;
+                        case GeminiDecisionsAdapter.NAME -> GeminiDecisionsAdapter.NAME;
+                        default -> provider;
+                    };
+            assertEquals(expectedName, adapter.name());
         }
     }
 

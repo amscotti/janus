@@ -64,7 +64,8 @@ final class DecisionAdapterBackend implements DecisionBackend {
             // in the message (the chat faces keep routing topology server-side).
             throw new DecisionCodecException(
                     DecisionCodecException.TYPE_INVALID_REQUEST,
-                    "images are not supported by this decision backend for model \"" + request.model()
+                    "images are not supported by this decision backend for model \""
+                            + sanitizeForLog(request.model())
                             + "\" (set vision = true on the decision-model-list entry only for"
                             + " image-capable models)");
         }
@@ -74,5 +75,23 @@ final class DecisionAdapterBackend implements DecisionBackend {
         // the operator's upstream-model remap (or a pooled sibling's id) back.
         return new DecisionResponse(
                 request.model(), response.answers(), response.usage(), response.extras(), response.meta());
+    }
+
+    private static String sanitizeForLog(String value) {
+        if (value == null) {
+            return "";
+        }
+        int limit = 128;
+        int len = value.length();
+        int scan = Math.min(len, limit);
+        StringBuilder out = new StringBuilder(scan + 3);
+        for (int i = 0; i < scan; i++) {
+            char c = value.charAt(i);
+            out.append((c < 0x20 || c == 0x7F) ? ' ' : c);
+        }
+        if (len > limit) {
+            out.append("...");
+        }
+        return out.toString();
     }
 }

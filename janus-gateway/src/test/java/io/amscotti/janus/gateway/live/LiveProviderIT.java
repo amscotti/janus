@@ -399,6 +399,17 @@ import tools.jackson.databind.JsonNode;
 @Property(name = "janus.pricing.models[20].long-cache-creation-per-1k", value = "0.005")
 @Property(name = "janus.pricing.models[20].long-cache-creation-12h-per-1k", value = "0.010")
 @Property(name = "janus.pricing.models[20].default-max-tokens", value = "4096")
+@Property(name = "janus.decision-providers.google-decisions.wire-format", value = "gemini-decisions")
+@Property(
+        name = "janus.decision-providers.google-decisions.base-url",
+        value = "https://generativelanguage.googleapis.com")
+@Property(name = "janus.decision-providers.google-decisions.api-key-env", value = "GEMINI_API_KEY")
+@Property(name = "janus.decision-model-list[0].name", value = "gemini-decision-1")
+@Property(name = "janus.decision-model-list[0].provider", value = "google-decisions")
+@Property(name = "janus.decision-model-list[0].vision", value = "true")
+@Property(name = "janus.pricing.models[21].name", value = "gemini-decision-1")
+@Property(name = "janus.pricing.models[21].input-per-1k", value = "0.0001")
+@Property(name = "janus.pricing.models[21].output-per-1k", value = "0.0")
 // Light routing (one retry only — live network; enough for dead→secondary failover)
 @Property(name = "janus.router.max-retries", value = "1")
 @Property(name = "janus.router.allowed-fails", value = "1")
@@ -3062,5 +3073,32 @@ class LiveProviderIT {
         String key = keyFor(FAILOVER);
         JsonNode res = openaiChat(client, key, plainChatBody(FAILOVER));
         assertNonEmptyAssistantContent(res);
+    }
+
+    @Test
+    void geminiDecisionsLiveSmoke() {
+        assumeProviderKey("GEMINI_API_KEY");
+        String key = keyFor("gemini-decision-1");
+        String reqBody = """
+                {
+                  "model": "gemini-decision-1",
+                  "state": "Customer writes: my order arrived damaged and I want a refund.",
+                  "questions": {
+                    "wants_refund": {
+                      "type": "noul",
+                      "instructions": "Is the customer requesting a refund?",
+                      "criteria": {"true": "Requests refund", "false": "No refund"}
+                    }
+                  }
+                }
+                """;
+        var req = io.micronaut.http.HttpRequest.POST("/v1/systemone", reqBody)
+                .header("Authorization", "Bearer " + key)
+                .contentType(io.micronaut.http.MediaType.APPLICATION_JSON_TYPE);
+        tools.jackson.databind.JsonNode res = readTree(client.toBlocking().retrieve(req));
+        assertEquals("gemini-decision-1", res.get("model").asString());
+        assertTrue(res.get("answers").get("wants_refund").get("noul").asDouble() > 0.5);
+        assertTrue(res.get("usage").get("input_tokens").asLong() > 0);
+        assertEquals(0L, res.get("usage").get("output_tokens").asLong());
     }
 }

@@ -83,14 +83,20 @@ final class DecisionModelListFactory {
             String firstProvider = claimed.computeIfAbsent(alias, a -> new LinkedHashMap<>())
                     .putIfAbsent(backend.name(), entry.provider());
             if (firstProvider != null) {
+                String hint =
+                        switch (backend.name()) {
+                            case "openai-decisions" ->
+                                " (the openai-decisions family uses one fixed backend name, so two"
+                                        + " OpenAI Decisions entries cannot pool under one alias)";
+                            case "gemini-decisions" ->
+                                " (the gemini-decisions family uses one fixed backend name, so two"
+                                        + " Gemini Decisions entries cannot pool under one alias)";
+                            default -> " (two entries for one alias must resolve to different backend names)";
+                        };
                 throw new IllegalStateException(
                         "duplicate backend name \"" + backend.name() + "\" for decision alias \""
                                 + alias + "\": providers \"" + firstProvider + "\" and \"" + entry.provider()
-                                + "\" resolve to the same backend"
-                                + ("openai-decisions".equals(backend.name())
-                                        ? " (the openai-decisions family uses one fixed backend name, so two"
-                                                + " OpenAI Decisions entries cannot pool under one alias)"
-                                        : " (two entries for one alias must resolve to different backend names)"));
+                                + "\" resolve to the same backend" + hint);
             }
             grouped.computeIfAbsent(alias, a -> new ArrayList<>()).add(backend);
         }
@@ -183,10 +189,11 @@ final class DecisionModelListFactory {
         if (block.wireFormat() != null
                 && !block.wireFormat().isBlank()
                 && !JanusConfig.WIRE_FORMAT_SYSTEMONE.equals(block.wireFormat())
-                && !JanusConfig.WIRE_FORMAT_OPENAI_DECISIONS.equals(block.wireFormat())) {
+                && !JanusConfig.WIRE_FORMAT_OPENAI_DECISIONS.equals(block.wireFormat())
+                && !JanusConfig.WIRE_FORMAT_GEMINI_DECISIONS.equals(block.wireFormat())) {
             throw new IllegalStateException("[janus.decision-providers." + name
-                    + "] wire-format must be \"systemone\" or \"openai-decisions\" (got \"" + block.wireFormat()
-                    + "\")");
+                    + "] wire-format must be \"systemone\", \"openai-decisions\", or \"gemini-decisions\" (got \""
+                    + block.wireFormat() + "\")");
         }
         requirePositive(
                 block.connectTimeoutSeconds(), "[janus.decision-providers." + name + "] connect-timeout-seconds");
