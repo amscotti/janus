@@ -32,12 +32,12 @@ parallelism caps.
 | OpenAI-format ingress | `ChatCompletionsController` + `OpenAiMessageCodec` |
 | Anthropic-format ingress | `MessagesController` + `AnthropicMessageCodec` |
 | Responses-format ingress | `ResponsesController` + `OpenAiResponsesCodec` |
-| System One decisions ingress | `SystemOneController` + `SystemOneCodec`; `noul`/`choice`/`score`/`box` (TypeSafe beta); zstd and multipart request bodies |
+| System One decisions ingress | `SystemOneController` + `SystemOneCodec`, `OpenAiDecisionsCodec`, `GeminiDecisionsCodec`; `noul`/`choice`/`score`/`box` (TypeSafe beta); zstd and multipart request bodies |
 | Cross-format translation | Canonical model in `janus-core` (system, tools, deltas, stop, usage) |
 | Streaming (SSE) | Face publishers; `stream_options.include_usage` is passed through (the Responses face forces it so `response.completed` always carries usage) |
 | Tool calls | Both directions; golden fixtures under `fixtures/matrix/` |
 | `developer` role | OpenAI wire keeps `"developer"`; Anthropic merges it into `system` |
-| Vision / image input | Chat: user-message `ContentPart`s (data URL and https). Decisions: `images[]` (Ollama/Clef), TypeSafe `assets` + `TypeSafe-Danger-Zone-Images` (Box included), or OpenAI `input_image`; any of them requires `vision = true` |
+| Vision / image input | Chat: user-message `ContentPart`s (data URL and https). Decisions: `images[]` (Ollama/Clef), TypeSafe `assets` + `TypeSafe-Danger-Zone-Images` (Box included), OpenAI `input_image`, or Gemini multi-format blocks (`image`, plus `document`/`audio`/`video` on `gemini-decisions`); any image evidence requires `vision = true` |
 | Prompt cache | OpenAI GPT-5.6+ `prompt_cache_breakpoint` object + `prompt_cache_key`/`prompt_cache_options`; Qwen OpenAI-compatible `cache_control` on content parts; Anthropic `cache_control` on content blocks (optional `ttl: "1h"`); translated both ways. Chat Completions usage re-emits `prompt_tokens_details.cached_tokens` / `prompt_cache_hit_tokens` |
 | Structured outputs | `response_format` ⇄ Anthropic `output_config.format` (`json_schema`; wrapper `name`/`strict` and `json_object`/`text` drop on the Anthropic leg; the reverse leg synthesizes name `response` + `strict:true` because Anthropic carries only the schema); tool-level `strict` round-trips |
 | Reasoning | Request maps (effort `low`–`max`) + signed thinking round-trip (`AssistantMessage.reasoningContents`) + `thinking_delta`/`signature_delta`/`reasoning_content` stream fragments + optional `Usage.reasoningTokens` |

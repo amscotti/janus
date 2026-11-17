@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Google Gemini Decision 1 (`gemini-decisions`)** — `POST /v1/systemone`
+  now routes `gemini-decision-1` to Google AI Studio's
+  `POST /v1beta/decisions` via `GeminiDecisionsCodec` and
+  `GeminiDecisionsAdapter` (`x-goog-api-key` auth via `ProviderAuth.TYPE_X_GOOG_API_KEY`;
+  defaults to `https://generativelanguage.googleapis.com`; `$0.10 / 1M` input
+  tokens = `input-per-1k = 0.0001`, `output-per-1k = 0.0`). Translates plain
+  text, domain JSON folded into a `text` block, shared `images[]`, and native
+  Gemini (`text`/`image`/`document`/`audio`/`video`) as well as cross-dialect
+  (`input_text`/`image_url`/`input_image`/`file`/`input_audio`/`video_url`)
+  media blocks; maps `noul` `"true"`/`"false"` criteria to
+  `true_description`/`false_description`; classifies Google Interactions string
+  `error.code` and Google RPC `error.code`/`error.status` envelopes without
+  leaking upstream body text; declines `BoxQuestion` and non-empty `assets`
+  cleanly for pool failover. Also works on OpenRouter (`google/gemini-decision-1`)
+  via `wire-format = "systemone"`.
+- **Decision codec, provider, and smoke hardening** — checked arithmetic in
+  `OpenAiDecisionsCodec.decodeUsage` (`cached > input || cacheWrite > input - cached`),
+  duplicate/negative `score` level detection, conflict detection on mixed
+  `input_text`/`input_json`, strict base64 validation, and clean capability
+  rejection of non-image media blocks (`document`/`audio`/`video`/`file`/etc.)
+  for automatic mixed-pool failover from `openai-decisions` to
+  `gemini-decisions`; empty/null `assets` and question-level image checks in
+  `DecisionRequest.hasImageEvidence()` and `SystemOneAdapter`; `SystemOneCodec`
+  non-empty image magic-byte check, `"box"` type error hint, and
+  `success == false` precedence; preserved `InterruptedException` status in
+  `AbstractDecisionAdapter.errorStatusException`; sanitized model names in
+  `DecisionAdapterBackend`; classpath-scanning `DecisionAdapterSpiTest`; and
+  tracked-PGID teardown in `scripts/smoke/decisions/run.sh`.
+
 - **System One decision models** — `POST /v1/systemone`, the Jev-shaped
   decisions face (`choice`/`noul`/`score`/`box` questions over a `state`,
   typed probability answers, non-streaming). One client dialect routes by

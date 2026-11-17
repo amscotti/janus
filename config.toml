@@ -120,9 +120,11 @@ base-url = "https://api.deepseek.com"
 # V4.1-Flash for older configs.
 
 # Decision models (System One) — POST /v1/systemone, the Jev-shaped decisions
-# face; see docs/system-one.md. One client dialect in, two out: the generic
-# "systemone" family (TypeSafe/Jev, OpenRouter, Ollama local+cloud, Cloudflare
-# Clef, any /v1/systemone server) and "openai-decisions" (OpenAI, translated).
+# face; see docs/system-one.md. One client dialect in, three out: the generic
+# "systemone" family (TypeSafe/Jev, OpenRouter incl. google/gemini-decision-1,
+# Ollama local+cloud, Cloudflare Clef, any /v1/systemone server),
+# "openai-decisions" (OpenAI, translated), and "gemini-decisions" (Google
+# AI Studio Gemini Decision 1 via /v1beta/decisions, translated, x-goog-api-key).
 # [[janus.decision-model-list]] mirrors [[janus.model-list]] (same-name rows =
 # one round-robin/failover pool. base-url/api-key-env merge entry >
 # [janus.decision-providers.<name>]; the three timeout keys also fall through
@@ -152,6 +154,10 @@ base-url = "https://api.deepseek.com"
 # name = "gpt-6-luna"
 # provider = "openai-decisions"
 # vision = true
+# [[janus.decision-model-list]]
+# name = "gemini-decision-1"
+# provider = "gemini-decisions"
+# vision = true
 # [janus.decision-providers.ollama-local]
 # wire-format = "systemone" # required unless the provider name IS a registered adapter
 # base-url = "http://127.0.0.1:11434"
@@ -162,6 +168,8 @@ base-url = "https://api.deepseek.com"
 # api-key-env = "TYPESAFE_API_KEY"
 # [janus.decision-providers.openai-decisions]
 # api-key-env = "OPENAI_API_KEY" # registered name → base defaults to https://api.openai.com
+# [janus.decision-providers.gemini-decisions]
+# api-key-env = "GEMINI_API_KEY" # registered name → https://generativelanguage.googleapis.com ($0.10/Mtok in → input-per-1k = 0.0001)
 #
 # Upstream timeouts — [janus.timeouts] — the four upstream deadlines that were fixed
 # fixed code constants, now operator-tunable. All keys are OPTIONAL seconds (an

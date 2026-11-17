@@ -249,20 +249,30 @@ each:
 - **OpenAI** — `wire-format = "openai-decisions"` (or the registered
   provider name), Bearer `OPENAI_API_KEY`, base defaults to
   `https://api.openai.com`; `gpt-6-luna` only, `vision = true`. Shared
-  `images[]` become `input_image` data URLs; TypeSafe `assets`/Box are
-  TypeSafe-only and fail over to another candidate. OpenAI's
-  question-level image instructions are not translated from TypeSafe asset
-  references.
+  `images[]` become `input_image` data URLs; TypeSafe `assets`/Box and
+  non-image media blocks (`document`/`audio`/`video`/`file`) fail over to
+  other pool candidates cleanly. OpenAI's question-level image instructions are
+  not translated from TypeSafe asset references.
+- **Google AI Studio (Gemini Decision 1)** — `wire-format = "gemini-decisions"`
+  (or the registered provider name), `x-goog-api-key` `GEMINI_API_KEY`, base
+  defaults to `https://generativelanguage.googleapis.com` (`/v1beta/decisions`);
+  `gemini-decision-1` with `vision = true`, `$0.10 / 1M` input pricing
+  (`input-per-1k = 0.0001`, `output-per-1k = 0.0`). Accepts plain text,
+  domain JSON folded into a text block, shared `images[]`, and multi-format
+  blocks (`image`, `document` PDF/CSV, `audio`, `video`) in both native Gemini
+  and cross-dialect forms; declines `box` and non-empty `assets` cleanly.
 - **OpenRouter** — `base-url = "https://openrouter.ai/api"`, `wire-format =
   "systemone"`; `upstream-model = "typesafe/jev-1.14"` when aliasing Jev. The
   same Jev facade routes the rest of OpenRouter's decision catalog
-  (`cloudflare/clef*`, `liquid/d1.1`, `perplexity/pplx-decider-*`,
-  `microsoft/microsoft-decision-1`, `togethercomputer/tev1-4b-experimental`,
-  `openai/gpt-6-luna-decisions`, …) by `upstream-model`. TypeSafe models via
-  OpenRouter use `assets`; Clef/Luna-style models use a `state` array
-  `image_url` part (OpenRouter rejects top-level `images[]`/`assets` there).
-  Top-level extras ride through; nested `usage.cost` does **not** (Janus
-  prices by its own `[[janus.pricing.models]]` row).
+  (`google/gemini-decision-1`, `cloudflare/clef*`, `liquid/d1.1`,
+  `perplexity/pplx-decider-*`, `microsoft/microsoft-decision-1`,
+  `togethercomputer/tev1-4b-experimental`, `openai/gpt-6-luna-decisions`, …) by
+  `upstream-model`. TypeSafe models and `google/gemini-decision-1` accept
+  `assets`; `google/gemini-decision-1` and Clef/Luna-style models use `state`
+  array parts (`image_url`, `input_audio`, `video_url`, `file`; OpenRouter
+  rejects top-level `images[]`). Top-level extras ride through; nested
+  `usage.cost` does **not** (Janus prices by its own `[[janus.pricing.models]]`
+  row).
 
 ## Multimodal / vision
 

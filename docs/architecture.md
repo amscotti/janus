@@ -113,7 +113,7 @@ with the canonical `DecisionRequest`/`DecisionResponse` in `janus-core`
 | OpenAI | `POST /v1/responses` | `OpenAiResponsesCodec` | Stateless; streaming + non-streaming; `store:true` / retrieval → named 400s ([`responses.md`](./responses.md)) |
 | OpenAI | `GET /v1/models` | — | Config aliases, config order |
 | Anthropic | `POST /v1/messages` | `AnthropicMessageCodec` | Native content blocks, SSE event types, image blocks |
-| System One | `POST /v1/systemone` | `SystemOneCodec` (in) / `SystemOneCodec`, `OpenAiDecisionsCodec` (out) | Decision models only; one dialect in, two out, non-streaming ([`system-one.md`](./system-one.md)) |
+| System One | `POST /v1/systemone` | `SystemOneCodec` (in) / `SystemOneCodec`, `OpenAiDecisionsCodec`, `GeminiDecisionsCodec` (out) | Decision models only; one dialect in, three out, non-streaming ([`system-one.md`](./system-one.md)) |
 
 Cross-format: client face and upstream provider may differ (e.g. OpenAI SDK → Claude).
 Translation is always face → canonical → upstream codec.

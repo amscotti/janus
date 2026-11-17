@@ -43,14 +43,16 @@ shape; the beta image/Box headers are forwarded/derived; structured
 | Type | Asks | Criteria | Answer |
 |---|---|---|---|
 | `noul` | Is this true? | optional `{"true":…, "false":…}` | `noul`: P(true), 0–1 |
-| `choice` | Which one? | `{option: description}` (≥1 at the face; OpenAI 2–255) | choice + probabilities + confidence |
-| `score` | How much? | ordered level descriptions (≥1 at the face; OpenAI 2–10) | weighted 0-based score + legend + probabilities + confidence |
+| `choice` | Which one? | `{option: description}` (≥1 at the face; OpenAI/Gemini 2–255) | choice + probabilities + confidence |
+| `score` | How much? | ordered level descriptions (≥1 at the face; OpenAI 2–10, Gemini 2–255 non-empty) | weighted 0-based score + legend + probabilities + confidence |
 | `box` | Where in the image? | none (TypeSafe beta) | `box`: `{top,bottom,left,right}` + confidence |
 
 `instructions` and every criteria value may be a string, object, array, or
 null — TypeSafe's `EntryType` accepts structure, and the `systemone` leg
-passes it through. The OpenAI leg has no structured fields, so it folds
-structure into the instructions/description text (documented loss).
+passes it through. The OpenAI and Gemini legs fold structured `instructions`
+and criteria descriptions into text (documented loss); Gemini requires non-null,
+non-blank `instructions` on every question (and declines media blocks inside
+`instructions`).
 
 `state` is a string, a JSON object, or a JSON array; numbers/booleans and
 `stream`/`box` capability flags are typed 400s at the face. There is no
@@ -69,9 +71,10 @@ before dispatch.
 | Dialect | Client shape | What Janus sends upstream |
 |---|---|---|
 | `systemone` / Ollama / Clef (direct) | `images: ["<raw base64 PNG/JPEG/WebP>"]` | the same `images[]` array (raw base64 only; URLs/data-URLs are typed 400s) |
-| TypeSafe (Jev), direct or `typesafe/jev-*` via OpenRouter | `assets` with `data_base64` **or** a multipart `request` part + image file parts; references in `state`/`instructions`/`criteria`; optional `box` questions | the same assets as JSON (`part` refs inlined to `data_base64`), plus `TypeSafe-Danger-Zone-Images: true` (forwarded from the client, or derived from an assets/Box body) |
-| OpenRouter Clef/Luna facade | `state` array image part: `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}` | the same `state` array (OpenRouter rejects top-level `images[]`/`assets` for these models) |
-| OpenAI Decisions (direct) | `images: ["<raw base64>"]` | `input` content parts: `input_image` with a sniffed `data:image/...;base64,` URL |
+| TypeSafe (Jev), direct or `typesafe/jev-*` via OpenRouter | `assets` with `data_base64` **or** a multipart `request` part + image file parts; references in `state`/`instructions`/`criteria`; optional `box` questions | the same assets as JSON (`part` refs inlined to `data_base64`), plus `TypeSafe-Danger-Zone-Images: true` (forwarded from the client, or derived from non-empty assets/Box body) |
+| OpenRouter `google/gemini-decision-1` & Clef/Luna facade | `state` array parts (`image_url`, `input_audio`, `video_url`, `file`) or `assets` (for `google/gemini-decision-1`) | the same `systemone` body (OpenRouter rejects top-level `images[]` for these models) |
+| OpenAI Decisions (direct) | `images: ["<raw base64>"]` or `image_url`/`input_image` parts | `input` content parts: `input_image` with a sniffed `data:image/...;base64,` URL (non-image media blocks decline for pool failover) |
+| Gemini Decision 1 (direct, `gemini-decisions`) | `images: ["<raw base64>"]`, native `image`/`document`/`audio`/`video`, or cross-dialect `image_url`/`input_image`/`file`/`input_audio`/`video_url` blocks | Interactions `input` blocks (`text`, `image`, `document`, `audio`, `video` with `data`/`uri`, `mime_type`, optional `resolution`/`processing`) |
 
 Image parts nested in `state` are detected for `vision` routing as well as
 `images[]`, TypeSafe `assets`, and Box questions. Multipart bodies are capped at 32 MiB total; each image part must be PNG or
@@ -91,13 +94,14 @@ the OpenAI leg.
 
 ## Providers and dialects
 
-One client dialect in, two wire dialects out. Only decision models belong
+One client dialect in, three wire dialects out. Only decision models belong
 here — no classifier/reranker APIs and no chat-model emulation.
 
 | Wire format (`wire-format`) | Upstreams | Path Janus calls |
 |---|---|---|
-| `systemone` | TypeSafe (Jev), OpenRouter, Ollama local + cloud, Cloudflare Clef, any `/v1/systemone` server | `{base}/v1/systemone` |
-| `openai-decisions` | OpenAI Decisions (`gpt-6-luna`) | `{base}/v1/decisions` |
+| `systemone` | TypeSafe (Jev), OpenRouter (incl. `google/gemini-decision-1`), Ollama local + cloud, Cloudflare Clef, any `/v1/systemone` server | `{base}/v1/systemone` (`Authorization: Bearer`) |
+| `openai-decisions` | OpenAI Decisions (`gpt-6-luna`) | `{base}/v1/decisions` (`Authorization: Bearer`) |
+| `gemini-decisions` | Google AI Studio Gemini Decision 1 (`gemini-decision-1`) | `{base}/v1beta/decisions` (`x-goog-api-key`) |
 
 The `systemone` leg is near-passthrough: unmodeled top-level fields ride
 both ways (Ollama's `prompt_eval_cached_count` reaches your client;
@@ -128,8 +132,33 @@ criteria map is string-keyed, so `true`/`false` values re-encode as the
 strings `"true"`/`"false"`. OpenAI caps a request at 400 questions, 2–255
 choice options, and 2–10 score levels; over-limit requests fail over to
 another candidate, and are typed 400s when every candidate declines.
-TypeSafe `assets` and Box questions are TypeSafe-only: the OpenAI adapter
-declines them (typed 400 after failover), never silently drops them.
+TypeSafe `assets` and Box questions are TypeSafe-only: the OpenAI and Gemini
+adapters decline them (typed 400 after failover), never silently dropping them.
+
+The `gemini-decisions` leg (`GeminiDecisionsCodec` + `GeminiDecisionsAdapter`)
+targets Google AI Studio `POST /v1beta/decisions` (`{model, input, questions}`
+only; top-level unknown fields are rejected; auth uses `x-goog-api-key`, never
+`Bearer`):
+
+- **`state` & media blocks** — plain strings stay strings (or `text` blocks
+  when paired with `images[]`); non-content domain JSON objects/arrays serialize
+  into a compact `text` block; shared `images[]` become Interactions `image`
+  blocks with sniffed `mime_type` (`PNG`/`JPEG`/`WebP`/`GIF`). Array `state`
+  accepts both native Gemini blocks (`text`, `image`, `document`, `audio`,
+  `video` with raw base64 `data` or `https://`/`files/` `uri`) and cross-dialect
+  blocks (`input_text`, `image_url`, `input_image`, `file`, `input_audio`,
+  `video_url`), stripping `data:...;base64,` prefixes cleanly.
+- **`questions` & `usage`** — supports 1–1,000 keys matching
+  `^[A-Za-z0-9_-]{1,64}$` with required non-null, non-blank `instructions`;
+  `noul.criteria` maps `"true"`/`"false"` to `"true_description"` /
+  `"false_description"` (rejects other keys); `choice` requires 2–255 options;
+  `score` requires 2–255 non-empty strings. Usage maps
+  `usage.total_input_tokens` → `input_tokens`, `0` → `output_tokens` (`$0.10 /
+  1M` input tokens = `input-per-1k = 0.0001`), and echoes the requested alias
+  (Gemini omits `model`). Google Interactions string `error.code` and RPC
+  integer `error.code`/`error.status` envelopes are mapped to typed
+  `ProviderException`s without leaking upstream body text. OpenRouter also serves
+  `google/gemini-decision-1` on the `systemone` wire format.
 
 Where a backend's own limits are known to Janus, they are enforced per
 picked backend, never globally. Other upstreams' own limits (local Clef
@@ -184,6 +213,11 @@ name = "gpt-6-luna"
 provider = "openai-decisions"
 vision = true
 
+[[janus.decision-model-list]]
+name = "gemini-decision-1"
+provider = "gemini-decisions"
+vision = true
+
 [janus.decision-providers.typesafe]
 wire-format = "systemone"
 base-url = "https://api.typesafe.ai"
@@ -205,10 +239,20 @@ wire-format = "openai-decisions"
 api-key-env = "OPENAI_API_KEY"
 # base-url defaults to https://api.openai.com
 
+[janus.decision-providers.gemini-decisions]
+wire-format = "gemini-decisions"
+api-key-env = "GEMINI_API_KEY"
+# base-url defaults to https://generativelanguage.googleapis.com (x-goog-api-key)
+
 [janus.pricing]
 [[janus.pricing.models]]       # decisions bill input tokens only
 name = "jev-latest"
 input-per-1k = 0.000042        # $0.042 / Mtok
+output-per-1k = 0.0
+
+[[janus.pricing.models]]
+name = "gemini-decision-1"
+input-per-1k = 0.0001          # $0.10 / Mtok input, 0 output billed
 output-per-1k = 0.0
 
 [[janus.pricing.models]]
@@ -229,9 +273,9 @@ Three deliberate differences from chat entries:
   typed 400 before dispatch; set it only for image-capable models.
 - **Run URLs** — a `base-url` containing `/ai/run/` or ending in
   `/systemone` is dispatched verbatim for the `systemone` leg; a base ending
-  in `/decisions` is verbatim for the OpenAI leg. Otherwise Janus appends
-  `/v1/systemone` / `/v1/decisions`. Query strings/fragments are rejected at
-  boot.
+  in `/decisions` is verbatim for the OpenAI and Gemini legs. Otherwise Janus
+  appends `/v1/systemone`, `/v1/decisions`, or `/v1beta/decisions`. Query
+  strings/fragments are rejected at boot.
 
 Pricing reuses `[[janus.pricing.models]]` keyed by decision alias. Budgets
 estimate pre-dispatch from the compact serialized request (state, questions,
