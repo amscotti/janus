@@ -262,6 +262,17 @@ class AnthropicErrorMapperTest {
     }
 
     @Test
+    void unsupportedRequestIs400InvalidRequestError() {
+        AnthropicErrorMapper.ErrorMapping mapping =
+                mapper.map(provider(ProviderException.TYPE_UNSUPPORTED_REQUEST, "pdf input unsupported", 400));
+        assertEquals(HttpStatus.BAD_REQUEST, mapping.status());
+        assertEquals(
+                AnthropicErrorMapper.TYPE_INVALID_REQUEST,
+                mapping.envelope().error().type());
+        assertEquals("pdf input unsupported", mapping.envelope().error().message());
+    }
+
+    @Test
     void networkIs502ApiError() {
         AnthropicErrorMapper.ErrorMapping mapping =
                 mapper.map(provider(ProviderException.TYPE_NETWORK, "connection reset", null));
@@ -329,7 +340,8 @@ class AnthropicErrorMapperTest {
             ProviderException.TYPE_UPSTREAM_4XX,
             ProviderException.TYPE_NETWORK,
             ProviderException.TYPE_TIMEOUT,
-            ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD
+            ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD,
+            ProviderException.TYPE_UNSUPPORTED_REQUEST
         }) {
             AnthropicErrorMapper.ErrorMapping mapping = mapper.map(new ProviderException(type, null));
             assertEquals("upstream error", mapping.envelope().error().message(), type);

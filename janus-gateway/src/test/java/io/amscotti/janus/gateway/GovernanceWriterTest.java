@@ -812,11 +812,11 @@ class GovernanceWriterTest {
         ChatRequest request = request("deepseek-v4-flash", false);
         Governance.Preflight preflight = enforceReserved(failing, key);
 
-        ChatResponse response = chatResponse(new Usage(-5, 10, 5));
+        ChatResponse response = chatResponse(new Usage(Long.MAX_VALUE, 10, Long.MAX_VALUE, 1L, null));
         assertThrows(
                 RuntimeException.class,
                 () -> failing.finalize(null, request, response, preflight, 12, null),
-                "a negative-usage canonical must fail the settle path, not corrupt the ledger");
+                "an overflowing usage canonical must fail the settle path, not leak the reservation");
 
         assertEquals(0, ledger.pending(key.id()), "the cost rejection must not leak the reservation");
         assertTrue(callStore.recentCalls(10).isEmpty(), "no OK CallRecord when the accounting path throws");
@@ -920,11 +920,11 @@ class GovernanceWriterTest {
     }
 
     @Test
-    void streamSettleWithThrowingUsageRecorderWritesNoOkRow() {
-        // settleChunk records usage BEFORE the OK row: a throwing recorder propagates
-        // out of the pull (the client sees the error frame) without having written a
-        // settled OK row for a stream that accounted as failed, and the reservation is
-        // released by the settle guard.
+    void streamSettleWithThrowingUsageRecorderKeepsTheSettledOkRow() {
+        // Usage metrics are Tier-1 side effects: just like finalize, stream settle
+        // treats MetricsRecorder.recordUsage as best-effort so a recorder throw
+        // after settled spend never turns a clean stream into an SSE error frame
+        // or skips the OK CallRecord.
         ThrowingLedger ledger = new ThrowingLedger(null);
         Governance failing = new Governance(
                 allowAllLimiter(),
@@ -941,18 +941,15 @@ class GovernanceWriterTest {
         ChatRequest request = request("deepseek-v4-flash", true);
         Governance.Preflight preflight = enforceReserved(failing, key);
 
-        assertThrows(
-                IllegalStateException.class,
-                () -> {
-                    try (Stream<StreamChunk> wrapped = failing.wrapStream(
-                            preflight, request, Stream.of(usageChunk(new Usage(14, 12, 26))), null)) {
-                        wrapped.forEach(chunk -> {});
-                    }
-                },
-                "the recorder failure escapes the pull as the stream's error, after no OK row");
+        try (Stream<StreamChunk> wrapped =
+                failing.wrapStream(preflight, request, Stream.of(usageChunk(new Usage(14, 12, 26))), null)) {
+            wrapped.forEach(chunk -> {});
+        }
 
-        assertEquals(0, ledger.pending(key.id()), "the reservation must not leak from the recorder failure");
-        assertTrue(callStore.recentCalls(10).isEmpty(), "no OK CallRecord was written for the failed settle");
+        assertEquals(0, ledger.pending(key.id()), "the reservation settles, it does not leak");
+        List<CallRecord> records = callStore.recentCalls(10);
+        assertEquals(1, records.size(), "exactly one OK row; the recorder failure adds no ERROR row");
+        assertEquals(CallStatus.OK, records.get(0).status());
     }
 
     /** {@link MetricsRecorder} whose {@code recordUsage} always throws — the ordering pin's double. */
@@ -1023,7 +1020,7 @@ class GovernanceWriterTest {
         KeyRecord key = created.record();
         ChatRequest request = request("deepseek-v4-flash", true);
         Governance.Preflight preflight = enforceReserved(failing, key);
-        Stream<StreamChunk> stream = Stream.of(usageChunk(new Usage(-5, 10, 5)));
+        Stream<StreamChunk> stream = Stream.of(usageChunk(new Usage(Long.MAX_VALUE, 10, Long.MAX_VALUE, 1L, null)));
 
         assertThrows(
                 RuntimeException.class,
@@ -1032,7 +1029,7 @@ class GovernanceWriterTest {
                         wrapped.forEach(chunk -> {});
                     }
                 },
-                "a negative-usage terminal chunk must surface from the stream settle");
+                "an overflowing-usage terminal chunk must surface from the stream settle");
         assertEquals(0, ledger.pending(key.id()), "a mid-settle throw must release the reservation");
         assertTrue(callStore.recentCalls(10).isEmpty(), "no OK CallRecord when the stream settle rejects");
     }

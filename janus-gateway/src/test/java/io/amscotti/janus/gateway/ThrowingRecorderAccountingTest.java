@@ -234,6 +234,65 @@ class ThrowingRecorderAccountingTest {
         assertEquals(1, added.size(), "the pull-time settle still wrote its call record: " + added);
     }
 
+    @Test
+    void throwingUsageRecorderInSettleChunkCompletesStreamAndWritesOneOkRow() throws Exception {
+        assertThrowingUsageRecorderOnStream(
+                Stream.of(textChunk("Hello"), usageChunk(new Usage(10, 5, 15))), "usage chunk present (settleChunk)");
+    }
+
+    @Test
+    void throwingUsageRecorderInSettleZeroCompletesStreamAndWritesOneOkRow() throws Exception {
+        assertThrowingUsageRecorderOnStream(Stream.of(textChunk("Hello")), "no usage chunk (settleZero)");
+    }
+
+    private void assertThrowingUsageRecorderOnStream(Stream<StreamChunk> upstream, String label) throws Exception {
+        List<CallRecord> before = TestGovernanceFactory.CALLS.recentCalls(1000);
+        ThrowingRecorder recorder = new ThrowingRecorder(false, true);
+        io.amscotti.janus.store.KeyStore.CreatedKey created = new io.amscotti.janus.store.InMemoryKeyStore(CLOCK)
+                .create(new io.amscotti.janus.store.KeyStore.KeyCreateRequest(
+                        "stream-usage-throw", List.of("deepseek-v4-flash"), null, 1.5, null, null, 10_000));
+        FakeBackend backend = new FakeBackend("deepseek");
+        backend.streamReturns(upstream);
+        Router router = new Router(Map.of("deepseek-v4-flash", backend));
+        Governance governance = new Governance(
+                new FixedWindowRateLimiter(CLOCK),
+                TestGovernanceFactory.PRICES,
+                TestGovernanceFactory.LEDGER,
+                TestGovernanceFactory.NOTIFIER,
+                0.8,
+                CLOCK,
+                recorder,
+                TestGovernanceFactory.CALLS);
+        ChatCompletionsController controller = new ChatCompletionsController(router, governance, recorder, IDLE);
+        HttpRequest<?> authedRequest =
+                request(streamBody()).setAttribute(KeyAuthFilter.KEY_ATTRIBUTE, created.record());
+
+        HttpResponse<?> response = controller.chat(streamBody(), authedRequest);
+        @SuppressWarnings("unchecked")
+        org.reactivestreams.Publisher<io.micronaut.http.sse.Event<String>> publisher =
+                (org.reactivestreams.Publisher<io.micronaut.http.sse.Event<String>>) response.body();
+        TestSubscriber subscriber = new TestSubscriber();
+        publisher.subscribe(subscriber);
+        subscriber.subscription().request(Long.MAX_VALUE);
+        assertTrue(
+                subscriber.awaitTerminal(5_000),
+                "stream must complete cleanly despite recordUsage throwing on " + label);
+        assertEquals(null, subscriber.error(), "stream must not fail on " + label);
+        boolean hasErrorFrame = subscriber.events().stream()
+                .map(io.micronaut.http.sse.Event::getData)
+                .anyMatch(data -> data != null && data.contains("\"error\""));
+        assertTrue(
+                !hasErrorFrame,
+                "must not emit SSE 500 error frame after settle on " + label + ": " + subscriber.events());
+        assertEquals(1, recorder.recordUsages.get(), "recordUsage must be attempted once on " + label);
+
+        List<CallRecord> added = TestGovernanceFactory.CALLS.recentCalls(1000).stream()
+                .filter(record -> !before.contains(record))
+                .toList();
+        assertEquals(1, added.size(), "must write exactly one CallRecord on " + label + ": " + added);
+        assertEquals(io.amscotti.janus.store.CallStatus.OK, added.get(0).status());
+    }
+
     private static String streamBody() {
         return "{\"model\":\"deepseek-v4-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}";
     }
@@ -259,7 +318,11 @@ class ThrowingRecorderAccountingTest {
     }
 
     private static HttpRequest<?> request() {
-        return HttpRequest.POST("/v1/chat/completions", "not valid json").contentType(MediaType.APPLICATION_JSON);
+        return request("not valid json");
+    }
+
+    private static HttpRequest<?> request(String body) {
+        return HttpRequest.POST("/v1/chat/completions", body).contentType(MediaType.APPLICATION_JSON);
     }
 
     /** A backend that must never be reached (the decode fails first). */
@@ -293,20 +356,39 @@ class ThrowingRecorderAccountingTest {
      * deterministic rather than raced.
      */
     private static final class ThrowingRecorder implements MetricsRecorder {
+        final boolean throwOnRequest;
+        final boolean throwOnUsage;
         final java.util.concurrent.atomic.AtomicInteger recordRequests =
                 new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.atomic.AtomicInteger recordUsages = new java.util.concurrent.atomic.AtomicInteger();
         final java.util.concurrent.atomic.AtomicReference<Thread> recorderThread =
                 new java.util.concurrent.atomic.AtomicReference<>();
+
+        ThrowingRecorder() {
+            this(true, false);
+        }
+
+        ThrowingRecorder(boolean throwOnRequest, boolean throwOnUsage) {
+            this.throwOnRequest = throwOnRequest;
+            this.throwOnUsage = throwOnUsage;
+        }
 
         @Override
         public void recordRequest(String face, int status, long durationMillis, String keyId) {
             recorderThread.set(Thread.currentThread());
             recordRequests.incrementAndGet();
-            throw new IllegalStateException("registry unregistered");
+            if (throwOnRequest) {
+                throw new IllegalStateException("registry unregistered");
+            }
         }
 
         @Override
-        public void recordUsage(String keyId, Usage usage, long costMicroUsd) {}
+        public void recordUsage(String keyId, Usage usage, long costMicroUsd) {
+            recordUsages.incrementAndGet();
+            if (throwOnUsage) {
+                throw new IllegalStateException("usage recorder failure");
+            }
+        }
 
         @Override
         public void forgetKey(String keyId) {}

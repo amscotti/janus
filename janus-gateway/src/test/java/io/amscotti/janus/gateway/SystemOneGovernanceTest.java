@@ -39,6 +39,7 @@ import org.junit.jupiter.api.Test;
 @MicronautTest
 @Property(name = "janus.test.master-key", value = "test-master-key-000")
 @Property(name = "janus.test.governance", value = "true")
+@Property(name = "janus.test.metrics", value = "true")
 class SystemOneGovernanceTest {
 
     private static final String BODY = """
@@ -51,12 +52,16 @@ class SystemOneGovernanceTest {
     HttpClient client;
 
     @Inject
+    io.micronaut.runtime.server.EmbeddedServer server;
+
+    @Inject
     KeyStore keyStore;
 
     @BeforeEach
     void resetBackend() {
         TestRouterFactory.DECISION_BACKEND.reset();
         TestRouterFactory.DECISION_VISION_BACKEND.reset();
+        TestMetricsFactory.REGISTRY.clear();
     }
 
     @Test
@@ -276,6 +281,235 @@ class SystemOneGovernanceTest {
                 Map.of(),
                 Map.of()));
         assertEquals(HttpStatus.OK, post(key.fullKey(), BODY).getStatus());
+    }
+
+    @Test
+    void ingressFailuresRecordClientErrorCallRecordsAndMetrics() throws Exception {
+        KeyStore.CreatedKey key = key(null, null, null);
+        // 1. Corrupt zstd (400)
+        assertIngressFailureRecorded(
+                key,
+                HttpRequest.POST("/v1/systemone", new byte[] {1, 2, 3})
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Content-Encoding", "zstd")
+                        .header("Authorization", "Bearer " + key.fullKey()),
+                HttpStatus.BAD_REQUEST,
+                true);
+
+        // 2. Bad UTF-8 (400)
+        assertIngressFailureRecorded(
+                key,
+                HttpRequest.POST("/v1/systemone", new byte[] {'{', (byte) 0xFF, '}'})
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Authorization", "Bearer " + key.fullKey()),
+                HttpStatus.BAD_REQUEST,
+                true);
+
+        // 3. Bad multipart missing `request` part (400)
+        String boundary = "bad-part";
+        byte[] badMultipart = ("--" + boundary
+                        + "\r\nContent-Disposition: form-data; name=\"asset-0\"; filename=\"a.png\"\r\n\r\nx\r\n--"
+                        + boundary + "--\r\n")
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        List<CallRecord> beforeMultipart =
+                TestGovernanceFactory.CALLS.recentCalls(key.record().id(), 100);
+        double beforeMultipartMetric = systemOne4xxCount();
+        java.net.http.HttpRequest badMultipartReq = java.net.http.HttpRequest.newBuilder(
+                        java.net.URI.create("http://localhost:" + server.getPort() + "/v1/systemone"))
+                .header("Authorization", "Bearer " + key.fullKey())
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofByteArray(badMultipart))
+                .build();
+        java.net.http.HttpResponse<String> badMultipartResp = java.net.http.HttpClient.newHttpClient()
+                .send(badMultipartReq, java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(400, badMultipartResp.statusCode(), badMultipartResp.body());
+        assertEquals(beforeMultipartMetric + 1.0, systemOne4xxCount(), "4xx metric must increment for bad multipart");
+        List<CallRecord> addedMultipart = TestGovernanceFactory.CALLS
+                .recentCalls(key.record().id(), 100)
+                .stream()
+                .filter(r -> !beforeMultipart.contains(r))
+                .toList();
+        assertEquals(1, addedMultipart.size(), "must write 1 ERROR_CLIENT row for bad multipart: " + addedMultipart);
+        assertEquals(CallStatus.ERROR_CLIENT, addedMultipart.get(0).status());
+
+        // 4. >32 MiB decompressed body (413)
+        byte[] huge = new byte[32 * 1024 * 1024 + 1];
+        java.util.Arrays.fill(huge, (byte) 'a');
+        assertIngressFailureRecorded(
+                key,
+                HttpRequest.POST("/v1/systemone", zstd(huge))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Content-Encoding", "zstd")
+                        .header("Authorization", "Bearer " + key.fullKey()),
+                HttpStatus.REQUEST_ENTITY_TOO_LARGE,
+                true);
+
+        // 5. Multiple Content-Encoding headers -> 415 + metrics
+        java.net.http.HttpRequest multiEncoding = java.net.http.HttpRequest.newBuilder(
+                        java.net.URI.create("http://localhost:" + server.getPort() + "/v1/systemone"))
+                .header("Authorization", "Bearer " + key.fullKey())
+                .header("Content-Type", "application/json")
+                .header("Content-Encoding", "zstd")
+                .header("Content-Encoding", "zstd")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(BODY))
+                .build();
+        double beforeMetric = systemOne4xxCount();
+        java.net.http.HttpResponse<String> multiResp = java.net.http.HttpClient.newHttpClient()
+                .send(multiEncoding, java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(415, multiResp.statusCode(), multiResp.body());
+        assertEquals(beforeMetric + 1.0, systemOne4xxCount(), "415 must increment MetricsRecorder");
+    }
+
+    @Test
+    void missingUsageResponseSettlesPreDispatchEstimateInsteadOfZero() {
+        KeyStore.CreatedKey key = key(1.0, null, 1_000);
+        TestRouterFactory.DECISION_BACKEND.decideReturns(new DecisionResponse(
+                "jev-latest", Map.of("refund", new DecisionAnswer.NoulAnswer(0.9)), null, Map.of(), Map.of()));
+
+        HttpResponse<String> ok = post(key.fullKey(), BODY);
+        assertEquals(HttpStatus.OK, ok.getStatus());
+
+        long spent = TestGovernanceFactory.LEDGER.spendByKey(key.record().id(), 0);
+        assertTrue(spent > 0, "null upstream usage must settle positive estimated cost, not 0: " + spent);
+        List<CallRecord> rows =
+                TestGovernanceFactory.CALLS.recentCalls(key.record().id(), 10);
+        assertEquals(1, rows.size());
+        assertEquals(CallStatus.OK, rows.get(0).status());
+        assertTrue(rows.get(0).promptTokens() > 0);
+        assertEquals(spent, rows.get(0).costMicroUsd());
+    }
+
+    @Test
+    void zstdMultipartWithImageAccountsPreDispatchEstimateAndActualSettle() throws Exception {
+        KeyStore.CreatedKey key = keyStore.create(new KeyStore.KeyCreateRequest(
+                "systemone-multipart-zstd", List.of("vision-model"), null, 1.0, null, null, null));
+        TestRouterFactory.DECISION_VISION_BACKEND.decideReturns(new DecisionResponse(
+                "vision-model",
+                Map.of("refund", new DecisionAnswer.NoulAnswer(0.8)),
+                new Usage(200, 0, 200),
+                Map.of(),
+                Map.of()));
+        String boundary = "sys1-zstd-mp";
+        String json = "{\"model\":\"vision-model\",\"state\":{\"photo\":\"p1\"},"
+                + "\"assets\":{\"p1\":{\"type\":\"image\",\"part\":\"asset-0\"}},"
+                + "\"questions\":{\"refund\":{\"type\":\"noul\",\"instructions\":\"?\"}}}";
+        byte[] png = new byte[] {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0};
+        byte[] head = ("--" + boundary + "\r\n"
+                        + "Content-Disposition: form-data; name=\"request\"\r\n"
+                        + "Content-Type: application/json\r\n\r\n"
+                        + json + "\r\n"
+                        + "--" + boundary + "\r\n"
+                        + "Content-Disposition: form-data; name=\"asset-0\"; filename=\"img.png\"\r\n"
+                        + "Content-Type: image/png\r\n\r\n")
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] tail = ("\r\n--" + boundary + "--\r\n").getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] multipart = new byte[head.length + png.length + tail.length];
+        System.arraycopy(head, 0, multipart, 0, head.length);
+        System.arraycopy(png, 0, multipart, head.length, png.length);
+        System.arraycopy(tail, 0, multipart, head.length + png.length, tail.length);
+
+        java.net.http.HttpRequest httpRequest = java.net.http.HttpRequest.newBuilder(
+                        java.net.URI.create("http://localhost:" + server.getPort() + "/v1/systemone"))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .header("Content-Encoding", "zstd")
+                .header("Authorization", "Bearer " + key.fullKey())
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofByteArray(zstd(multipart)))
+                .build();
+        java.net.http.HttpResponse<String> ok = java.net.http.HttpClient.newHttpClient()
+                .send(httpRequest, java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, ok.statusCode(), ok.body());
+        long spent = TestGovernanceFactory.LEDGER.spendByKey(key.record().id(), 0);
+        assertEquals(28_000L, spent, "200 tokens × 0.14/1k × 1e6/1e3 = 28_000 micro-USD");
+    }
+
+    @Test
+    void rawBodyStreamIsClosedOnSuccessAndOnDecodeError() {
+        FakeDecisionBackend backend = new FakeDecisionBackend("b");
+        backend.decideReturns(new DecisionResponse(
+                "jev-latest",
+                Map.of("refund", new DecisionAnswer.NoulAnswer(0.5)),
+                new Usage(1, 0, 1),
+                Map.of(),
+                Map.of()));
+        io.amscotti.janus.router.DecisionRouter router =
+                new io.amscotti.janus.router.DecisionRouter(Map.of("jev-latest", List.of(backend)));
+        SystemOneController controller = new SystemOneController(router, Governance.noop(), MetricsRecorder.noop());
+
+        java.util.concurrent.atomic.AtomicBoolean okClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        java.io.InputStream okStream =
+                new java.io.ByteArrayInputStream(BODY.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+                    @Override
+                    public void close() throws java.io.IOException {
+                        okClosed.set(true);
+                        super.close();
+                    }
+                };
+        assertEquals(
+                HttpStatus.OK,
+                controller
+                        .systemOne(
+                                okStream, HttpRequest.POST("/v1/systemone", "").contentType(MediaType.APPLICATION_JSON))
+                        .getStatus());
+        assertTrue(okClosed.get(), "rawBody InputStream must be closed on success");
+
+        java.util.concurrent.atomic.AtomicBoolean errClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        java.io.InputStream badStream = new java.io.ByteArrayInputStream(new byte[] {1, 2, 3}) {
+            @Override
+            public void close() throws java.io.IOException {
+                errClosed.set(true);
+                super.close();
+            }
+        };
+        org.junit.jupiter.api.Assertions.assertThrows(
+                io.amscotti.janus.core.codec.DecisionCodecException.class,
+                () -> controller.systemOne(
+                        badStream,
+                        HttpRequest.POST("/v1/systemone", "")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .header("Content-Encoding", "zstd")));
+        assertTrue(errClosed.get(), "rawBody InputStream must be closed on decode failure");
+    }
+
+    private void assertIngressFailureRecorded(
+            KeyStore.CreatedKey key, HttpRequest<?> request, HttpStatus expectedStatus, boolean expectCallRecord) {
+        List<CallRecord> beforeRows =
+                TestGovernanceFactory.CALLS.recentCalls(key.record().id(), 100);
+        double beforeMetric = systemOne4xxCount();
+
+        HttpResponse<?> failed;
+        try {
+            failed = client.toBlocking().exchange(request, String.class);
+        } catch (HttpClientResponseException e) {
+            failed = e.getResponse();
+        }
+        assertEquals(
+                expectedStatus, failed.getStatus(), failed.getBody(String.class).orElse(""));
+        assertEquals(beforeMetric + 1.0, systemOne4xxCount(), "4xx metric must increment for " + expectedStatus);
+        if (expectCallRecord) {
+            List<CallRecord> afterRows =
+                    TestGovernanceFactory.CALLS.recentCalls(key.record().id(), 100);
+            List<CallRecord> added =
+                    afterRows.stream().filter(r -> !beforeRows.contains(r)).toList();
+            assertEquals(1, added.size(), "must write 1 ERROR_CLIENT row for " + expectedStatus + ": " + added);
+            assertEquals(CallStatus.ERROR_CLIENT, added.get(0).status());
+        }
+    }
+
+    private double systemOne4xxCount() {
+        var counter = TestMetricsFactory.REGISTRY
+                .find(MicrometerMetricsRecorder.SERIES_REQUESTS)
+                .tag("face", "systemone")
+                .tag("status", "4xx")
+                .counter();
+        return counter == null ? 0.0 : counter.count();
+    }
+
+    private static byte[] zstd(byte[] raw) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (io.airlift.compress.zstd.ZstdOutputStream zstd = new io.airlift.compress.zstd.ZstdOutputStream(out)) {
+            zstd.write(raw);
+        }
+        return out.toByteArray();
     }
 
     private KeyStore.CreatedKey key(Double budgetUsd, Integer rpm, Integer tpm) {

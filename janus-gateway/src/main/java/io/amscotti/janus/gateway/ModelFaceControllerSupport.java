@@ -82,11 +82,25 @@ abstract class ModelFaceControllerSupport {
         this.streamIdleTimeouts = Objects.requireNonNull(streamIdleTimeouts, "streamIdleTimeouts");
     }
 
+    /** Constructor for non-chat faces (such as System One decisions) that do not use {@link Router}. */
+    protected ModelFaceControllerSupport(Governance governance, MetricsRecorder metricsRecorder) {
+        this.router = null;
+        this.governance = Objects.requireNonNull(governance, "governance");
+        this.metricsRecorder = Objects.requireNonNull(metricsRecorder, "metricsRecorder");
+        this.streamIdleTimeouts = null;
+    }
+
+    protected final Governance governance() {
+        return governance;
+    }
+
     /** The face's Tier-1 {@code face} label (see {@link Face#label()}). */
     protected abstract String face();
 
-    /** Raw body → canonical (the codec owns every wire byte — no second JSON path). */
-    protected abstract ChatRequest decode(String rawBody);
+    /** Raw body -> canonical (the codec owns every wire byte — no second JSON path). */
+    protected ChatRequest decode(String rawBody) {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Face-specific inbound-header fold after decode. Default is identity; the
@@ -122,8 +136,10 @@ abstract class ModelFaceControllerSupport {
         return request.withMetaEntry(SessionAffinityLoadBalancer.META_SESSION_ID, trimmed);
     }
 
-    /** Canonical response → the face's wire body (encode-before-finalize contract). */
-    protected abstract String encode(ChatResponse response);
+    /** Canonical response -> the face's wire body (encode-before-finalize contract). */
+    protected String encode(ChatResponse response) {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * The request-aware encode: faces whose wire shape echoes request fields
@@ -140,8 +156,10 @@ abstract class ModelFaceControllerSupport {
      * serving provider's override, else the global — see {@link #execute}); the
      * face only threads it into its publisher.
      */
-    protected abstract Publisher<Event<String>> newPublisher(
-            Stream<StreamChunk> metered, Duration idleTimeout, AtomicReference<Integer> terminalStatus);
+    protected Publisher<Event<String>> newPublisher(
+            Stream<StreamChunk> metered, Duration idleTimeout, AtomicReference<Integer> terminalStatus) {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * The request-aware publisher seam: faces whose stream
@@ -297,18 +315,7 @@ abstract class ModelFaceControllerSupport {
             }
             Governance.Finalized finalized = governance.finalize(
                     httpRequest, request, response, preflight, elapsedMillis(startNanos), dispatchedProvider.get());
-            // Record AFTER encodeResponse/finalize — an encode failure threw
-            // above and the catch below records the error bucket once (no double
-            // 2xx+error). Best-effort like recordError: a throwing recorder must not
-            // turn a fully accounted 200 into a 500 + a second ERROR ledger row
-            // (OK+ERROR for one request breaks the exactly-once pin).
-            try {
-                metricsRecorder.recordRequest(face(), HttpStatus.OK.getCode(), elapsedMillis(startNanos), keyId);
-            } catch (RuntimeException e) {
-                LOG.warn("metrics recording dropped (recorder failure): {}", e.toString());
-            }
-            MutableHttpResponse<String> http = HttpResponse.ok(body).contentType(MediaType.APPLICATION_JSON);
-            return withBudgetHeaders(http, finalized);
+            return okWithBudgetHeaders(body, finalized, startNanos, keyId);
         } catch (RuntimeException | Error e) {
             // A throw from the settle path (a throwing ledger, a
             // negative-usage CostCalculator rejection, or an Error) must not leak the reservation —
@@ -332,6 +339,23 @@ abstract class ModelFaceControllerSupport {
     }
 
     /**
+     * Record 200 metrics best-effort (after encode/finalize) and return JSON body
+     * with budget cost/warning headers attached.
+     */
+    protected final MutableHttpResponse<String> okWithBudgetHeaders(
+            String body, Governance.Finalized finalized, long startNanos, String keyId) {
+        // Record AFTER encode/finalize — best-effort so a throwing recorder never turns a
+        // settled 200 into a 500 + a second ERROR ledger row.
+        try {
+            metricsRecorder.recordRequest(face(), HttpStatus.OK.getCode(), elapsedMillis(startNanos), keyId);
+        } catch (RuntimeException e) {
+            LOG.warn("metrics recording dropped (recorder failure): {}", e.toString());
+        }
+        MutableHttpResponse<String> http = HttpResponse.ok(body).contentType(MediaType.APPLICATION_JSON);
+        return withBudgetHeaders(http, finalized);
+    }
+
+    /**
      * The catch-path {@code recordRequest} is best-effort like every other
      * collaborator on this path ({@code writeCallRecord}/{@code notifySoft} swallow+log)
      * — a throwing recorder (a mis-wired adapter, a Micrometer validation failure) must
@@ -339,7 +363,7 @@ abstract class ModelFaceControllerSupport {
      * call-ledger {@code recordFailure}: log and drop, then rethrow the original
      * exception (the "recording never alters the request path" invariant).
      */
-    private void recordError(long startNanos, String keyId, Throwable throwable) {
+    protected final void recordError(long startNanos, String keyId, Throwable throwable) {
         try {
             metricsRecorder.recordRequest(face(), statusOf(throwable), elapsedMillis(startNanos), keyId);
         } catch (RuntimeException e) {
@@ -347,7 +371,7 @@ abstract class ModelFaceControllerSupport {
         }
     }
 
-    private static long elapsedMillis(long startNanos) {
+    protected static long elapsedMillis(long startNanos) {
         return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
@@ -356,7 +380,7 @@ abstract class ModelFaceControllerSupport {
      * opaque, non-secret key identifier the per-key series are labeled with (Tier-1
      * privacy contract — see {@link MetricsRecorder}).
      */
-    private static String keyIdOf(HttpRequest<?> httpRequest) {
+    static String keyIdOf(HttpRequest<?> httpRequest) {
         return httpRequest
                 .getAttribute(KeyAuthFilter.KEY_ATTRIBUTE, KeyRecord.class)
                 .map(KeyRecord::id)
@@ -364,7 +388,7 @@ abstract class ModelFaceControllerSupport {
     }
 
     /** attach spend headers to a successful non-streaming response. */
-    private static MutableHttpResponse<String> withBudgetHeaders(
+    protected static MutableHttpResponse<String> withBudgetHeaders(
             MutableHttpResponse<String> response, Governance.Finalized finalized) {
         MutableHttpResponse<String> out = response;
         if (finalized != Governance.Finalized.NONE && finalized.cost() != null) {

@@ -255,6 +255,124 @@ class GovernanceEstimateTest {
         assertTrue(estimate < 1100, "the 20k base64 payload must not be priced as text: " + estimate);
     }
 
+    @Test
+    void settleChunkAccumulatesCachedTokensInTpm() {
+        java.time.Clock clock =
+                java.time.Clock.fixed(java.time.Instant.ofEpochSecond(1_700_000_000L), java.time.ZoneOffset.UTC);
+        io.amscotti.janus.store.FixedWindowRateLimiter limiter =
+                new io.amscotti.janus.store.FixedWindowRateLimiter(clock);
+        io.amscotti.janus.store.InMemorySpendLedger ledger =
+                new io.amscotti.janus.store.InMemorySpendLedger(clock, 100);
+        io.amscotti.janus.store.PriceTable table = io.amscotti.janus.store.PriceTable.of(
+                Map.of("deepseek-v4-flash", new PricingRate(0.14, 0.28, 0.014, 0.14, 4096)));
+        Governance governance = new Governance(
+                limiter,
+                table,
+                ledger,
+                new LoggingNotifier(),
+                0.8,
+                clock,
+                MetricsRecorder.noop(),
+                new io.amscotti.janus.store.InMemoryCallStore(clock, 100));
+        io.amscotti.janus.store.KeyStore.CreatedKey created = new io.amscotti.janus.store.InMemoryKeyStore(clock)
+                .create(new io.amscotti.janus.store.KeyStore.KeyCreateRequest(
+                        "tpm-cache", List.of("deepseek-v4-flash"), null, null, null, null, 100));
+        ChatRequest chatRequest = new ChatRequest(
+                "deepseek-v4-flash",
+                List.of(new UserMessage("hi")),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                10,
+                null,
+                null,
+                null,
+                null,
+                null,
+                Map.of(),
+                Map.of(),
+                false,
+                Map.of(),
+                Map.of(),
+                null,
+                Map.of(),
+                Map.of());
+        io.micronaut.http.HttpRequest<?> http = io.micronaut.http.HttpRequest.POST("/v1/chat/completions", "")
+                .setAttribute(KeyAuthFilter.KEY_ATTRIBUTE, created.record());
+        Governance.Preflight preflight = governance.enforce(http, chatRequest);
+        // 10 prompt + 20 cacheCreation + 30 cacheRead + 5 completion = 65 billed tokens.
+        io.amscotti.janus.core.model.Usage usage = new io.amscotti.janus.core.model.Usage(10, 5, 15, 20L, 30L);
+        io.amscotti.janus.core.model.StreamChunk usageChunk = new io.amscotti.janus.core.model.StreamChunk(
+                "id-1", "chat.completion.chunk", 1_700_000_000L, "deepseek-v4-flash", List.of(), usage, Map.of());
+
+        try (java.util.stream.Stream<io.amscotti.janus.core.model.StreamChunk> wrapped =
+                governance.wrapStream(preflight, chatRequest, java.util.stream.Stream.of(usageChunk), null)) {
+            wrapped.forEach(ignored -> {});
+        }
+
+        String keyId = created.record().id();
+        assertTrue(!limiter.wouldExceed(keyId, 100, 35), "65 settled + 35 next == 100 (within cap)");
+        assertTrue(limiter.wouldExceed(keyId, 100, 36), "65 settled + 36 next == 101 (must count cached tokens)");
+    }
+
+    @Test
+    void enforceSaturatesReserveWhenPromptAndOutputEstimatesBothNearLongMax() {
+        java.time.Clock clock =
+                java.time.Clock.fixed(java.time.Instant.ofEpochSecond(1_700_000_000L), java.time.ZoneOffset.UTC);
+        io.amscotti.janus.store.FixedWindowRateLimiter limiter =
+                new io.amscotti.janus.store.FixedWindowRateLimiter(clock);
+        io.amscotti.janus.store.InMemorySpendLedger ledger =
+                new io.amscotti.janus.store.InMemorySpendLedger(clock, 100);
+        // Both estimateMicroUsd (4096) and estimatePromptMicroUsd (100) saturate at Long.MAX_VALUE
+        // with rate 1e20; unsafely adding them wrapped negative (-2L) -> IllegalArgumentException.
+        io.amscotti.janus.store.PriceTable table = io.amscotti.janus.store.PriceTable.of(
+                Map.of("deepseek-v4-flash", new PricingRate(1e20, 1e20, 0.0, 0.0, 4096)));
+        Governance governance = new Governance(
+                limiter,
+                table,
+                ledger,
+                new LoggingNotifier(),
+                0.8,
+                clock,
+                MetricsRecorder.noop(),
+                new io.amscotti.janus.store.InMemoryCallStore(clock, 100));
+        io.amscotti.janus.store.KeyStore.CreatedKey created = new io.amscotti.janus.store.InMemoryKeyStore(clock)
+                .create(new io.amscotti.janus.store.KeyStore.KeyCreateRequest(
+                        "huge-reserve", List.of("deepseek-v4-flash"), null, 1.0, null, null, null));
+        ChatRequest bigPrompt = new ChatRequest(
+                "deepseek-v4-flash",
+                List.of(new UserMessage("a".repeat(400))),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                4096,
+                null,
+                null,
+                null,
+                null,
+                null,
+                Map.of(),
+                Map.of(),
+                false,
+                Map.of(),
+                Map.of(),
+                null,
+                Map.of(),
+                Map.of());
+        io.micronaut.http.HttpRequest<?> http = io.micronaut.http.HttpRequest.POST("/v1/chat/completions", "")
+                .setAttribute(KeyAuthFilter.KEY_ATTRIBUTE, created.record());
+
+        // Must deny cleanly with BUDGET_EXCEEDED_HARD (429), not throw IllegalArgumentException (500) on negative -2L.
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RateLimitExceededException.class, () -> governance.enforce(http, bigPrompt));
+    }
+
     private static ChatRequest request(Integer maxTokens) {
         return new ChatRequest(
                 "deepseek-v4-flash",

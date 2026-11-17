@@ -282,6 +282,51 @@ class SseChunkPublisherTest {
     }
 
     @Test
+    void stallTriggeredBeforeFinalEmitStillDeliversStallErrorFrameBeforeComplete() throws Exception {
+        CountDownLatch stallTriggered = new CountDownLatch(1);
+        Stream<StreamChunk> upstream = Stream.of(C1).onClose(stallTriggered::countDown);
+        AtomicReference<Integer> terminalStatus = new AtomicReference<>(io.micronaut.http.HttpStatus.OK.getCode());
+        SseStreamPublisher publisher = new SseStreamPublisher(upstream, Duration.ofMillis(40), terminalStatus) {
+            @Override
+            protected void feedFrames(StreamChunk chunk, java.util.Deque<SseFrame> pending) {
+                pending.add(new SseFrame(null, "chunk-1"));
+            }
+
+            @Override
+            protected void finishFrames(java.util.Deque<SseFrame> pending) {
+                pending.add(new SseFrame(null, "[DONE]"));
+                try {
+                    assertTrue(stallTriggered.await(5, TimeUnit.SECONDS), "watchdog must fire stall handler");
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override
+            protected ErrorOutcome errorOutcome(Throwable failure) {
+                return new ErrorOutcome(
+                        io.micronaut.http.HttpStatus.GATEWAY_TIMEOUT.getCode(),
+                        new SseFrame(null, "{\"error\":{\"message\":\"" + failure.getMessage() + "\"}}"));
+            }
+
+            @Override
+            protected String faceName() {
+                return "test-stall-race";
+            }
+        };
+        TestSubscriber subscriber = new TestSubscriber();
+        publisher.subscribe(subscriber);
+        subscriber.subscription().request(Long.MAX_VALUE);
+
+        assertTrue(subscriber.awaitTerminal(5_000), "stalled publisher must terminate");
+        assertEquals(io.micronaut.http.HttpStatus.GATEWAY_TIMEOUT.getCode(), terminalStatus.get());
+        List<String> payloads = subscriber.events().stream().map(Event::getData).toList();
+        assertTrue(
+                payloads.stream().anyMatch(p -> p.contains("upstream stream stalled")),
+                "stall error frame must be emitted before onComplete when stall races final drain; got " + payloads);
+    }
+
+    @Test
     void stallCloseRunsOffTheWatchdogThread() throws Exception {
         // The shared single-thread watchdog must never run the stall's
         // closeUpstream — its onClose hooks fire governance settle (a possible DB write

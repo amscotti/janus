@@ -110,6 +110,31 @@ class SystemOneAuthTest {
         assertEquals(1, TestRouterFactory.DECISION_BACKEND.calls.size());
     }
 
+    @Test
+    void unauthenticatedUnsupportedContentTypeIs401Not415() {
+        HttpResponse<String> response =
+                errorResponse(HttpRequest.POST("/v1/systemone", "plain").contentType(MediaType.TEXT_PLAIN_TYPE));
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatus(), response.body());
+        assertTrue(TestRouterFactory.DECISION_BACKEND.calls.isEmpty());
+    }
+
+    @Test
+    void unauthenticatedUnsupportedContentEncodingIs401Not415() {
+        HttpResponse<String> response = errorResponse(HttpRequest.POST("/v1/systemone", REQUEST)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Content-Encoding", "br"));
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatus(), response.body());
+        assertTrue(TestRouterFactory.DECISION_BACKEND.calls.isEmpty());
+    }
+
+    @Test
+    void unauthenticatedTrailingSlashUnsupportedTypeIs401Not415() {
+        HttpResponse<String> response =
+                errorResponse(HttpRequest.POST("/v1/systemone/", "plain").contentType(MediaType.TEXT_PLAIN_TYPE));
+        assertEquals(HttpStatus.UNAUTHORIZED, response.getStatus(), response.body());
+        assertTrue(TestRouterFactory.DECISION_BACKEND.calls.isEmpty());
+    }
+
     private String createKey(String owner, List<String> models) {
         return keyStore.create(new KeyStore.KeyCreateRequest(owner, models, null, null, null, null, null))
                 .fullKey();

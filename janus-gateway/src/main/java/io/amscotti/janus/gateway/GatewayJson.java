@@ -3,6 +3,7 @@ package io.amscotti.janus.gateway;
 import io.amscotti.janus.core.codec.AnthropicErrorPayload;
 import io.amscotti.janus.gateway.dto.OpenAiErrorEnvelope;
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.PropertyNamingStrategies;
@@ -34,6 +35,7 @@ final class GatewayJson {
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .enable(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                 .build();
     }
 

@@ -416,8 +416,8 @@ abstract class SseStreamPublisher implements Publisher<Event<String>> {
                         }
                         if (pending.isEmpty()) {
                             // Zero-frame finish (empty upstream + zero-feed encoder):
-                            // nothing to emit.
-                            finish();
+                            // nothing to emit unless a stall raced exhaustion/finishFrames.
+                            finishAfterPossibleStall();
                             return;
                         }
                     }
@@ -436,7 +436,7 @@ abstract class SseStreamPublisher implements Publisher<Event<String>> {
                         return;
                     }
                     if (exhausted && pending.isEmpty()) {
-                        finish();
+                        finishAfterPossibleStall();
                         return;
                     }
                 }
@@ -541,6 +541,21 @@ abstract class SseStreamPublisher implements Publisher<Event<String>> {
             } finally {
                 inWrite = false;
             }
+        }
+
+        private void finishAfterPossibleStall() {
+            boolean stalledBeforeFinish;
+            synchronized (SubscriptionImpl.this) {
+                if (cancelled) {
+                    return;
+                }
+                stalledBeforeFinish = stalled;
+                stalled = false;
+            }
+            if (stalledBeforeFinish) {
+                emitErrorFrame(stallError());
+            }
+            finish();
         }
 
         private void finish() {

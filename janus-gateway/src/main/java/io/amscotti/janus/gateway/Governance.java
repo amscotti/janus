@@ -422,7 +422,8 @@ final class Governance {
         }
         PricingRate rate = priceTable.rateFor(model).forPromptTokens(promptEstimate);
         int estimateTokens = outputEstimate.applyAsInt(rate);
-        if (key.tpm() != null && rateLimiter.wouldExceed(key.id(), key.tpm(), estimateTokens + promptEstimate)) {
+        if (key.tpm() != null
+                && rateLimiter.wouldExceed(key.id(), key.tpm(), saturatingAdd(estimateTokens, promptEstimate))) {
             // Conservative pre-check (the estimate prices BOTH sides now, like
             // the budget gate): output reserve = max_tokens ?? row default ?? 4096, plus
             // the prompt estimate from the request's content — the accumulator counts
@@ -445,8 +446,9 @@ final class Governance {
             // old estimate priced prompt at 0 "unknown pre-dispatch", so a single
             // prompt-heavy request could drive the hard cap arbitrarily past cap before
             // the next-request gate caught it). Settle corrects to actual either way.
-            long estimateMicro = CostCalculator.estimateMicroUsd(estimateTokens, rate)
-                    + CostCalculator.estimatePromptMicroUsd(promptEstimate, rate);
+            long estimateMicro = saturatingAdd(
+                    CostCalculator.estimateMicroUsd(estimateTokens, rate),
+                    CostCalculator.estimatePromptMicroUsd(promptEstimate, rate));
             long capMicro = toMicroUsd(key.budgetUsd());
             // The budget reset window: null/≤ 0 budgetDuration = the lifetime window
             // (windowSeconds 0 — the pre-window semantics); a positive duration derives
@@ -558,11 +560,11 @@ final class Governance {
         if (noop) {
             return Finalized.NONE;
         }
-        // Re-resolve from actual prompt tokens so a request that crossed the
-        // long-context threshold at settle is billed at the long-tier rates, even
-        // if the pre-dispatch estimate was still under the floor.
-        PricingRate rate = rateForUsage(model, usage, promptFallback);
         if (preflight == Preflight.NONE) {
+            // Re-resolve from actual prompt tokens so a request that crossed the
+            // long-context threshold at settle is billed at the long-tier rates, even
+            // if the pre-dispatch estimate was still under the floor.
+            PricingRate rate = rateForUsage(model, usage, promptFallback);
             // Auth-off: no key accounting, but the unlabeled Tier-1 totals still
             // record (keyId null = auth-off; per-key series are never created). The
             // usage metric records BEFORE the OK row — a throwing recorder must not
@@ -578,6 +580,9 @@ final class Governance {
         }
         KeyRecord key = preflight.key();
         try {
+            // Re-resolve inside the failure-contained block so an overflowing Usage
+            // in billedPromptTokens() releases the reservation instead of leaking it.
+            PricingRate rate = rateForUsage(model, usage, promptFallback);
             // The whole accounting block is failure-contained. A throwing
             // ledger settle/recordSpend (Postgres SQL failure) or a CostCalculator
             // rejection of a malformed negative-usage canonical must (a) release the
@@ -598,7 +603,8 @@ final class Governance {
             }
             spendLedger.recordSpend(key.id(), actualMicro);
             if (key.tpm() != null) {
-                long actualTokens = usage == null ? 0 : usage.billedPromptTokens() + usage.completionTokens();
+                long actualTokens =
+                        usage == null ? 0 : saturatingAdd(usage.billedPromptTokens(), usage.completionTokens());
                 accumulateTpm(key, actualTokens);
             }
             recordUsageBestEffort(key.id(), usage, actualMicro);
@@ -727,22 +733,9 @@ final class Governance {
                     if (settledOrReleased.compareAndSet(false, true)) {
                         StreamChunk terminal = lastUsageChunk.get();
                         if (terminal != null) {
-                            settleChunk(
-                                    preflight,
-                                    rateForUsage(request, terminal.usage()),
-                                    request,
-                                    key,
-                                    terminal.usage(),
-                                    elapsedMillis(startNanos),
-                                    provider);
+                            settleChunk(preflight, request, key, terminal.usage(), elapsedMillis(startNanos), provider);
                         } else {
-                            settleZero(
-                                    preflight,
-                                    rateForUsage(request, null),
-                                    request,
-                                    key,
-                                    elapsedMillis(startNanos),
-                                    provider);
+                            settleZero(preflight, request, key, elapsedMillis(startNanos), provider);
                         }
                     }
                 }
@@ -803,7 +796,6 @@ final class Governance {
 
     private void settleChunk(
             Preflight preflight,
-            PricingRate rate,
             ChatRequest request,
             KeyRecord key,
             Usage usage,
@@ -813,11 +805,12 @@ final class Governance {
         // the settledOrReleased CAS flipped — a throwing ledger settle/recordSpend or
         // CostCalculator rejection must release the reservation here, or onClose's
         // `settledOrReleased.get` skip would leak it (the flag is already set, so the
-        // flag never sticks without accounting). The usage metric records BEFORE the
-        // OK row and the OK CallRecord write stays LAST: a throwing recorder or a
-        // mid-settle throw leaves no OK row behind (a recorder failure would otherwise
-        // hand the client a 5xx error frame after a cleanly settled stream).
+        // flag never sticks without accounting). Rate resolution lives inside `try`
+        // so an overflowing usage fails settlement and releases the reservation;
+        // MetricsRecorder.recordUsage stays best-effort so recorder failures cannot turn
+        // an already-settled stream into an SSE 500 error frame or drop the OK row.
         try {
+            PricingRate rate = rateForUsage(request, usage);
             long actualMicro = CostCalculator.costMicroUsd(usage, rate);
             if (preflight.reserved()) {
                 spendLedger.settle(
@@ -827,14 +820,14 @@ final class Governance {
             if (key != null) {
                 spendLedger.recordSpend(key.id(), actualMicro);
                 if (key.tpm() != null) {
-                    accumulateTpm(key, usage.promptTokens() + usage.completionTokens());
+                    accumulateTpm(key, saturatingAdd(usage.billedPromptTokens(), usage.completionTokens()));
                 }
                 if (preflight.soft()) {
                     notifySoft(key);
                 }
             }
             // the stream records its usage from the terminal usage-bearing chunk.
-            metricsRecorder.recordUsage(key == null ? null : key.id(), usage, actualMicro);
+            recordUsageBestEffort(key == null ? null : key.id(), usage, actualMicro);
             // one Tier-1 CallRecord per stream, settled from the terminal usage chunk.
             writeCallRecord(key, request, usage, actualMicro, true, CallStatus.OK, durationMillis, provider);
         } catch (RuntimeException e) {
@@ -844,12 +837,7 @@ final class Governance {
     }
 
     private void settleZero(
-            Preflight preflight,
-            PricingRate rate,
-            ChatRequest request,
-            KeyRecord key,
-            long durationMillis,
-            String provider) {
+            Preflight preflight, ChatRequest request, KeyRecord key, long durationMillis, String provider) {
         try {
             if (preflight.reserved()) {
                 spendLedger.settle(key.id(), preflight.estimateMicroUsd(), 0, preflight.reservationWindowStart());
@@ -863,7 +851,7 @@ final class Governance {
             }
             // clean exhaustion without a usage chunk records a zero entry
             // (documented limitation — Janus never forces include_usage).
-            metricsRecorder.recordUsage(key == null ? null : key.id(), null, 0);
+            recordUsageBestEffort(key == null ? null : key.id(), null, 0);
             // one Tier-1 CallRecord per stream (zero tokens — no usage chunk) — the OK
             // write stays LAST, matching every other settle path.
             writeCallRecord(key, request, null, 0, true, CallStatus.OK, durationMillis, provider);
@@ -874,6 +862,14 @@ final class Governance {
             LOG.warn("stream zero-settle dropped (ledger failure): {}", e.toString());
             release(preflight);
         }
+    }
+
+    private static long saturatingAdd(long a, long b) {
+        long sum = a + b;
+        if (((a ^ sum) & (b ^ sum)) < 0) {
+            return a < 0 ? Long.MIN_VALUE : Long.MAX_VALUE;
+        }
+        return sum;
     }
 
     private void releaseIfUnsettled(Preflight preflight, AtomicBoolean settledOrReleased) {
