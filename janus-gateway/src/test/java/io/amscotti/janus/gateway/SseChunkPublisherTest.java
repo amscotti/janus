@@ -1,6 +1,7 @@
 package io.amscotti.janus.gateway;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -15,7 +16,10 @@ import io.amscotti.janus.provider.ProviderException;
 import io.micronaut.http.sse.Event;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Spliterator;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -650,6 +654,607 @@ class SseChunkPublisherTest {
         assertTrue(
                 terminal.get() != 200,
                 "a violation-terminated stream must not record a clean 200, got " + terminal.get());
+    }
+
+    @Test
+    void negativeRequestMidFetchViolationAndThrowingCloseDeliverOnError() throws Exception {
+        // 1. request(-1) before start delivers IllegalArgumentException("request must be positive")
+        SseChunkPublisher neg = new SseChunkPublisher(TestStreams.of(C1), CODEC, ERROR_MAPPER);
+        TestSubscriber negSub = subscribe(neg);
+        negSub.subscription().request(-1);
+        assertTrue(negSub.awaitError(2_000));
+        IllegalArgumentException iae = assertInstanceOf(IllegalArgumentException.class, negSub.error());
+        assertEquals("request must be positive", iae.getMessage());
+
+        // 2. request(0) while worker is blocked in iterator.next() + upstream.close() throwing RuntimeException
+        CountDownLatch inNext = new CountDownLatch(1);
+        CountDownLatch releaseNext = new CountDownLatch(1);
+        Stream<StreamChunk> blockingCloseThrows = Stream.<StreamChunk>generate(() -> {
+                    inNext.countDown();
+                    try {
+                        releaseNext.await(2, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    throw new IllegalStateException("unblocked by close");
+                })
+                .onClose(() -> {
+                    releaseNext.countDown();
+                    throw new RuntimeException("close boom");
+                });
+        SseChunkPublisher midViolation = new SseChunkPublisher(blockingCloseThrows, CODEC, ERROR_MAPPER);
+        TestSubscriber midSub = subscribe(midViolation);
+        midSub.subscription().request(1);
+        assertTrue(inNext.await(2, TimeUnit.SECONDS));
+        midSub.subscription().request(0);
+        assertTrue(midSub.awaitError(2_000));
+        assertInstanceOf(IllegalArgumentException.class, midSub.error());
+
+        // 3. deliverViolation() when errorOutcome throws degrades terminalStatus to 500
+        AtomicReference<Integer> violationStatus = new AtomicReference<>(200);
+        SseStreamPublisher throwingMapperPub =
+                new SseStreamPublisher(TestStreams.of(C1), Duration.ofSeconds(10), violationStatus) {
+                    @Override
+                    protected void feedFrames(StreamChunk chunk, Deque<SseFrame> pending) {}
+
+                    @Override
+                    protected void finishFrames(Deque<SseFrame> pending) {}
+
+                    @Override
+                    protected ErrorOutcome errorOutcome(Throwable failure) {
+                        throw new IllegalStateException("mapper crash");
+                    }
+
+                    @Override
+                    protected String faceName() {
+                        return "test-violation";
+                    }
+                };
+        TestSubscriber vSub = new TestSubscriber();
+        throwingMapperPub.subscribe(vSub);
+        vSub.subscription().request(0);
+        assertTrue(vSub.awaitError(2_000));
+        assertEquals(500, violationStatus.get());
+    }
+
+    @Test
+    void cancelMidDrainDoubleCancelAndPostDoneOperationsBehaveCleanly() throws Exception {
+        // Multi-frame emission with cancel() inside onNext mid-drain, double cancel(), and request() after cancel
+        CountDownLatch closed = new CountDownLatch(1);
+        AtomicInteger onNextCount = new AtomicInteger();
+        AtomicReference<Subscription> subRef = new AtomicReference<>();
+        SseStreamPublisher multiFrame =
+                new SseStreamPublisher(
+                        TestStreams.of(C1, C2).onClose(closed::countDown),
+                        Duration.ofSeconds(10),
+                        new AtomicReference<>(200)) {
+                    @Override
+                    protected void feedFrames(StreamChunk chunk, Deque<SseFrame> pending) {
+                        pending.add(new SseFrame("msg", "f1"));
+                        pending.add(new SseFrame("msg", "f2"));
+                    }
+
+                    @Override
+                    protected void finishFrames(Deque<SseFrame> pending) {
+                        pending.add(new SseFrame(null, "[DONE]"));
+                    }
+
+                    @Override
+                    protected ErrorOutcome errorOutcome(Throwable failure) {
+                        return new ErrorOutcome(500, new SseFrame(null, "{\"error\":\"err\"}"));
+                    }
+
+                    @Override
+                    protected String faceName() {
+                        return "test-cancel";
+                    }
+                };
+        multiFrame.subscribe(new Subscriber<>() {
+            @Override
+            public void onSubscribe(Subscription s) {
+                subRef.set(s);
+            }
+
+            @Override
+            public void onNext(Event<String> event) {
+                if (onNextCount.incrementAndGet() == 1) {
+                    s().cancel();
+                    s().cancel(); // idempotent second cancel
+                    s().request(1); // ignored after cancel
+                }
+            }
+
+            private Subscription s() {
+                return subRef.get();
+            }
+
+            @Override
+            public void onError(Throwable t) {}
+
+            @Override
+            public void onComplete() {}
+        });
+        subRef.get().request(Long.MAX_VALUE);
+        assertTrue(closed.await(2, TimeUnit.SECONDS));
+        assertEquals(1, onNextCount.get());
+
+        // Cancel and request after clean exhaustion leave 200 status untouched
+        AtomicReference<Integer> cleanStatus = new AtomicReference<>(200);
+        SseChunkPublisher clean = new SseChunkPublisher(TestStreams.of(C1), CODEC, ERROR_MAPPER, cleanStatus);
+        TestSubscriber cleanSub = subscribe(clean);
+        cleanSub.subscription().request(Long.MAX_VALUE);
+        cleanSub.subscription().request(10); // saturatingAdd overflow clamp + post-done branch
+        assertTrue(cleanSub.awaitTerminal(2_000));
+        cleanSub.subscription().cancel();
+        cleanSub.subscription().request(1);
+        assertEquals(200, cleanStatus.get());
+    }
+
+    @Test
+    void multiStepSmallDemandZeroFrameRefillZeroFrameFinishThrowingFinishAndThrowingOnComplete() throws Exception {
+        // 1. Chunk 1 yields 0 frames, Chunk 2 yields 2 frames; small request(1) pulls both and drains cleanly
+        AtomicInteger chunkIdx = new AtomicInteger();
+        SseStreamPublisher custom =
+                new SseStreamPublisher(TestStreams.of(C1, C2), Duration.ofSeconds(10), new AtomicReference<>(200)) {
+                    @Override
+                    protected void feedFrames(StreamChunk chunk, Deque<SseFrame> pending) {
+                        if (chunkIdx.getAndIncrement() == 0) {
+                            return; // zero frames for chunk 1 -> refill loop
+                        }
+                        pending.add(new SseFrame(null, "a"));
+                        pending.add(new SseFrame(null, "b"));
+                    }
+
+                    @Override
+                    protected void finishFrames(Deque<SseFrame> pending) {
+                        pending.add(new SseFrame(null, "[DONE]"));
+                    }
+
+                    @Override
+                    protected ErrorOutcome errorOutcome(Throwable failure) {
+                        return new ErrorOutcome(500, new SseFrame(null, "err"));
+                    }
+
+                    @Override
+                    protected String faceName() {
+                        return "test-refill";
+                    }
+                };
+        TestSubscriber sub = new TestSubscriber();
+        custom.subscribe(sub);
+        sub.subscription().request(1);
+        assertEquals("a", sub.awaitEvent(0, 2_000).getData());
+        sub.subscription().request(1);
+        assertEquals("b", sub.awaitEvent(1, 2_000).getData());
+        sub.subscription().request(1);
+        assertEquals("[DONE]", sub.awaitEvent(2, 2_000).getData());
+        assertTrue(sub.awaitTerminal(2_000));
+
+        // 2. Zero-frame finishFrames on empty stream completes with 0 events; throwing onComplete is swallowed
+        SseStreamPublisher zeroFinish =
+                new SseStreamPublisher(Stream.empty(), Duration.ofSeconds(10), new AtomicReference<>(200)) {
+                    @Override
+                    protected void feedFrames(StreamChunk chunk, Deque<SseFrame> pending) {}
+
+                    @Override
+                    protected void finishFrames(Deque<SseFrame> pending) {}
+
+                    @Override
+                    protected ErrorOutcome errorOutcome(Throwable failure) {
+                        return new ErrorOutcome(500, new SseFrame(null, "err"));
+                    }
+
+                    @Override
+                    protected String faceName() {
+                        return "test-zero-finish";
+                    }
+                };
+        CountDownLatch onCompleteCalled = new CountDownLatch(1);
+        zeroFinish.subscribe(new Subscriber<>() {
+            @Override
+            public void onSubscribe(Subscription s) {
+                s.request(1);
+            }
+
+            @Override
+            public void onNext(Event<String> event) {}
+
+            @Override
+            public void onError(Throwable t) {}
+
+            @Override
+            public void onComplete() {
+                onCompleteCalled.countDown();
+                throw new RuntimeException("onComplete boom");
+            }
+        });
+        assertTrue(onCompleteCalled.await(2, TimeUnit.SECONDS));
+
+        // 3. finishFrames throwing emits error frame then completes
+        AtomicReference<Integer> finishErrStatus = new AtomicReference<>(200);
+        SseStreamPublisher throwingFinish =
+                new SseStreamPublisher(Stream.empty(), Duration.ofSeconds(10), finishErrStatus) {
+                    @Override
+                    protected void feedFrames(StreamChunk chunk, Deque<SseFrame> pending) {}
+
+                    @Override
+                    protected void finishFrames(Deque<SseFrame> pending) {
+                        throw new IllegalStateException("finish boom");
+                    }
+
+                    @Override
+                    protected ErrorOutcome errorOutcome(Throwable failure) {
+                        return new ErrorOutcome(500, new SseFrame(null, "{\"error\":\"finish\"}"));
+                    }
+
+                    @Override
+                    protected String faceName() {
+                        return "test-throw-finish";
+                    }
+                };
+        TestSubscriber tfSub = new TestSubscriber();
+        throwingFinish.subscribe(tfSub);
+        tfSub.subscription().request(1);
+        assertTrue(tfSub.awaitTerminal(2_000));
+        assertEquals(500, finishErrStatus.get());
+        assertEquals("{\"error\":\"finish\"}", tfSub.events().get(0).getData());
+    }
+
+    @Test
+    void iteratorFailuresStallMapperCrashAndWorkerInterruptTerminateCleanly() throws Exception {
+        // 1. Stream.iterator() throwing normally -> error frame + complete
+        Stream<StreamChunk> throwingIterStream = failingIteratorStream(null, new IllegalStateException("iter boom"));
+        SseChunkPublisher iterErrPub = new SseChunkPublisher(throwingIterStream, CODEC, ERROR_MAPPER);
+        TestSubscriber iterSub = subscribe(iterErrPub);
+        iterSub.subscription().request(1);
+        assertTrue(iterSub.awaitTerminal(2_000));
+        assertEquals(1, iterSub.eventCount());
+
+        // 2. Stream.iterator() throwing after request(0) violation -> onError(IAE)
+        CountDownLatch iterBlocked = new CountDownLatch(1);
+        CountDownLatch releaseIter = new CountDownLatch(1);
+        Stream<StreamChunk> throwingIterViolated = new ThrowingIteratorStream(iterBlocked, releaseIter, () -> {});
+        SseChunkPublisher iterViolPub = new SseChunkPublisher(throwingIterViolated, CODEC, ERROR_MAPPER);
+        TestSubscriber ivSub = subscribe(iterViolPub);
+        ivSub.subscription().request(0);
+        assertTrue(iterBlocked.await(2, TimeUnit.SECONDS));
+        releaseIter.countDown();
+        assertTrue(ivSub.awaitError(2_000));
+        assertInstanceOf(IllegalArgumentException.class, ivSub.error());
+
+        // 2b. Stream.iterator() throwing after cancel() -> exits cleanly with no terminal signal
+        CountDownLatch cancelIterBlocked = new CountDownLatch(1);
+        CountDownLatch releaseCancelIter = new CountDownLatch(1);
+        CountDownLatch cancelClosed = new CountDownLatch(1);
+        Stream<StreamChunk> throwingIterCancelled =
+                new ThrowingIteratorStream(cancelIterBlocked, releaseCancelIter, cancelClosed::countDown);
+        SseChunkPublisher iterCancelPub = new SseChunkPublisher(throwingIterCancelled, CODEC, ERROR_MAPPER);
+        TestSubscriber icSub = subscribe(iterCancelPub);
+        icSub.subscription().request(1);
+        assertTrue(cancelIterBlocked.await(2, TimeUnit.SECONDS));
+        icSub.subscription().cancel();
+        releaseCancelIter.countDown();
+        assertTrue(cancelClosed.await(2, TimeUnit.SECONDS));
+        assertEquals(0, icSub.eventCount());
+        assertNull(icSub.error());
+
+        // 3. SseStreamPublisher subclass whose errorOutcome throws during handleStall degrades status to 500
+        CountDownLatch releaseStall = new CountDownLatch(1);
+        AtomicReference<Integer> stallStatus = new AtomicReference<>(200);
+        Stream<StreamChunk> stallingUpstream = TestStreams.blockingAfterFirst(
+                        List.of(C1, C2), releaseStall, new AtomicInteger())
+                .onClose(releaseStall::countDown);
+        SseStreamPublisher badStallMapper =
+                new SseStreamPublisher(stallingUpstream, Duration.ofMillis(80), stallStatus) {
+                    private boolean first = true;
+
+                    @Override
+                    protected void feedFrames(StreamChunk chunk, Deque<SseFrame> pending) {
+                        pending.add(new SseFrame(null, "c1"));
+                    }
+
+                    @Override
+                    protected void finishFrames(Deque<SseFrame> pending) {}
+
+                    @Override
+                    protected ErrorOutcome errorOutcome(Throwable failure) {
+                        if (first) {
+                            first = false;
+                            throw new IllegalStateException("stall mapper crash");
+                        }
+                        return new ErrorOutcome(500, new SseFrame(null, "{\"error\":\"fallback\"}"));
+                    }
+
+                    @Override
+                    protected String faceName() {
+                        return "test-stall-crash";
+                    }
+                };
+        TestSubscriber bsSub = new TestSubscriber();
+        badStallMapper.subscribe(bsSub);
+        bsSub.subscription().request(1);
+        assertEquals("c1", bsSub.awaitEvent(0, 2_000).getData());
+        bsSub.subscription().request(1);
+        assertTrue(bsSub.awaitTerminal(3_000));
+        assertEquals(500, stallStatus.get());
+
+        // 4. Interrupting worker thread inside onNext triggers waitForDemand() InterruptedException exit
+        CountDownLatch exited = new CountDownLatch(1);
+        SseChunkPublisher interruptPub =
+                new SseChunkPublisher(TestStreams.of(C1, C2).onClose(exited::countDown), CODEC, ERROR_MAPPER);
+        AtomicReference<Subscription> intSub = new AtomicReference<>();
+        interruptPub.subscribe(new Subscriber<>() {
+            @Override
+            public void onSubscribe(Subscription s) {
+                intSub.set(s);
+            }
+
+            @Override
+            public void onNext(Event<String> event) {
+                Thread.currentThread().interrupt();
+            }
+
+            @Override
+            public void onError(Throwable t) {}
+
+            @Override
+            public void onComplete() {}
+        });
+        intSub.get().request(1);
+        assertTrue(exited.await(2, TimeUnit.SECONDS));
+    }
+
+    private static Stream<StreamChunk> failingIteratorStream(CountDownLatch onEnter, RuntimeException error) {
+        return new DelegatingStream(TestStreams.of(C1)) {
+            @Override
+            public Iterator<StreamChunk> iterator() {
+                if (onEnter != null) {
+                    onEnter.countDown();
+                }
+                throw error;
+            }
+        };
+    }
+
+    private static final class ThrowingIteratorStream extends DelegatingStream {
+        private final CountDownLatch entered;
+        private final CountDownLatch release;
+
+        ThrowingIteratorStream(CountDownLatch entered, CountDownLatch release, Runnable onClose) {
+            super(TestStreams.of(C1).onClose(onClose));
+            this.entered = entered;
+            this.release = release;
+        }
+
+        @Override
+        public Iterator<StreamChunk> iterator() {
+            entered.countDown();
+            try {
+                release.await(2, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw new IllegalStateException("iterator exploded");
+        }
+    }
+
+    private static class DelegatingStream implements Stream<StreamChunk> {
+        private final Stream<StreamChunk> delegate;
+
+        DelegatingStream(Stream<StreamChunk> delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Iterator<StreamChunk> iterator() {
+            return delegate.iterator();
+        }
+
+        @Override
+        public Spliterator<StreamChunk> spliterator() {
+            return delegate.spliterator();
+        }
+
+        @Override
+        public boolean isParallel() {
+            return delegate.isParallel();
+        }
+
+        @Override
+        public Stream<StreamChunk> sequential() {
+            return delegate.sequential();
+        }
+
+        @Override
+        public Stream<StreamChunk> parallel() {
+            return delegate.parallel();
+        }
+
+        @Override
+        public Stream<StreamChunk> unordered() {
+            return delegate.unordered();
+        }
+
+        @Override
+        public Stream<StreamChunk> onClose(Runnable closeHandler) {
+            return delegate.onClose(closeHandler);
+        }
+
+        @Override
+        public void close() {
+            delegate.close();
+        }
+
+        @Override
+        public Stream<StreamChunk> filter(java.util.function.Predicate<? super StreamChunk> predicate) {
+            return delegate.filter(predicate);
+        }
+
+        @Override
+        public <R> Stream<R> map(java.util.function.Function<? super StreamChunk, ? extends R> mapper) {
+            return delegate.map(mapper);
+        }
+
+        @Override
+        public java.util.stream.IntStream mapToInt(java.util.function.ToIntFunction<? super StreamChunk> mapper) {
+            return delegate.mapToInt(mapper);
+        }
+
+        @Override
+        public java.util.stream.LongStream mapToLong(java.util.function.ToLongFunction<? super StreamChunk> mapper) {
+            return delegate.mapToLong(mapper);
+        }
+
+        @Override
+        public java.util.stream.DoubleStream mapToDouble(
+                java.util.function.ToDoubleFunction<? super StreamChunk> mapper) {
+            return delegate.mapToDouble(mapper);
+        }
+
+        @Override
+        public <R> Stream<R> flatMap(
+                java.util.function.Function<? super StreamChunk, ? extends Stream<? extends R>> mapper) {
+            return delegate.flatMap(mapper);
+        }
+
+        @Override
+        public java.util.stream.IntStream flatMapToInt(
+                java.util.function.Function<? super StreamChunk, ? extends java.util.stream.IntStream> mapper) {
+            return delegate.flatMapToInt(mapper);
+        }
+
+        @Override
+        public java.util.stream.LongStream flatMapToLong(
+                java.util.function.Function<? super StreamChunk, ? extends java.util.stream.LongStream> mapper) {
+            return delegate.flatMapToLong(mapper);
+        }
+
+        @Override
+        public java.util.stream.DoubleStream flatMapToDouble(
+                java.util.function.Function<? super StreamChunk, ? extends java.util.stream.DoubleStream> mapper) {
+            return delegate.flatMapToDouble(mapper);
+        }
+
+        @Override
+        public Stream<StreamChunk> distinct() {
+            return delegate.distinct();
+        }
+
+        @Override
+        public Stream<StreamChunk> sorted() {
+            return delegate.sorted();
+        }
+
+        @Override
+        public Stream<StreamChunk> sorted(java.util.Comparator<? super StreamChunk> comparator) {
+            return delegate.sorted(comparator);
+        }
+
+        @Override
+        public Stream<StreamChunk> peek(java.util.function.Consumer<? super StreamChunk> action) {
+            return delegate.peek(action);
+        }
+
+        @Override
+        public Stream<StreamChunk> limit(long maxSize) {
+            return delegate.limit(maxSize);
+        }
+
+        @Override
+        public Stream<StreamChunk> skip(long n) {
+            return delegate.skip(n);
+        }
+
+        @Override
+        public void forEach(java.util.function.Consumer<? super StreamChunk> action) {
+            delegate.forEach(action);
+        }
+
+        @Override
+        public void forEachOrdered(java.util.function.Consumer<? super StreamChunk> action) {
+            delegate.forEachOrdered(action);
+        }
+
+        @Override
+        public Object[] toArray() {
+            return delegate.toArray();
+        }
+
+        @Override
+        public <A> A[] toArray(java.util.function.IntFunction<A[]> generator) {
+            return delegate.toArray(generator);
+        }
+
+        @Override
+        public StreamChunk reduce(StreamChunk identity, java.util.function.BinaryOperator<StreamChunk> accumulator) {
+            return delegate.reduce(identity, accumulator);
+        }
+
+        @Override
+        public java.util.Optional<StreamChunk> reduce(java.util.function.BinaryOperator<StreamChunk> accumulator) {
+            return delegate.reduce(accumulator);
+        }
+
+        @Override
+        public <U> U reduce(
+                U identity,
+                java.util.function.BiFunction<U, ? super StreamChunk, U> accumulator,
+                java.util.function.BinaryOperator<U> combiner) {
+            return delegate.reduce(identity, accumulator, combiner);
+        }
+
+        @Override
+        public <R> R collect(
+                java.util.function.Supplier<R> supplier,
+                java.util.function.BiConsumer<R, ? super StreamChunk> accumulator,
+                java.util.function.BiConsumer<R, R> combiner) {
+            return delegate.collect(supplier, accumulator, combiner);
+        }
+
+        @Override
+        public <R, A> R collect(java.util.stream.Collector<? super StreamChunk, A, R> collector) {
+            return delegate.collect(collector);
+        }
+
+        @Override
+        public java.util.Optional<StreamChunk> min(java.util.Comparator<? super StreamChunk> comparator) {
+            return delegate.min(comparator);
+        }
+
+        @Override
+        public java.util.Optional<StreamChunk> max(java.util.Comparator<? super StreamChunk> comparator) {
+            return delegate.max(comparator);
+        }
+
+        @Override
+        public long count() {
+            return delegate.count();
+        }
+
+        @Override
+        public boolean anyMatch(java.util.function.Predicate<? super StreamChunk> predicate) {
+            return delegate.anyMatch(predicate);
+        }
+
+        @Override
+        public boolean allMatch(java.util.function.Predicate<? super StreamChunk> predicate) {
+            return delegate.allMatch(predicate);
+        }
+
+        @Override
+        public boolean noneMatch(java.util.function.Predicate<? super StreamChunk> predicate) {
+            return delegate.noneMatch(predicate);
+        }
+
+        @Override
+        public java.util.Optional<StreamChunk> findFirst() {
+            return delegate.findFirst();
+        }
+
+        @Override
+        public java.util.Optional<StreamChunk> findAny() {
+            return delegate.findAny();
+        }
     }
 
     private static TestSubscriber subscribe(SseChunkPublisher publisher) {

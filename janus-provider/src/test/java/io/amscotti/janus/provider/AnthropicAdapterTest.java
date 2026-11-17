@@ -21,8 +21,10 @@ import java.net.ServerSocket;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -964,6 +966,107 @@ class AnthropicAdapterTest {
                 interrupter.join(2_000);
             }
         }
+    }
+
+    @Test
+    void streamIteratorExhaustionEmptyDataTruncatedFrameAndIoExceptionEdges() throws Exception {
+        // 1. Empty non-error event data frame (`event: ping\n\n`) is skipped; repeated hasNext()
+        // after exhaustion returns false; next() past exhaustion throws NoSuchElementException.
+        serveResponse(
+                200,
+                "text/event-stream",
+                "event: ping\n\n"
+                        + "event: message_start\n"
+                        + "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"
+                        + "event: message_stop\n\n");
+        try (Stream<StreamChunk> stream = adapter.stream(request(false))) {
+            Iterator<StreamChunk> it = stream.iterator();
+            assertTrue(it.hasNext());
+            assertEquals("msg_1", it.next().id());
+            assertFalse(it.hasNext());
+            assertFalse(it.hasNext(), "repeated hasNext() on exhausted iterator must stay false");
+            assertThrows(NoSuchElementException.class, it::next);
+        }
+
+        // 2. Truncated non-terminal SSE frame -> SseParseException -> TYPE_BAD_UPSTREAM_PAYLOAD
+        serveResponse(200, "text/event-stream", "event: content_block_delta\ndata: {\"partial\"");
+        ProviderException truncated = assertThrows(ProviderException.class, () -> {
+            try (Stream<StreamChunk> stream = adapter.stream(request(false))) {
+                stream.toList();
+            }
+        });
+        assertEquals(ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD, truncated.type());
+
+        // 3. Premature EOF / IOException mid-stream -> TYPE_NETWORK; stream.close() after error is safe
+        byte[] firstEvent = ("event: message_start\n"
+                        + "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_2\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+                .getBytes(StandardCharsets.UTF_8);
+        try (RawUpstreamServer upstream = RawUpstreamServer.start(out -> {
+            out.write(("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: "
+                            + (firstEvent.length + 1024) + "\r\n\r\n")
+                    .getBytes(StandardCharsets.UTF_8));
+            out.write(firstEvent);
+            out.flush();
+            // Close immediately before remaining Content-Length bytes arrive
+        })) {
+            AnthropicAdapter ioAdapter = new AnthropicAdapter(upstream.baseUrl(), "sk-ant-test");
+            Stream<StreamChunk> stream = ioAdapter.stream(request(false));
+            try {
+                Iterator<StreamChunk> it = stream.iterator();
+                assertTrue(it.hasNext());
+                assertEquals("msg_2", it.next().id());
+                ProviderException net = assertThrows(ProviderException.class, it::hasNext);
+                assertEquals(ProviderException.TYPE_NETWORK, net.type());
+                assertTrue(net.retryable());
+            } finally {
+                stream.close();
+            }
+        }
+
+        // 4. Close immediately without consuming chunks
+        serveResponse(200, "text/event-stream", SSE_BODY);
+        Stream<StreamChunk> immediate = adapter.stream(request(false));
+        immediate.close();
+        immediate.close();
+    }
+
+    @Test
+    void constructorTimeoutsPermissionErrorFrameAndCountTokensOverflow() {
+        AnthropicAdapter publicTimed = new AnthropicAdapter(
+                baseUri.toString(), "k", Duration.ofSeconds(3), Duration.ofSeconds(7), Duration.ofSeconds(9));
+        assertEquals(Duration.ofSeconds(3), publicTimed.connectTimeout());
+        assertEquals(Duration.ofSeconds(7), publicTimed.headerTimeout());
+        assertEquals(Duration.ofSeconds(9), publicTimed.bodyReadTimeout());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new AnthropicAdapter(" ", "k", "2023-06-01", Duration.ofSeconds(1), Duration.ofSeconds(1)));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new AnthropicAdapter(baseUri.toString(), "k", " ", Duration.ofSeconds(1), Duration.ofSeconds(1)));
+
+        assertStreamErrorFrame(
+                "{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"denied\"}}",
+                ProviderException.TYPE_UPSTREAM_4XX,
+                false);
+        assertStreamErrorFrame(
+                "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"missing\"}}",
+                ProviderException.TYPE_UPSTREAM_4XX,
+                false);
+
+        server.createContext("/v1/messages/count_tokens", exchange -> {
+            byte[] bytes = "{\"input_tokens\":99999999999999999999999999999}".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(bytes);
+            }
+        });
+        contextRegistered = true;
+        ProviderException overflow = assertThrows(ProviderException.class, () -> adapter.countTokens(request(false)));
+        assertEquals(ProviderException.TYPE_BAD_UPSTREAM_PAYLOAD, overflow.type());
+        server.removeContext("/v1/messages/count_tokens");
+        contextRegistered = false;
     }
 
     // -------------------------------------------------------------- helpers

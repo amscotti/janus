@@ -212,6 +212,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SseChunkPublisherTest` stall-race barrier, `DecisionMultipartParserTest`,
   `SystemOneAuthTest`, `SystemOneGovernanceTest`, and live multi-format
   (`text` + PNG + PDF) `gemini-decision-1` smoke in `LiveProviderIT`.
+- **Gateway, provider, and router branch-coverage suites** — expanded
+  `SystemOneControllerTest` (gzip JSON/multipart decompression, corrupt/bomb
+  gzip errors, identity/stacked `Content-Encoding`, empty/null/throwing streams,
+  danger-zone flag combinations, unexpected router failures, throwing
+  `MetricsRecorder`), added `GatewayJsonTest` and expanded `SseWatchdogTest`,
+  `KeyAuthFilterTest` (`DeferredAuthPublisher$Bridge`), and
+  `SseChunkPublisherTest` (`SseStreamPublisher$SubscriptionImpl`) reactive/error
+  edge tests, expanded `DecisionAdaptersLoopbackTest`, `AnthropicAdapterTest`,
+  and `OpenAiCompatibleAdapterTest` (endpoint/auth/constructor guards, extra
+  answers, Google RPC statuses, unreadable error bodies, SSE iterator
+  exhaustion/`IOException`/close edges), and expanded `DecisionRouterTest`
+  (`knows(null)`, throwing `Error` observers/classifiers, and `sleepBackoff`
+  interruption suppression).
 
 ## [0.2.0] — 2026-10-24
 
