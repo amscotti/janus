@@ -521,6 +521,119 @@ class OpenAiDecisionsCodecTest {
         assertTrue(e.getMessage().contains("input limit"), e.getMessage());
     }
 
+    @Test
+    void decodeUsageRejectsLongOverflowOnCacheSplit() {
+        DecisionCodecException e = assertThrows(
+                DecisionCodecException.class,
+                () -> openAi.decodeResponse(
+                        "{\"answers\":[],\"usage\":{\"input_tokens\":9223372036854775807,"
+                                + "\"input_tokens_details\":{\"cached_tokens\":9223372036854775807,\"cache_write_tokens\":1}}}"));
+        assertEquals(DecisionCodecException.TYPE_API_ERROR, e.type());
+    }
+
+    @Test
+    void scoreAnswerRejectsDuplicateOrNegativeIndices() {
+        DecisionCodecException duplicate = assertThrows(
+                DecisionCodecException.class,
+                () -> openAi.decodeResponse(
+                        "{\"answers\":[{\"type\":\"score\",\"name\":\"q\",\"score\":1.0,\"probabilities\":["
+                                + "{\"label\":\"a\",\"value\":0,\"probability\":0.5},"
+                                + "{\"label\":\"b\",\"value\":0,\"probability\":0.5}]}]}"));
+        assertEquals(DecisionCodecException.TYPE_API_ERROR, duplicate.type());
+
+        DecisionCodecException negative = assertThrows(
+                DecisionCodecException.class,
+                () -> openAi.decodeResponse(
+                        "{\"answers\":[{\"type\":\"score\",\"name\":\"q\",\"score\":0.0,\"probabilities\":["
+                                + "{\"label\":\"a\",\"value\":-1,\"probability\":0.5},"
+                                + "{\"label\":\"b\",\"value\":0,\"probability\":0.5}]}]}"));
+        assertEquals(DecisionCodecException.TYPE_API_ERROR, negative.type());
+    }
+
+    @Test
+    void decodeInputRejectsConflictingTextAndJsonOrMultipleJsonParts() {
+        DecisionCodecException mixed = assertThrows(
+                DecisionCodecException.class,
+                () -> openAi.decodeRequest("{\"model\":\"m\",\"input\":[{\"content\":["
+                        + "{\"type\":\"input_text\",\"text\":\"hi\"},"
+                        + "{\"type\":\"input_json\",\"data\":{\"a\":1}}]}],"
+                        + "\"questions\":[{\"type\":\"predicate\",\"name\":\"q\",\"instructions\":\"?\"}]}"));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, mixed.type());
+
+        DecisionCodecException multipleJson = assertThrows(
+                DecisionCodecException.class,
+                () -> openAi.decodeRequest("{\"model\":\"m\",\"input\":[{\"content\":["
+                        + "{\"type\":\"input_json\",\"data\":{\"a\":1}},"
+                        + "{\"type\":\"input_json\",\"data\":{\"b\":2}}]}],"
+                        + "\"questions\":[{\"type\":\"predicate\",\"name\":\"q\",\"instructions\":\"?\"}]}"));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, multipleJson.type());
+    }
+
+    @Test
+    void decodeAndEncodeRejectNonBase64Images() {
+        for (String bad : List.of(
+                "not-base64!",
+                "data:image/png;base64,",
+                "data:image/png;base64,not-base64!",
+                "file:///etc/passwd",
+                "https://example.com/a.png")) {
+            DecisionCodecException decoded = assertThrows(
+                    DecisionCodecException.class,
+                    () -> openAi.decodeRequest("{\"model\":\"m\",\"input\":[{\"content\":["
+                            + "{\"type\":\"input_image\",\"image_url\":\"" + bad + "\"}]}],"
+                            + "\"questions\":[{\"type\":\"predicate\",\"name\":\"q\",\"instructions\":\"?\"}]}"),
+                    bad);
+            assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, decoded.type(), bad);
+        }
+        DecisionRequest nonBase64 = new DecisionRequest(
+                "m",
+                "s",
+                List.of("https://example.com/a.png"),
+                Map.of("q", new DecisionQuestion.NoulQuestion("?", null)),
+                Map.of(),
+                Map.of());
+        DecisionCodecException encoded =
+                assertThrows(DecisionCodecException.class, () -> openAi.encodeRequest(nonBase64));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, encoded.type());
+    }
+
+    @Test
+    void unsupportedMultiFormatMediaBlocksAreRejectedInsteadOfPassedAsInputJson() {
+        for (Map<String, Object> block : List.<Map<String, Object>>of(
+                Map.of("type", "document", "data", "JVBERi0xLjQK", "mime_type", "application/pdf"),
+                Map.of("type", "audio", "data", "UklGRg==", "mime_type", "audio/wav"),
+                Map.of("type", "video", "uri", "https://example.com/clip.mp4", "mime_type", "video/mp4"),
+                Map.of(
+                        "type",
+                        "file",
+                        "file",
+                        Map.of("file_data", "data:application/pdf;base64,JVBERi0=", "filename", "a.pdf")),
+                Map.of("type", "input_audio", "input_audio", Map.of("data", "UklGRg==", "format", "wav")),
+                Map.of("type", "video_url", "video_url", Map.of("url", "https://example.com/clip.mp4")))) {
+            DecisionRequest listReq = new DecisionRequest(
+                    "gpt-6-luna",
+                    List.of(Map.of("type", "text", "text", "Analyze"), block),
+                    null,
+                    Map.of("q", new DecisionQuestion.NoulQuestion("?", null)),
+                    Map.of(),
+                    Map.of());
+            DecisionCodecException listErr =
+                    assertThrows(DecisionCodecException.class, () -> openAi.encodeRequest(listReq), block.toString());
+            assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, listErr.type(), block.toString());
+
+            DecisionRequest singleReq = new DecisionRequest(
+                    "gpt-6-luna",
+                    block,
+                    null,
+                    Map.of("q", new DecisionQuestion.NoulQuestion("?", null)),
+                    Map.of(),
+                    Map.of());
+            DecisionCodecException singleErr =
+                    assertThrows(DecisionCodecException.class, () -> openAi.encodeRequest(singleReq), block.toString());
+            assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, singleErr.type(), block.toString());
+        }
+    }
+
     private static JsonNode readTree(String json) throws IOException {
         return JsonSupport.mapper().readTree(json);
     }

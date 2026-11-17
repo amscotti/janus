@@ -374,6 +374,100 @@ class SystemOneCodecTest {
                 () -> codec.inlineMultipartAssets(json, Map.of("photo", new byte[] {1, 2, 3})));
     }
 
+    @Test
+    void multipartImageFormatValidatesEmptyBytesAndMagicBytesEvenWhenDeclared() {
+        String declaredPng = "{\"model\":\"jev-latest\",\"state\":{\"photo\":\"p1\"},"
+                + "\"assets\":{\"p1\":{\"type\":\"image\",\"part\":\"photo\",\"format\":\"png\"}},"
+                + "\"questions\":{\"locate\":{\"type\":\"box\",\"instructions\":\"Find it.\"}}}";
+        byte[] jpeg = new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, 0};
+
+        DecisionCodecException empty = assertThrows(
+                DecisionCodecException.class,
+                () -> codec.inlineMultipartAssets(declaredPng, Map.of("photo", new byte[0])));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, empty.type());
+
+        DecisionCodecException bogus = assertThrows(
+                DecisionCodecException.class,
+                () -> codec.inlineMultipartAssets(declaredPng, Map.of("photo", new byte[] {1, 2, 3, 4})));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, bogus.type());
+
+        DecisionCodecException mismatch = assertThrows(
+                DecisionCodecException.class, () -> codec.inlineMultipartAssets(declaredPng, Map.of("photo", jpeg)));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, mismatch.type());
+
+        byte[] png = new byte[] {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0};
+        assertDoesNotThrow(() -> codec.inlineMultipartAssets(declaredPng, Map.of("photo", png)));
+    }
+
+    @Test
+    void unsupportedQuestionTypeErrorMentionsBox() {
+        DecisionCodecException e = assertThrows(
+                DecisionCodecException.class,
+                () -> codec.decodeRequest(
+                        "{\"model\":\"m\",\"state\":\"s\",\"questions\":{\"q\":{\"type\":\"bogus\",\"instructions\":\"?\"}}}"));
+        assertEquals(DecisionCodecException.TYPE_INVALID_REQUEST, e.type());
+        assertTrue(e.getMessage().contains("box"), e.getMessage());
+    }
+
+    @Test
+    void cloudflareSuccessFalseWithoutResultIsATypedFailureNotMissingAnswers() {
+        DecisionCodecException e =
+                assertThrows(DecisionCodecException.class, () -> codec.unwrapCloudflareEnvelope("{\"success\":false}"));
+        assertEquals(DecisionCodecException.TYPE_API_ERROR, e.type());
+        assertTrue(e.getMessage().contains("success=false"), e.getMessage());
+    }
+
+    @Test
+    void hasImageEvidenceHandlesEmptyAssetsAndNestedInstructionsOrCriteriaImages() {
+        DecisionRequest emptyAssets = new DecisionRequest(
+                "m",
+                "s",
+                null,
+                Map.of("q", new DecisionQuestion.NoulQuestion("?", null)),
+                Map.of("assets", Map.of()),
+                Map.of());
+        assertFalse(emptyAssets.hasImageEvidence(), "empty assets {} is not image evidence");
+
+        Map<String, Object> nullAssetsExtras = new java.util.HashMap<>();
+        nullAssetsExtras.put("assets", null);
+        DecisionRequest nullAssets = new DecisionRequest(
+                "m", "s", null, Map.of("q", new DecisionQuestion.NoulQuestion("?", null)), nullAssetsExtras, Map.of());
+        assertFalse(nullAssets.hasImageEvidence(), "null assets is not image evidence");
+
+        DecisionRequest imageInInstructions = new DecisionRequest(
+                "m",
+                "s",
+                null,
+                Map.of(
+                        "q",
+                        new DecisionQuestion.NoulQuestion(
+                                List.of(Map.of("type", "input_image", "image_url", "iVBORw0KGgo=")), null)),
+                Map.of(),
+                Map.of());
+        assertTrue(imageInInstructions.hasImageEvidence(), "image in question instructions is image evidence");
+
+        DecisionRequest imageInCriteria = new DecisionRequest(
+                "m",
+                "s",
+                null,
+                Map.of(
+                        "q",
+                        new DecisionQuestion.ChoiceQuestion(
+                                "Pick", Map.of("a", Map.of("type", "image", "data", "iVBORw0KGgo="), "b", "none"))),
+                Map.of(),
+                Map.of());
+        assertTrue(imageInCriteria.hasImageEvidence(), "image in question criteria is image evidence");
+
+        DecisionRequest audioOnly = new DecisionRequest(
+                "m",
+                List.of(Map.of("type", "audio", "data", "UklGRg==", "mime_type", "audio/wav")),
+                null,
+                Map.of("q", new DecisionQuestion.NoulQuestion("?", null)),
+                Map.of(),
+                Map.of());
+        assertFalse(audioOnly.hasImageEvidence(), "non-image media must keep vision=true image semantics intact");
+    }
+
     private static JsonNode readTree(String json) throws IOException {
         return JsonSupport.mapper().readTree(json);
     }

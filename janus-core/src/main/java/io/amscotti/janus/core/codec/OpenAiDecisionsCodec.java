@@ -47,6 +47,8 @@ public final class OpenAiDecisionsCodec {
 
     private static final Set<String> REQUEST_KEYS = Set.of("model", "input", "questions");
     private static final Set<String> RESPONSE_KEYS = Set.of("model", "answers", "usage");
+    private static final Set<String> UNSUPPORTED_MEDIA_BLOCK_TYPES =
+            Set.of("document", "audio", "video", "file", "input_file", "input_audio", "video_url");
 
     /** OpenAI's documented per-request question cap. */
     static final int MAX_QUESTIONS = 400;
@@ -236,12 +238,16 @@ public final class OpenAiDecisionsCodec {
         Object state = null;
         StringBuilder text = new StringBuilder();
         boolean sawText = false;
+        boolean sawJson = false;
         for (JsonNode message : input) {
             JsonNode content = message.get("content");
             if (content == null) {
                 continue;
             }
             if (content.isString()) {
+                if (sawJson) {
+                    throw DecisionJson.invalid("input cannot combine text and input_json parts");
+                }
                 appendText(text, content.asString());
                 sawText = true;
                 continue;
@@ -252,10 +258,24 @@ public final class OpenAiDecisionsCodec {
             for (JsonNode part : content) {
                 String type = part.path("type").asString("");
                 switch (type) {
-                    case "input_json" ->
-                        state = DecisionJson.toPlain(
-                                mapper, part.get("data"), DecisionCodecException.TYPE_INVALID_REQUEST);
+                    case "input_json" -> {
+                        if (sawJson) {
+                            throw DecisionJson.invalid("input must carry at most one input_json part");
+                        }
+                        if (sawText) {
+                            throw DecisionJson.invalid("input cannot combine text and input_json parts");
+                        }
+                        JsonNode data = part.get("data");
+                        if (data == null || data.isNull()) {
+                            throw DecisionJson.invalid("input_json part must carry data");
+                        }
+                        state = DecisionJson.toPlain(mapper, data, DecisionCodecException.TYPE_INVALID_REQUEST);
+                        sawJson = true;
+                    }
                     case "input_text", "output_text" -> {
+                        if (sawJson) {
+                            throw DecisionJson.invalid("input cannot combine text and input_json parts");
+                        }
                         appendText(text, part.path("text").asString(""));
                         sawText = true;
                     }
@@ -264,7 +284,13 @@ public final class OpenAiDecisionsCodec {
                         if (url == null || !url.isString() || url.asString().isBlank()) {
                             throw DecisionJson.invalid("input_image must carry a non-blank string image_url");
                         }
-                        imagesOut.add(stripDataUrl(url.asString()));
+                        String raw = url.asString();
+                        String stripped = stripDataUrl(raw);
+                        if (raw.startsWith("data:") && stripped.equals(raw)) {
+                            throw DecisionJson.invalid("input_image data URL must carry base64 data");
+                        }
+                        requireBase64Image(stripped);
+                        imagesOut.add(stripped);
                     }
                     default -> {
                         // Tool calls/outputs and other message items are upstream
@@ -475,11 +501,12 @@ public final class OpenAiDecisionsCodec {
             throw DecisionJson.invalid("model and state are required");
         }
         DecisionJson.requireFiniteTree(request.state(), DecisionCodecException.TYPE_INVALID_REQUEST, "state");
+        rejectUnsupportedMediaBlocks(request.state());
         DecisionJson.requireFiniteTree(request.extras(), DecisionCodecException.TYPE_INVALID_REQUEST, "extras");
         if (request.questions() == null || request.questions().isEmpty()) {
             throw DecisionJson.invalid("questions must be non-empty");
         }
-        if (request.extras().containsKey("assets")) {
+        if (request.hasAssets()) {
             throw DecisionJson.invalid("assets are TypeSafe-only; the OpenAI Decisions leg cannot represent them"
                     + " (route this request to a systemone backend)");
         }
@@ -527,7 +554,29 @@ public final class OpenAiDecisionsCodec {
                 if (image == null || image.isBlank()) {
                     throw DecisionJson.invalid("images must be non-blank base64 strings");
                 }
+                requireBase64Image(image);
             }
+        }
+    }
+
+    private static void rejectUnsupportedMediaBlocks(Object value) {
+        switch (value) {
+            case Map<?, ?> map -> {
+                Object type = map.get("type");
+                if (type instanceof String s && UNSUPPORTED_MEDIA_BLOCK_TYPES.contains(s)) {
+                    throw DecisionJson.invalid("OpenAI Decisions does not support \"" + s
+                            + "\" multi-format blocks (route this request to a gemini-decisions backend)");
+                }
+                for (Object nested : map.values()) {
+                    rejectUnsupportedMediaBlocks(nested);
+                }
+            }
+            case Iterable<?> items -> {
+                for (Object item : items) {
+                    rejectUnsupportedMediaBlocks(item);
+                }
+            }
+            default -> {}
         }
     }
 
@@ -640,9 +689,15 @@ public final class OpenAiDecisionsCodec {
                 }
                 for (JsonNode p : probs) {
                     long index = DecisionJson.integralField(p, "value", errorType, what);
+                    if (index < 0) {
+                        throw DecisionJson.api(what + ": score level index must be non-negative (got " + index + ")");
+                    }
                     double probability = unitInterval(
                             DecisionJson.numberField(p, "probability", errorType, what), what + ": probability");
                     String key = Long.toString(index);
+                    if (probabilities.containsKey(key)) {
+                        throw DecisionJson.api(what + ": duplicate score level value \"" + key + "\"");
+                    }
                     JsonNode label = p.get("label");
                     legend.put(key, label != null && label.isString() ? label.asString() : null);
                     probabilities.put(key, probability);
@@ -737,7 +792,7 @@ public final class OpenAiDecisionsCodec {
                 ? 0
                 : zeroIfNull(DecisionJson.optionalLongField(
                         details, "cache_write_tokens", DecisionCodecException.TYPE_API_ERROR, "usage"));
-        if (cached + cacheWrite > input) {
+        if (cached > input || cacheWrite > input - cached) {
             throw DecisionJson.api("usage cache tokens exceed input_tokens");
         }
         JsonNode outDetails = node.get("output_tokens_details");
@@ -786,6 +841,24 @@ public final class OpenAiDecisionsCodec {
             return image;
         }
         return "data:" + sniffMime(image) + ";base64," + image;
+    }
+
+    private static void requireBase64Image(String image) {
+        if (image.isEmpty()
+                || image.startsWith("data:")
+                || image.contains("://")
+                || image.startsWith("file:")
+                || image.length() % 4 != 0) {
+            throw DecisionJson.invalid("images must be raw base64 (PNG/JPEG/WebP), not URLs or data URLs");
+        }
+        try {
+            byte[] decoded = Base64.getDecoder().decode(image);
+            if (decoded.length == 0) {
+                throw DecisionJson.invalid("images must be non-empty base64 (PNG/JPEG/WebP)");
+            }
+        } catch (IllegalArgumentException e) {
+            throw DecisionJson.invalid("images must be raw base64 (PNG/JPEG/WebP)");
+        }
     }
 
     private static String stripDataUrl(String imageUrl) {

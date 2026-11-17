@@ -129,23 +129,46 @@ public final class SystemOneCodec {
     }
 
     private static String imageFormat(byte[] data, JsonNode declared) {
+        if (data == null || data.length == 0) {
+            throw DecisionJson.invalid("multipart image parts must not be empty");
+        }
+        String sniffed = sniffPngOrJpeg(data);
+        if (sniffed == null) {
+            throw DecisionJson.invalid("multipart image parts must be PNG or JPEG (TypeSafe asset formats)");
+        }
         if (declared != null && !declared.isNull()) {
             if (!declared.isString()) {
                 throw DecisionJson.invalid("asset format must be a string");
             }
             String value = declared.asString().toLowerCase(Locale.ROOT);
-            if ("png".equals(value) || "jpg".equals(value) || "jpeg".equals(value)) {
-                return value;
+            if (!"png".equals(value) && !"jpg".equals(value) && !"jpeg".equals(value)) {
+                throw DecisionJson.invalid("TypeSafe assets accept png, jpg, or jpeg (got \"" + value + "\")");
             }
-            throw DecisionJson.invalid("TypeSafe assets accept png, jpg, or jpeg (got \"" + value + "\")");
+            String normalized = "jpeg".equals(value) ? "jpg" : value;
+            if (!normalized.equals(sniffed)) {
+                throw DecisionJson.invalid("multipart image bytes do not match declared format \"" + value + "\"");
+            }
+            return value;
         }
-        if (data.length >= 8 && data[0] == (byte) 0x89 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G') {
+        return sniffed;
+    }
+
+    private static String sniffPngOrJpeg(byte[] data) {
+        if (data.length >= 8
+                && data[0] == (byte) 0x89
+                && data[1] == 'P'
+                && data[2] == 'N'
+                && data[3] == 'G'
+                && data[4] == 0x0D
+                && data[5] == 0x0A
+                && data[6] == 0x1A
+                && data[7] == 0x0A) {
             return "png";
         }
         if (data.length >= 3 && data[0] == (byte) 0xFF && data[1] == (byte) 0xD8 && data[2] == (byte) 0xFF) {
             return "jpg";
         }
-        throw DecisionJson.invalid("multipart image parts must be PNG or JPEG (TypeSafe asset formats)");
+        return null;
     }
 
     public DecisionRequest decodeRequest(String json) throws DecisionCodecException {
@@ -280,7 +303,7 @@ public final class SystemOneCodec {
             }
             default ->
                 throw new DecisionCodecException(
-                        errorType, what + ": type must be choice, noul, or score (got \"" + type + "\")");
+                        errorType, what + ": type must be choice, noul, score, or box (got \"" + type + "\")");
         };
     }
 
@@ -404,13 +427,13 @@ public final class SystemOneCodec {
      */
     public String unwrapCloudflareEnvelope(String json) throws DecisionCodecException {
         JsonNode root = DecisionJson.readTree(mapper, json, DecisionCodecException.TYPE_API_ERROR, "response");
-        JsonNode result = root.get("result");
-        if (result == null) {
-            return json;
-        }
         JsonNode success = root.get("success");
         if (success != null && success.isBoolean() && !success.asBoolean()) {
             throw DecisionJson.api("Cloudflare Workers AI returned success=false for the decision request");
+        }
+        JsonNode result = root.get("result");
+        if (result == null) {
+            return json;
         }
         if (result.isNull()) {
             throw DecisionJson.api("Cloudflare Workers AI response carried no result object");
@@ -662,14 +685,18 @@ public final class SystemOneCodec {
      * SSRF/LFI pivot, and a non-base64 string is not an image at all.
      */
     private static void requireBase64Image(String image) {
-        if (image.startsWith("data:")
+        if (image.isEmpty()
+                || image.startsWith("data:")
                 || image.contains("://")
                 || image.startsWith("file:")
                 || image.length() % 4 != 0) {
             throw DecisionJson.invalid("images must be raw base64 (PNG/JPEG/WebP), not URLs or data URLs");
         }
         try {
-            Base64.getDecoder().decode(image);
+            byte[] decoded = Base64.getDecoder().decode(image);
+            if (decoded.length == 0) {
+                throw DecisionJson.invalid("images must be non-empty base64 (PNG/JPEG/WebP)");
+            }
         } catch (IllegalArgumentException e) {
             throw DecisionJson.invalid("images must be raw base64 (PNG/JPEG/WebP)");
         }

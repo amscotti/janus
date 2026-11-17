@@ -20,6 +20,12 @@ the decision codec replay tests. CI never touches the network (AGENTS.md).
 - `openai.decisions.response.json` — hand-authored from the documented
   OpenAI response shape (`answers[]`, per-option probability arrays,
   `refusal` answers, cache-token usage details).
+- `gemini.decisions.request.json` — the Google Gemini Decisions (`/v1beta/decisions`)
+  translation of `decisions.request.json` (domain JSON serialized in a `text`
+  block, `noul.criteria` mapped to `true_description`/`false_description`).
+- `gemini.decisions.response.json` — live-verified Google Gemini Decision 1
+  response shape (`answers` map, no `model` field, `usage.total_input_tokens`
+  and `input_tokens_by_modality`).
 
 Equality: System One request round-trips are semantic (tree equality);
-OpenAI legs are semantic (map/array reshaping is the feature under test).
+OpenAI and Gemini legs are semantic (map/array reshaping is the feature under test).
