@@ -81,4 +81,14 @@ class TimeoutContractTest {
                 ResponsesSsePublisher.DEFAULT_IDLE_TIMEOUT_SECONDS,
                 JanusConfig.TimeoutsConfig.DEFAULTS.streamIdleTimeoutSeconds().longValue());
     }
+
+    @Test
+    void routerAndDecisionRouterFactoryDefaultsAndDecompressedCeilingMatchContract() {
+        JanusConfig.TimeoutsConfig resolvedChat = RouterFactory.resolve(null);
+        assertEquals(10, resolvedChat.connectTimeoutSeconds());
+        assertEquals(60, resolvedChat.headerTimeoutSeconds());
+        assertEquals(300, resolvedChat.bodyReadTimeoutSeconds());
+        assertEquals(60, resolvedChat.streamIdleTimeoutSeconds());
+        assertEquals(32 * 1024 * 1024, SystemOneController.MAX_DECOMPRESSED_BYTES);
+    }
 }

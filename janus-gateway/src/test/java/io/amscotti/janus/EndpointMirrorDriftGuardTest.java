@@ -69,6 +69,24 @@ class EndpointMirrorDriftGuardTest {
                     "key '" + key + "' must match across the two boot configs — a half-fix "
                             + "of the management-endpoint lockdown would silently re-expose the other boot path");
         }
+
+        // Pin packaged request-size and Prometheus/Metrics endpoint contracts in application.toml.
+        assertEquals("32MB", valueAt(packaged, "micronaut.server.max-request-size", "application.toml"));
+        assertEquals("32MB", valueAt(packaged, "micronaut.server.max-request-buffer-size", "application.toml"));
+        assertEquals("true", valueAt(packaged, "endpoints.prometheus.enabled", "application.toml"));
+        assertEquals("false", valueAt(packaged, "endpoints.prometheus.sensitive", "application.toml"));
+        assertEquals("/metrics", valueAt(packaged, "endpoints.prometheus.path", "application.toml"));
+        assertEquals("false", valueAt(packaged, "endpoints.metrics.enabled", "application.toml"));
+
+        // Pin production example Prometheus endpoint parity with packaged defaults.
+        JsonNode prodExample = Parser.parse(Files.readString(repoRoot.resolve("config.production.example.toml")));
+        for (String promKey : List.of(
+                "endpoints.prometheus.enabled", "endpoints.prometheus.sensitive", "endpoints.prometheus.path")) {
+            assertEquals(
+                    valueAt(packaged, promKey, "application.toml"),
+                    valueAt(prodExample, promKey, "config.production.example.toml"),
+                    "key '" + promKey + "' drifted between application.toml and config.production.example.toml");
+        }
     }
 
     private static String valueAt(JsonNode root, String dottedPath, String source) {

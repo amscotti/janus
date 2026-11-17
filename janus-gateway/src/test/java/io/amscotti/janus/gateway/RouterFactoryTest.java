@@ -412,4 +412,21 @@ class RouterFactoryTest {
             return new StubAdapter(backendName);
         }
     }
+
+    @Test
+    void everyServiceLoaderProviderAdapterIsWiredInRouterFactoryCreateProvider() {
+        List<ProviderAdapter> discovered = new java.util.ArrayList<>();
+        java.util.ServiceLoader.load(ProviderAdapter.class).forEach(discovered::add);
+        assertTrue(!discovered.isEmpty(), "ServiceLoader must discover ProviderAdapter implementations");
+        for (ProviderAdapter adapter : discovered) {
+            ProviderAdapter built = RouterFactory.createProvider(
+                    "provider-x", adapter.name(), "http://127.0.0.1:9999", "k", JanusConfig.TimeoutsConfig.DEFAULTS);
+            org.junit.jupiter.api.Assertions.assertNotNull(
+                    built, "RouterFactory.createProvider returned null for " + adapter.name());
+            assertTrue(
+                    adapter.getClass().isInstance(built),
+                    "expected " + adapter.getClass().getName() + " for " + adapter.name() + ", got "
+                            + built.getClass().getName());
+        }
+    }
 }
