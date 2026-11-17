@@ -19,7 +19,7 @@ class JanusConfigTest {
     @Test
     void loadsTomlConfiguration() {
         assertEquals("janus", config.name());
-        assertEquals("0.2.0", config.version());
+        assertEquals("0.3.0", config.version());
     }
 
     /**

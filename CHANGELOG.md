@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-17
+
+System One decision models (`POST /v1/systemone` — TypeSafe Jev, Ollama,
+Cloudflare Clef, OpenAI Decisions, Google Gemini Decision 1 multi-format, and
+OpenRouter), plus gateway, codec, router, and architecture hardening.
+
 ### Added
 
 - **Google Gemini Decision 1 (`gemini-decisions`)** — `POST /v1/systemone`

@@ -59,7 +59,7 @@ enabled = false
 
 [janus]
 name = "janus"
-version = "0.2.0"
+version = "0.3.0"
 
 [[janus.model-list]]
 name = "deepseek-flash"
