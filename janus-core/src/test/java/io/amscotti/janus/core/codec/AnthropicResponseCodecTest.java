@@ -501,4 +501,30 @@ class AnthropicResponseCodecTest {
                         "\"content\":[{\"type\":\"text\",\"text\":\"first\"},{\"type\":\"text\",\"text\":\"second\"}]"),
                 json);
     }
+
+    @Test
+    void negativeOrOverflowingUsageOnDecodeRaisesTypedApiError() {
+        AnthropicCodecException negative = assertThrows(
+                AnthropicCodecException.class,
+                () -> codec.decodeResponse("{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\","
+                        + "\"model\":\"claude-3\",\"content\":[{\"type\":\"text\",\"text\":\"a\"}],"
+                        + "\"usage\":{\"input_tokens\":-1,\"output_tokens\":5}}"));
+        assertEquals(AnthropicCodecException.TYPE_API_ERROR, negative.type());
+
+        AnthropicCodecException overflow = assertThrows(
+                AnthropicCodecException.class,
+                () -> codec.decodeResponse("{\"id\":\"m1\",\"type\":\"message\",\"role\":\"assistant\","
+                        + "\"model\":\"claude-3\",\"content\":[{\"type\":\"text\",\"text\":\"a\"}],"
+                        + "\"usage\":{\"input_tokens\":" + Long.MAX_VALUE + ",\"output_tokens\":5}}"));
+        assertEquals(AnthropicCodecException.TYPE_API_ERROR, overflow.type());
+    }
+
+    @Test
+    void createRejectsDuplicateKeysInResponse() {
+        AnthropicMessageCodec strict = AnthropicMessageCodec.create();
+        AnthropicCodecException e = assertThrows(
+                AnthropicCodecException.class,
+                () -> strict.decodeResponse("{\"id\":\"m1\",\"id\":\"m2\",\"content\":[]}"));
+        assertEquals(AnthropicCodecException.TYPE_API_ERROR, e.type());
+    }
 }

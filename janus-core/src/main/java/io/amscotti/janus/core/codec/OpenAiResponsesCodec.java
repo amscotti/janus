@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import tools.jackson.core.JacksonException;
+import tools.jackson.core.StreamReadFeature;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.PropertyNamingStrategies;
@@ -84,13 +85,14 @@ public final class OpenAiResponsesCodec {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
     }
 
-    /** Default mapper per the codec contract (SNAKE_CASE, tolerant, single-value arrays). */
+    /** Default mapper per the codec contract (SNAKE_CASE, tolerant, single-value arrays, strict duplicate detection). */
     public static OpenAiResponsesCodec create() {
         return new OpenAiResponsesCodec(JsonMapper.builder()
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .enable(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                 .build());
     }
 
@@ -367,6 +369,9 @@ public final class OpenAiResponsesCodec {
         List<ToolDefinition> functionTools = new ArrayList<>();
         List<HostedToolDefinition> hosted = new ArrayList<>();
         for (JsonNode tool : tools) {
+            if (tool == null || !tool.isObject()) {
+                throw invalid("tool entries must be JSON objects");
+            }
             String type = textOf(tool, "type");
             if (type == null) {
                 throw invalid("tool entries require a type");
@@ -573,9 +578,12 @@ public final class OpenAiResponsesCodec {
                         List.of(new OpenAiResponsesOutputText("output_text", text, List.of()))));
                 textDelivered = true;
             }
-            if (assistant.toolCalls() != null) {
+            if (assistant.toolCalls() != null && !assistant.toolCalls().isEmpty()) {
                 int callPosition = 0;
                 for (ToolCall call : assistant.toolCalls()) {
+                    if (call == null) {
+                        continue;
+                    }
                     // One canonical ToolCall.id feeds both the item id and call_id; a
                     // canonical tool call without an id (legal — stream fragments omit
                     // it) gets the deterministic stream-encoder spelling instead of a
@@ -590,7 +598,7 @@ public final class OpenAiResponsesCodec {
                             call.function() == null ? null : call.function().arguments()));
                     callPosition++;
                 }
-                textDelivered = true;
+                textDelivered = textDelivered || callPosition > 0;
             }
         }
         if (!textDelivered) {
@@ -676,6 +684,9 @@ public final class OpenAiResponsesCodec {
         }
         List<Map<String, Object>> result = new ArrayList<>();
         for (ToolDefinition tool : tools) {
+            if (tool == null) {
+                continue;
+            }
             Map<String, Object> flat = new LinkedHashMap<>();
             flat.put("type", "function");
             if (tool.name() != null) {
@@ -741,7 +752,14 @@ public final class OpenAiResponsesCodec {
         // promptTokens is regular-only, so both cache sides merge back into the full
         // input (the same restore the chat encode's invariant performs).
         long written = usage.cacheCreationInputTokens() == null ? 0L : usage.cacheCreationInputTokens();
-        long input = usage.promptTokens() + cached + written;
+        long input;
+        long total;
+        try {
+            input = Math.addExact(Math.addExact(usage.promptTokens(), cached), written);
+            total = Math.addExact(input, usage.completionTokens());
+        } catch (ArithmeticException e) {
+            throw new OpenAiCodecException(OpenAiCodecException.TYPE_API_ERROR, "usage token count overflow", e);
+        }
         Long written12h = usage.cacheCreation12hInputTokens();
         // Emit lifetime details only when the upstream actually supplied a split;
         // an Anthropic-sourced canonical has no OpenAI lifetime to report.
@@ -755,8 +773,7 @@ public final class OpenAiResponsesCodec {
                 usage.reasoningTokens() != null && usage.reasoningTokens() > 0
                         ? new OpenAiResponsesUsage.OutputTokensDetails(usage.reasoningTokens())
                         : null;
-        return new OpenAiResponsesUsage(
-                input, usage.completionTokens(), input + usage.completionTokens(), inputDetails, outputDetails);
+        return new OpenAiResponsesUsage(input, usage.completionTokens(), total, inputDetails, outputDetails);
     }
 
     /**
@@ -765,7 +782,7 @@ public final class OpenAiResponsesCodec {
      * failed response objects.
      */
     public OpenAiResponsesStreamEncoder newStreamEncoder(ChatRequest request) {
-        return new StreamEncoderImpl(request, System::currentTimeMillis);
+        return new StreamEncoderImpl(request, () -> System.currentTimeMillis() / 1000L);
     }
 
     /**
@@ -775,7 +792,7 @@ public final class OpenAiResponsesCodec {
      */
     public OpenAiResponsesStreamEncoder newStreamEncoder(
             ChatRequest request, java.util.function.LongSupplier epochSecondSupplier) {
-        return new StreamEncoderImpl(request, epochSecondSupplier);
+        return new StreamEncoderImpl(request, Objects.requireNonNull(epochSecondSupplier, "epochSecondSupplier"));
     }
 
     /**
@@ -1168,7 +1185,7 @@ public final class OpenAiResponsesCodec {
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("id", "resp_stream");
             response.put("object", "response");
-            response.put("created_at", epochSeconds.getAsLong() / 1000);
+            response.put("created_at", epochSeconds.getAsLong());
             response.put("status", status);
             response.put("error", error);
             if (incompleteReason != null) {
@@ -1252,12 +1269,24 @@ public final class OpenAiResponsesCodec {
 
     private static String textOf(JsonNode parent, String field) {
         JsonNode node = parent.get(field);
-        return node == null || node.isNull() ? null : node.stringValue();
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isString()) {
+            throw invalid(field + " must be a string");
+        }
+        return node.stringValue();
     }
 
     private static Boolean booleanOf(JsonNode parent, String field) {
         JsonNode node = parent.get(field);
-        return node == null || node.isNull() ? null : node.asBoolean();
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isBoolean()) {
+            throw invalid(field + " must be a boolean");
+        }
+        return node.booleanValue();
     }
 
     /** A Boolean object (never primitive-coerced) for the nullable strict slot. */
@@ -1271,18 +1300,38 @@ public final class OpenAiResponsesCodec {
 
     private static Double doubleOf(JsonNode parent, String field) {
         JsonNode node = parent.get(field);
-        return node == null || node.isNull() ? null : node.asDouble();
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isNumber()) {
+            throw invalid(field + " must be a number");
+        }
+        double value = node.doubleValue();
+        if (!Double.isFinite(value)) {
+            throw invalid(field + " must be a finite number");
+        }
+        return value;
     }
 
     private static Integer intOf(JsonNode parent, String field) {
         JsonNode node = parent.get(field);
-        return node == null || node.isNull() ? null : node.asInt();
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (!node.isNumber() || !node.canConvertToExactIntegral() || !node.canConvertToInt()) {
+            throw invalid(field + " must be an integer");
+        }
+        return node.intValue();
     }
 
     private Object plainValue(JsonNode node) {
         if (node == null || node.isNull()) {
             return null;
         }
-        return mapper.convertValue(node, Object.class);
+        try {
+            return mapper.convertValue(node, Object.class);
+        } catch (JacksonException e) {
+            throw invalid("invalid JSON value: " + e.getMessage());
+        }
     }
 }

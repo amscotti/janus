@@ -76,6 +76,20 @@ public record Usage(
     }
 
     public Usage {
+        if (promptTokens < 0 || completionTokens < 0 || totalTokens < 0) {
+            throw new IllegalArgumentException("token counts must be non-negative (prompt=" + promptTokens
+                    + ", completion=" + completionTokens + ", total=" + totalTokens + ")");
+        }
+        if (cacheCreationInputTokens != null && cacheCreationInputTokens < 0) {
+            throw new IllegalArgumentException(
+                    "cacheCreationInputTokens must be non-negative: " + cacheCreationInputTokens);
+        }
+        if (cacheReadInputTokens != null && cacheReadInputTokens < 0) {
+            throw new IllegalArgumentException("cacheReadInputTokens must be non-negative: " + cacheReadInputTokens);
+        }
+        if (reasoningTokens != null && reasoningTokens < 0) {
+            throw new IllegalArgumentException("reasoningTokens must be non-negative: " + reasoningTokens);
+        }
         if (cacheCreation12hInputTokens != null) {
             long aggregate = cacheCreationInputTokens == null ? 0L : cacheCreationInputTokens;
             if (cacheCreation12hInputTokens < 0 || cacheCreation12hInputTokens > aggregate) {
@@ -95,6 +109,6 @@ public record Usage(
     public long billedPromptTokens() {
         long cacheRead = cacheReadInputTokens == null ? 0 : cacheReadInputTokens;
         long cacheCreation = cacheCreationInputTokens == null ? 0 : cacheCreationInputTokens;
-        return promptTokens + cacheRead + cacheCreation;
+        return Math.addExact(Math.addExact(promptTokens, cacheRead), cacheCreation);
     }
 }

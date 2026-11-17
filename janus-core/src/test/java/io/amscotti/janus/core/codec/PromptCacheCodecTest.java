@@ -513,4 +513,11 @@ class PromptCacheCodecTest {
                 systemContent.get(0).get("cache_control").get("type").asString());
         assertFalse(json.contains("prompt_cache_breakpoint"), json);
     }
+
+    @Test
+    void hugeGptVersionNumbersDoNotOverflowParseInt() {
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-99999999999"));
+        assertTrue(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-5.99999999999"));
+        assertFalse(PromptCache.supportsExplicitOpenAiBreakpoints("gpt-4.99999999999"));
+    }
 }

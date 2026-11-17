@@ -1429,6 +1429,97 @@ class OpenAiRequestCodecTest {
         }
     }
 
+    @Test
+    void createRejectsDuplicateJsonKeys() {
+        OpenAiMessageCodec strict = OpenAiMessageCodec.create();
+        OpenAiCodecException e = assertThrows(
+                OpenAiCodecException.class,
+                () -> strict.decodeRequest(
+                        "{\"model\":\"m\",\"model\":\"other\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, e.type());
+    }
+
+    @Test
+    void encodeRejectsNullListElementsInMessagesToolsAndPartsWithTypedError() {
+        ChatRequest nullMsg = new ChatRequest(
+                "m",
+                Arrays.asList(new UserMessage("hi"), null),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        OpenAiCodecException msgEx = assertThrows(OpenAiCodecException.class, () -> codec.encodeRequest(nullMsg));
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, msgEx.type());
+
+        ChatRequest nullTool = new ChatRequest(
+                "m",
+                List.of(new UserMessage("hi")),
+                null,
+                Arrays.asList(new ToolDefinition("f", "desc", "{}"), null),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        OpenAiCodecException toolEx = assertThrows(OpenAiCodecException.class, () -> codec.encodeRequest(nullTool));
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, toolEx.type());
+
+        ChatRequest nullPart = new ChatRequest(
+                "m",
+                List.of(UserMessage.multimodal(Arrays.asList(new TextContent("hi"), null))),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        OpenAiCodecException partEx = assertThrows(OpenAiCodecException.class, () -> codec.encodeRequest(nullPart));
+        assertEquals(OpenAiCodecException.TYPE_INVALID_REQUEST, partEx.type());
+    }
+
     private static int countOccurrences(String haystack, String needle) {
         int count = 0;
         int idx = 0;

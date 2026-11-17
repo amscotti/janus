@@ -1125,4 +1125,66 @@ class AnthropicChunkCodecTest {
         assertEquals("message_delta", events.get(1).event());
         assertEquals("message_stop", events.get(2).event());
     }
+
+    @Test
+    void emptyContentWithReasoningOpensSingleThinkingBlockZeroThenTextBlockOne() {
+        AnthropicStreamEncoder encoder = codec.newStreamEncoder();
+        List<AnthropicSseEvent> all = new ArrayList<>();
+        all.addAll(encoder.feed(new StreamChunk(
+                "m1",
+                "chat.completion.chunk",
+                1L,
+                "deepseek-r1",
+                List.of(new ChunkChoice(
+                        0, new Delta(ChatRole.ASSISTANT, "", null, null, ReasoningContent.thinking("a", null)), null)),
+                null,
+                Map.of())));
+        all.addAll(encoder.feed(new StreamChunk(
+                "m1",
+                "chat.completion.chunk",
+                1L,
+                "deepseek-r1",
+                List.of(new ChunkChoice(
+                        0, new Delta(null, "", null, null, ReasoningContent.thinking("b", null)), null)),
+                null,
+                Map.of())));
+        all.addAll(encoder.feed(new StreamChunk(
+                "m1",
+                "chat.completion.chunk",
+                1L,
+                "deepseek-r1",
+                List.of(new ChunkChoice(0, new Delta(null, "c", null), null)),
+                null,
+                Map.of())));
+        all.addAll(encoder.finish());
+
+        List<String> blockStarts = all.stream()
+                .filter(e -> "content_block_start".equals(e.event()))
+                .map(AnthropicSseEvent::dataJson)
+                .toList();
+        assertEquals(2, blockStarts.size(), "expected exactly thinking block 0 and text block 1: " + blockStarts);
+        assertTrue(
+                blockStarts.get(0).contains("\"index\":0") && blockStarts.get(0).contains("\"type\":\"thinking\""),
+                blockStarts.get(0));
+        assertTrue(
+                blockStarts.get(1).contains("\"index\":1") && blockStarts.get(1).contains("\"type\":\"text\""),
+                blockStarts.get(1));
+    }
+
+    @Test
+    void streamDecoderRejectsNegativeUsageCounts() {
+        AnthropicStreamDecoder decoder = codec.newStreamDecoder();
+        decoder.decodeChunk(
+                "message_start",
+                "{\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"type\":\"message\","
+                        + "\"role\":\"assistant\",\"model\":\"claude-3\",\"content\":[],"
+                        + "\"usage\":{\"input_tokens\":-3,\"output_tokens\":0}}}");
+        AnthropicCodecException e = assertThrows(
+                AnthropicCodecException.class,
+                () -> decoder.decodeChunk(
+                        "message_delta",
+                        "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},"
+                                + "\"usage\":{\"output_tokens\":5}}"));
+        assertEquals(AnthropicCodecException.TYPE_API_ERROR, e.type());
+    }
 }

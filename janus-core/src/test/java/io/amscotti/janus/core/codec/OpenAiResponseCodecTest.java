@@ -366,6 +366,49 @@ class OpenAiResponseCodecTest {
         assertTrue(choicesEx.getMessage().contains("choices"));
     }
 
+    @Test
+    void negativeTokenCountsOnDecodeRaiseTypedApiError() {
+        String negativePrompt = """
+                {
+                  "id": "i", "object": "chat.completion", "created": 1, "model": "m",
+                  "choices": [{"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                  "usage": {"prompt_tokens": -5, "completion_tokens": 3, "total_tokens": -2}
+                }
+                """;
+        OpenAiCodecException e1 = assertThrows(OpenAiCodecException.class, () -> codec.decodeResponse(negativePrompt));
+        assertEquals(OpenAiCodecException.TYPE_API_ERROR, e1.type());
+
+        String negativeCompletion = """
+                {
+                  "id": "i", "object": "chat.completion", "created": 1, "model": "m",
+                  "choices": [{"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                  "usage": {"prompt_tokens": 5, "completion_tokens": -1}
+                }
+                """;
+        OpenAiCodecException e2 =
+                assertThrows(OpenAiCodecException.class, () -> codec.decodeResponse(negativeCompletion));
+        assertEquals(OpenAiCodecException.TYPE_API_ERROR, e2.type());
+
+        String negativeCached = """
+                {
+                  "id": "i", "object": "chat.completion", "created": 1, "model": "m",
+                  "choices": [{"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}],
+                  "usage": {"prompt_tokens": 5, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": -2}}
+                }
+                """;
+        OpenAiCodecException e3 = assertThrows(OpenAiCodecException.class, () -> codec.decodeResponse(negativeCached));
+        assertEquals(OpenAiCodecException.TYPE_API_ERROR, e3.type());
+    }
+
+    @Test
+    void createRejectsDuplicateKeysInResponse() {
+        OpenAiMessageCodec strict = OpenAiMessageCodec.create();
+        OpenAiCodecException e = assertThrows(
+                OpenAiCodecException.class,
+                () -> strict.decodeResponse("{\"id\":\"i\",\"id\":\"j\",\"model\":\"m\",\"choices\":[]}"));
+        assertEquals(OpenAiCodecException.TYPE_API_ERROR, e.type());
+    }
+
     private static String responseWithFinishReason(String finishReason) {
         return """
                 {

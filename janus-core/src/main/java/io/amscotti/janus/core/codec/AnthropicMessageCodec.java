@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import tools.jackson.core.StreamReadFeature;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
@@ -263,13 +264,14 @@ public final class AnthropicMessageCodec {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
     }
 
-    /** Default mapper per the codec's contract (snake_case, tolerant, single-value arrays). */
+    /** Default mapper per the codec's contract (snake_case, tolerant, single-value arrays, strict duplicate detection). */
     public static AnthropicMessageCodec create() {
         return new AnthropicMessageCodec(JsonMapper.builder()
                 .propertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .enable(DeserializationFeature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
+                .enable(StreamReadFeature.STRICT_DUPLICATE_DETECTION)
                 .build());
     }
 
@@ -342,6 +344,11 @@ public final class AnthropicMessageCodec {
             Object fallback =
                     i == lastUserIndex && PromptCache.isEphemeral(userFallbackCache) ? userFallbackCache : null;
             dtoMessages.add(toAnthropicMessage(message, fallback));
+        }
+        if (dtoMessages.isEmpty()) {
+            throw codec(
+                    AnthropicCodecException.TYPE_INVALID_REQUEST,
+                    "messages must contain at least one non-system message");
         }
         Map<String, Object> extras = new HashMap<>(canonical.extras());
         Object systemWire = systemCached
@@ -550,6 +557,9 @@ public final class AnthropicMessageCodec {
         Map<String, Object> extras = new HashMap<>(dto.extras());
         List<Message> messages = new ArrayList<>();
         for (AnthropicMessage dtoMessage : dtoMessages) {
+            if (dtoMessage == null) {
+                throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "messages must not contain null entries");
+            }
             ChatRole role = requireAnthropicRole(dtoMessage.role());
             messages.addAll(toCanonicalMessages(role, dtoMessage));
             foldMessageExtras(dtoMessage, extras);
@@ -668,6 +678,11 @@ public final class AnthropicMessageCodec {
                         throw codec(
                                 AnthropicCodecException.TYPE_INVALID_REQUEST,
                                 "tool_result block in an assistant message is malformed (tool_result belongs to user messages)");
+                    }
+                    if (!nonBlank(toolResult.toolUseId())) {
+                        throw codec(
+                                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                                "tool_result block requires a non-blank tool_use_id");
                     }
                     toolResults.add(new ToolMessage(toolResult.toolUseId(), toolResultText(toolResult.content())));
                 } else {
@@ -897,11 +912,18 @@ public final class AnthropicMessageCodec {
     }
 
     private AnthropicContentBlock toBlock(Object item) {
+        if (item == null) {
+            throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "content block must not be null");
+        }
         if (item instanceof AnthropicContentBlock block) {
             return block;
         }
         try {
-            return mapper.convertValue(item, AnthropicContentBlock.class);
+            AnthropicContentBlock converted = mapper.convertValue(item, AnthropicContentBlock.class);
+            if (converted == null) {
+                throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "content block must not be null");
+            }
+            return converted;
         } catch (tools.jackson.core.JacksonException e) {
             throw codec(
                     AnthropicCodecException.TYPE_INVALID_REQUEST, "unrecognized content block: " + e.getMessage(), e);
@@ -1033,6 +1055,9 @@ public final class AnthropicMessageCodec {
         List<ToolDefinition> functions = new ArrayList<>();
         List<HostedToolDefinition> hosted = new ArrayList<>();
         for (AnthropicTool tool : tools) {
+            if (tool == null) {
+                throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "tools must not contain null entries");
+            }
             if (isWebSearchTool(tool)) {
                 hosted.add(new HostedToolDefinition.WebSearch(
                         searchContextSizeFromMaxUses(tool.maxUses()), tool.userLocation()));
@@ -1462,8 +1487,10 @@ public final class AnthropicMessageCodec {
         if (dto == null) {
             return null;
         }
-        long prompt = dto.inputTokens() == null ? 0L : dto.inputTokens();
-        long completion = dto.outputTokens() == null ? 0L : dto.outputTokens();
+        long prompt = requireNonNegativeUsage(dto.inputTokens(), "input_tokens");
+        long completion = requireNonNegativeUsage(dto.outputTokens(), "output_tokens");
+        long cacheCreation = requireNonNegativeUsage(dto.cacheCreationInputTokens(), "cache_creation_input_tokens");
+        long cacheRead = requireNonNegativeUsage(dto.cacheReadInputTokens(), "cache_read_input_tokens");
         // Anthropic's cache_creation_input_tokens / cache_read_input_tokens map to the
         // canonical cache fields (/cache pricing). They are ADDITIVE to input_tokens
         // (Anthropic's input_tokens counts only the non-cached input), so the derived
@@ -1471,12 +1498,23 @@ public final class AnthropicMessageCodec {
         // prompt + completion + cache == total invariant the OpenAI encode's restore
         // heuristic checks, so both OpenAI legs re-emit the full input count with the
         // cache split alongside it (pinned in CanonicalRoundTripPropertyTest).
-        return new Usage(
-                prompt,
-                completion,
-                prompt + nullable(dto.cacheCreationInputTokens()) + nullable(dto.cacheReadInputTokens()) + completion,
-                dto.cacheCreationInputTokens(),
-                dto.cacheReadInputTokens());
+        long total;
+        try {
+            total = Math.addExact(Math.addExact(Math.addExact(prompt, cacheCreation), cacheRead), completion);
+        } catch (ArithmeticException e) {
+            throw codec(AnthropicCodecException.TYPE_API_ERROR, "usage token count overflow", e);
+        }
+        return new Usage(prompt, completion, total, dto.cacheCreationInputTokens(), dto.cacheReadInputTokens());
+    }
+
+    private static long requireNonNegativeUsage(Long value, String field) {
+        if (value == null) {
+            return 0L;
+        }
+        if (value < 0) {
+            throw codec(AnthropicCodecException.TYPE_API_ERROR, "usage " + field + " must be non-negative");
+        }
+        return value;
     }
 
     private static long nullable(Long value) {
@@ -1524,6 +1562,16 @@ public final class AnthropicMessageCodec {
                 || "enabled".equals(type)
                 || "disabled".equals(type)
                 || "between_tools".equals(type)) {
+            if ("adaptive".equals(type)) {
+                Object effort = reasoning.get("effort");
+                if (effort instanceof String spelling) {
+                    requireSupportedEffort(spelling);
+                } else if (effort != null) {
+                    throw codec(
+                            AnthropicCodecException.TYPE_INVALID_REQUEST,
+                            "unsupported reasoning effort for the Anthropic leg: " + effort);
+                }
+            }
             // display is legal on adaptive/enabled thinking (Claude Code sends
             // {type:"adaptive", display:"omitted"}); preserve the client's intent.
             // disabled/between_tools accept only their type discriminator.
@@ -1670,9 +1718,21 @@ public final class AnthropicMessageCodec {
             throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "messages must be non-null and non-empty");
         }
         for (Message message : request.messages()) {
+            if (message == null) {
+                throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "messages must not contain null entries");
+            }
             if (message instanceof ToolMessage tool && !nonBlank(tool.toolCallId())) {
                 throw codec(
                         AnthropicCodecException.TYPE_INVALID_REQUEST, "tool message requires a non-blank tool_call_id");
+            }
+            if (message instanceof AssistantMessage assistant && assistant.toolCalls() != null) {
+                for (ToolCall call : assistant.toolCalls()) {
+                    if (call == null) {
+                        throw codec(
+                                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                                "tool_calls must not contain null entries");
+                    }
+                }
             }
             if (message instanceof UserMessage user) {
                 boolean hasText = nonBlank(user.content());
@@ -1681,6 +1741,30 @@ public final class AnthropicMessageCodec {
                     throw codec(
                             AnthropicCodecException.TYPE_INVALID_REQUEST,
                             "user message requires non-blank content or multimodal parts");
+                }
+                if (user.parts() != null) {
+                    for (ContentPart part : user.parts()) {
+                        if (part == null) {
+                            throw codec(
+                                    AnthropicCodecException.TYPE_INVALID_REQUEST,
+                                    "user message parts must not contain null entries");
+                        }
+                    }
+                }
+            }
+        }
+        if (request.tools() != null) {
+            for (ToolDefinition tool : request.tools()) {
+                if (tool == null) {
+                    throw codec(AnthropicCodecException.TYPE_INVALID_REQUEST, "tools must not contain null entries");
+                }
+            }
+        }
+        if (request.hostedTools() != null) {
+            for (HostedToolDefinition hosted : request.hostedTools()) {
+                if (hosted == null) {
+                    throw codec(
+                            AnthropicCodecException.TYPE_INVALID_REQUEST, "hosted tools must not contain null entries");
                 }
             }
         }
@@ -1887,7 +1971,7 @@ public final class AnthropicMessageCodec {
                         boolean opensWithThinking = delta.reasoningContent() != null
                                 && !delta.reasoningContent().isEmpty()
                                 && delta.reasoningContent().redactedData() == null
-                                && delta.content() == null;
+                                && (delta.content() == null || delta.content().isEmpty());
                         BlockKind firstKind = opensWithThinking ? BlockKind.THINKING : BlockKind.TEXT;
                         events.add(blockStart(0, firstKind, null, null));
                         openBlock = new OpenBlock(0, firstKind);
@@ -1968,7 +2052,13 @@ public final class AnthropicMessageCodec {
                         events.add(inputJsonDelta(openBlock.index, partial));
                     }
                 }
-                if (delta.content() != null) {
+                if (delta.content() != null
+                        && (!delta.content().isEmpty()
+                                || (openBlock != null
+                                        && openBlock.kind == BlockKind.TEXT
+                                        && (fragment == null || fragment.isEmpty())
+                                        && (delta.toolCalls() == null
+                                                || delta.toolCalls().isEmpty())))) {
                     if (openBlock != null && openBlock.kind != BlockKind.TEXT) {
                         events.add(blockStop(openBlock.index));
                         openBlock = null;
@@ -2252,24 +2342,26 @@ public final class AnthropicMessageCodec {
             if (dto == null && promptTokens == null) {
                 return null;
             }
-            long prompt = dto == null || dto.inputTokens() == null
-                    ? (promptTokens == null ? 0L : promptTokens)
-                    : dto.inputTokens();
-            long completion = dto == null || dto.outputTokens() == null ? 0L : dto.outputTokens();
+            long prompt = requireNonNegativeUsage(
+                    dto == null || dto.inputTokens() == null ? promptTokens : dto.inputTokens(), "input_tokens");
+            long completion = requireNonNegativeUsage(dto == null ? null : dto.outputTokens(), "output_tokens");
             Long cacheCreation = dto != null && dto.cacheCreationInputTokens() != null
                     ? dto.cacheCreationInputTokens()
                     : cacheCreationTokens;
             Long cacheRead =
                     dto != null && dto.cacheReadInputTokens() != null ? dto.cacheReadInputTokens() : cacheReadTokens;
+            long cacheCreationVal = requireNonNegativeUsage(cacheCreation, "cache_creation_input_tokens");
+            long cacheReadVal = requireNonNegativeUsage(cacheRead, "cache_read_input_tokens");
             // Same additive-total contract as toCanonicalUsage: input_tokens excludes
             // the cache counts, so the merged total is full input + output — the
             // invariant the OpenAI encode restores the full input from.
-            return new Usage(
-                    prompt,
-                    completion,
-                    prompt + nullable(cacheCreation) + nullable(cacheRead) + completion,
-                    cacheCreation,
-                    cacheRead);
+            long total;
+            try {
+                total = Math.addExact(Math.addExact(Math.addExact(prompt, cacheCreationVal), cacheReadVal), completion);
+            } catch (ArithmeticException e) {
+                throw codec(AnthropicCodecException.TYPE_API_ERROR, "usage token count overflow", e);
+            }
+            return new Usage(prompt, completion, total, cacheCreation, cacheRead);
         }
     }
 }

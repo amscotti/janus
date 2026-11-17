@@ -36,7 +36,7 @@ public sealed interface DecisionAnswer {
     record NoulAnswer(double noul) implements DecisionAnswer {
         @Override
         public String toString() {
-            return "NoulAnswer[noul=" + noul + "]";
+            return ContentLogging.enabled() ? "NoulAnswer[noul=" + noul + "]" : "NoulAnswer[answer content not logged]";
         }
     }
 
@@ -81,8 +81,10 @@ public sealed interface DecisionAnswer {
             implements DecisionAnswer {
         @Override
         public String toString() {
-            return "BoxAnswer[box=(" + top + "," + bottom + "," + left + "," + right + "), confidence=" + confidence
-                    + "]";
+            return ContentLogging.enabled()
+                    ? "BoxAnswer[box=(" + top + "," + bottom + "," + left + "," + right + "), confidence=" + confidence
+                            + "]"
+                    : "BoxAnswer[answer content not logged]";
         }
     }
 }

@@ -128,7 +128,7 @@ class MatrixFixtureGeneratorTest {
         // (same canonical, same upstream codec — the matrix's cross-face proof).
         // Outbound response/stream: the Responses face's encode.
         OpenAiResponsesCodec responses = OpenAiResponsesCodec.create();
-        java.util.function.LongSupplier matrixClock = () -> MatrixCanonicals.CREATED * 1000L;
+        java.util.function.LongSupplier matrixClock = () -> MatrixCanonicals.CREATED;
         for (String rDir : java.util.List.of("ro", "ra")) {
             String sibling = rDir.equals("ro") ? "oo" : "oa";
             for (String mode : MODES) {

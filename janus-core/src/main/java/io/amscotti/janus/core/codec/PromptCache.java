@@ -67,12 +67,24 @@ public final class PromptCache {
         if (!matcher.find()) {
             return false;
         }
-        int major = Integer.parseInt(matcher.group(1));
+        int major = parseVersionPart(matcher.group(1));
         if (major != 5) {
             return major > 5;
         }
         String minor = matcher.group(2);
-        return minor != null && Integer.parseInt(minor) >= 6;
+        return minor != null && parseVersionPart(minor) >= 6;
+    }
+
+    private static int parseVersionPart(String digits) {
+        int acc = 0;
+        for (int i = 0; i < digits.length(); i++) {
+            int digit = digits.charAt(i) - '0';
+            if (acc > (Integer.MAX_VALUE - digit) / 10) {
+                return Integer.MAX_VALUE;
+            }
+            acc = acc * 10 + digit;
+        }
+        return acc;
     }
 
     /**

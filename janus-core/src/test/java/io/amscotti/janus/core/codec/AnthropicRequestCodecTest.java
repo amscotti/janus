@@ -1510,6 +1510,155 @@ class AnthropicRequestCodecTest {
         assertTrue(json.contains("\"role\":\"user\""), json);
     }
 
+    @Test
+    void createRejectsDuplicateJsonKeys() {
+        AnthropicMessageCodec strict = AnthropicMessageCodec.create();
+        AnthropicCodecException e = assertThrows(
+                AnthropicCodecException.class,
+                () -> strict.decodeRequest(
+                        "{\"model\":\"m\",\"model\":\"other\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+        assertEquals(AnthropicCodecException.TYPE_INVALID_REQUEST, e.type());
+    }
+
+    @Test
+    void decodeRejectsNullContentBlocksNullMessagesAndBlankToolResultIds() {
+        AnthropicCodecException nullBlock = assertThrows(
+                AnthropicCodecException.class,
+                () -> codec.decodeRequest("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":[null]}]}"));
+        assertEquals(AnthropicCodecException.TYPE_INVALID_REQUEST, nullBlock.type());
+
+        AnthropicCodecException nullSystemBlock = assertThrows(
+                AnthropicCodecException.class,
+                () -> codec.decodeRequest(
+                        "{\"model\":\"m\",\"system\":[null],\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+        assertEquals(AnthropicCodecException.TYPE_INVALID_REQUEST, nullSystemBlock.type());
+
+        AnthropicCodecException nullMsg = assertThrows(
+                AnthropicCodecException.class, () -> codec.decodeRequest("{\"model\":\"m\",\"messages\":[null]}"));
+        assertEquals(AnthropicCodecException.TYPE_INVALID_REQUEST, nullMsg.type());
+
+        AnthropicCodecException blankToolUseId = assertThrows(
+                AnthropicCodecException.class,
+                () -> codec.decodeRequest("{\"model\":\"m\",\"messages\":[{\"role\":\"user\",\"content\":["
+                        + "{\"type\":\"tool_result\",\"tool_use_id\":\"  \",\"content\":\"ok\"}]}]}"));
+        assertEquals(AnthropicCodecException.TYPE_INVALID_REQUEST, blankToolUseId.type());
+    }
+
+    @Test
+    void encodeRejectsNullElementsSystemOnlyMessagesAndInvalidAdaptiveEffort() {
+        ChatRequest nullMessage = new ChatRequest(
+                "m",
+                Arrays.asList(new UserMessage("hi"), null),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        assertEquals(
+                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                assertThrows(AnthropicCodecException.class, () -> codec.encodeRequest(nullMessage))
+                        .type());
+
+        ChatRequest nullTool = new ChatRequest(
+                "m",
+                List.of(new UserMessage("hi")),
+                null,
+                Arrays.asList(new ToolDefinition("f", "desc", "{}"), null),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        assertEquals(
+                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                assertThrows(AnthropicCodecException.class, () -> codec.encodeRequest(nullTool))
+                        .type());
+
+        ChatRequest systemOnly = new ChatRequest(
+                "m",
+                List.of(new SystemMessage("only system")),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null);
+        assertEquals(
+                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                assertThrows(AnthropicCodecException.class, () -> codec.encodeRequest(systemOnly))
+                        .type());
+
+        ChatRequest badAdaptiveEffort = new ChatRequest(
+                "m",
+                List.of(new UserMessage("hi")),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                null,
+                Map.of("type", "adaptive", "effort", "bogus"),
+                null,
+                null,
+                null);
+        assertEquals(
+                AnthropicCodecException.TYPE_INVALID_REQUEST,
+                assertThrows(AnthropicCodecException.class, () -> codec.encodeRequest(badAdaptiveEffort))
+                        .type());
+    }
+
     // ------------------------------------------------------------------ multimodal
 
     @Test
